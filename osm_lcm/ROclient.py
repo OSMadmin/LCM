@@ -297,11 +297,59 @@ class ROClient:
             return "BUILD", "VMs: {}/{}, networks: {}/{}".format(vm_done, vm_total, net_done, net_total)
 
     @staticmethod
+    def check_action_status(action_descriptor):
+        """
+        Inspect RO instance descriptor and indicates the status
+        :param action_descriptor: action instance descriptor obtained with self.show("ns", "action")
+        :return: status, message: status can be BUILD,ACTIVE,ERROR, message is a text message
+        """
+        net_total = 0
+        vm_total = 0
+        net_done = 0
+        vm_done = 0
+        other_total = 0
+        other_done = 0
+
+        for vim_action_set in action_descriptor["actions"]:
+            for vim_action in vim_action_set["vim_actions"]:
+                if vim_action["item"] == "instance_vms":
+                    vm_total += 1
+                elif vim_action["item"] == "instance_nets":
+                    net_total += 1
+                else:
+                    other_total += 1
+                if vim_action["status"] == "FAILED":
+                    return "ERROR", vim_action["error_msg"]
+                elif vim_action["status"] in ("DONE", "SUPERSEDED"):
+                    if vim_action["item"] == "instance_vms":
+                        vm_done += 1
+                    elif vim_action["item"] == "instance_nets":
+                        net_done += 1
+                    else:
+                        other_done += 1
+
+        if net_total == net_done and vm_total == vm_done and other_total == other_done:
+            return "ACTIVE", "VMs {}, networks: {}, other: {} ".format(vm_total, net_total, other_total)
+        else:
+            return "BUILD", "VMs: {}/{}, networks: {}/{}, other: {}/{}".format(vm_done, vm_total, net_done, net_total,
+                                                                               other_done, other_total)
+
+    @staticmethod
     def get_ns_vnf_info(ns_descriptor):
         """
         Get a dict with the VIM_id, ip_addresses, mac_addresses of every vnf and vdu
         :param ns_descriptor: instance descriptor obtained with self.show("ns", )
-        :return: dict with {<member_vnf_index>: {ip_address: XXXX, vdur:{ip_address: XXX, vim_id: XXXX}}}
+        :return: dict with:
+            <member_vnf_index>:
+                ip_address: XXXX,
+                vdur:
+                    <vdu_osm_id>:
+                        ip_address: XXX
+                        vim_id: XXXX
+                        interfaces:
+                            <name>:
+                                ip_address: XXX
+                                mac_address: XXX
         """
         ns_info = {}
         for vnf in ns_descriptor["vnfs"]:
@@ -315,13 +363,18 @@ class ROClient:
             for vm in vnf["vms"]:
                 vdur = {
                     "vim_id": vm.get("vim_vm_id"),
-                    "ip_address": vm.get("ip_address")
+                    "ip_address": vm.get("ip_address"),
+                    "interfaces": {}
                 }
                 for iface in vm["interfaces"]:
                     if iface.get("type") == "mgmt" and not iface.get("ip_address"):
                         raise ROClientException("ns member_vnf_index '{}' vm '{}' management interface '{}' has no IP "
                                                 "address".format(vnf["member_vnf_index"], vm["vdu_osm_id"],
                                                                  iface["external_name"]), http_code=409)
+                    vdur["interfaces"][iface["internal_name"]] = {"ip_address": iface.get("ip_address"),
+                                                                  "mac_address": iface.get("mac_address"),
+                                                                  "vim_id": iface.get("vim_interface_id"),
+                                                                  }
                 vnfr_info["vdur"][vm["vdu_osm_id"]] = vdur
             ns_info[str(vnf["member_vnf_index"])] = vnfr_info
         return ns_info
@@ -372,7 +425,7 @@ class ROClient:
             raise ROClientException("No {} found with name '{}'".format(item[:-1], item_id_name), http_code=404)
         return uuid
 
-    async def _get_item(self, session, item, item_id_name, all_tenants=False):
+    async def _get_item(self, session, item, item_id_name, extra_item=None, extra_item_id=None, all_tenants=False):
         if all_tenants:
             tenant_text = "/any"
         elif all_tenants is None:
@@ -389,6 +442,10 @@ class ROClient:
             uuid = await self._get_item_uuid(session, item, item_id_name, all_tenants)
 
         url = "{}{}/{}/{}".format(self.endpoint_url, tenant_text, item, uuid)
+        if extra_item:
+            url += "/" + extra_item
+            if extra_item_id:
+                url += "/" + extra_item_id
         self.logger.debug("GET %s", url)
         with aiohttp.Timeout(self.timeout_short):
             async with session.get(url, headers=self.headers_req) as response:
@@ -444,7 +501,7 @@ class ROClient:
         if not action:
             action = ""
         else:
-            action = "/".format(action)
+            action = "/{}".format(action)
 
         url = "{}{apiver}{tenant}/{item}{id}{action}".format(self.endpoint_url, apiver=api_version_text,
                                                              tenant=tenant_text, item=item, id=uuid, action=action)
@@ -534,6 +591,34 @@ class ROClient:
                     raise ROClientException(response_text, http_code=response.status)
         return self._parse_yaml(response_text, response=True)
 
+    async def get_version(self):
+        """
+        Obtain RO server version.
+        :return: a list with integers ["major", "minor", "release"]. Raises ROClientException on Error,
+        """
+        try:
+            with aiohttp.ClientSession(loop=self.loop) as session:
+                url = "{}/version".format(self.endpoint_url)
+                self.logger.debug("RO GET %s", url)
+                with aiohttp.Timeout(self.timeout_short):
+                    async with session.get(url, headers=self.headers_req) as response:
+                        response_text = await response.read()
+                        self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
+                        if response.status >= 300:
+                            raise ROClientException(response_text, http_code=response.status)
+                for word in str(response_text).split(" "):
+                    if "." in word:
+                        version_text, _, _ = word.partition("-")
+                        return list(map(int, version_text.split(".")))
+                raise ROClientException("Got invalid version text: '{}'".format(response_text), http_code=500)
+        except aiohttp.errors.ClientOSError as e:
+            raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
+        except Exception as e:
+            raise ROClientException("Got invalid version text: '{}'; causing exception {}".format(response_text, e),
+                                    http_code=500)
+
     async def get_list(self, item, all_tenants=False, filter_by=None):
         """
         Obtain a list of items filtering by the specigy filter_by.
@@ -560,12 +645,17 @@ class ROClient:
                 return content
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
-    async def show(self, item, item_id_name=None, all_tenants=False):
+    async def show(self, item, item_id_name=None, extra_item=None, extra_item_id=None, all_tenants=False):
         """
         Obtain the information of an item from its id or name
         :param item: can be 'tenant', 'vim', 'vnfd', 'nsd', 'ns'
         :param item_id_name: RO id or name of the item. Raise and exception if more than one found
+        :param extra_item: if supplied, it is used to add to the URL.
+            Can be 'action' if  item='ns'; 'networks' or'images' if item='vim'
+        :param extra_item_id: if supplied, it is used get details of a concrete extra_item.
         :param all_tenants: True if not filtering by tenant. Only allowed for admin
         :return: dictionary with the information or raises ROClientException on Error, NotFound, found several
         """
@@ -580,10 +670,13 @@ class ROClient:
                 all_tenants = False
 
             with aiohttp.ClientSession(loop=self.loop) as session:
-                content = await self._get_item(session, self.client_to_RO[item], item_id_name, all_tenants=all_tenants)
+                content = await self._get_item(session, self.client_to_RO[item], item_id_name, extra_item=extra_item,
+                                               extra_item_id=extra_item_id, all_tenants=all_tenants)
                 return remove_envelop(item, content)
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
     async def delete(self, item, item_id_name=None, all_tenants=False):
         """
@@ -603,10 +696,13 @@ class ROClient:
                 return await self._del_item(session, self.client_to_RO[item], item_id_name, all_tenants=all_tenants)
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
     async def edit(self, item, item_id_name, descriptor=None, descriptor_format=None, **kwargs):
         """ Edit an item
         :param item: can be 'tenant', 'vim', 'vnfd', 'nsd', 'ns', 'vim'
+        :param item_id_name: RO id or name of the item. Raise and exception if more than one found
         :param descriptor: can be a dict, or a yaml/json text. Autodetect unless descriptor_format is provided
         :param descriptor_format: Can be 'json' or 'yaml'
         :param kwargs: Overrides descriptor with values as name, description, vim_url, vim_url_admin, vim_type
@@ -648,6 +744,8 @@ class ROClient:
                 return remove_envelop(item, outdata)
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
     async def create(self, item, descriptor=None, descriptor_format=None, **kwargs):
         """
@@ -691,66 +789,133 @@ class ROClient:
                 return remove_envelop(item, outdata)
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
+
+    async def create_action(self, item, item_id_name, descriptor=None, descriptor_format=None, **kwargs):
+        """
+        Performs an action over an item
+        :param item: can be 'tenant', 'vnfd', 'nsd', 'ns', 'vim', 'vim_account', 'sdn'
+        :param item_id_name: RO id or name of the item. Raise and exception if more than one found
+        :param descriptor: can be a dict, or a yaml/json text. Autodetect unless descriptor_format is provided
+        :param descriptor_format: Can be 'json' or 'yaml'
+        :param kwargs: Overrides descriptor with values as name, description, vim_url, vim_url_admin, vim_type
+               keys can be a dot separated list to specify elements inside dict
+        :return: dictionary with the information or raises ROClientException on Error
+        """
+        try:
+            if isinstance(descriptor, str):
+                descriptor = self._parse(descriptor, descriptor_format)
+            elif descriptor:
+                pass
+            else:
+                descriptor = {}
+
+            if item not in self.client_to_RO:
+                raise ROClientException("Invalid item {}".format(item))
+            desc = remove_envelop(item, descriptor)
+
+            # Override descriptor with kwargs
+            if kwargs:
+                desc = self.update_descriptor(desc, kwargs)
+
+            all_tenants = False
+            if item in ('tenant', 'vim'):
+                all_tenants = None
+
+            action = None
+            if item == "vims":
+                action = "sdn_mapping"
+            elif item in ("vim_account", "ns"):
+                action = "action"
+
+            # create_desc = self._create_envelop(item, desc)
+            create_desc = desc
+
+            with aiohttp.ClientSession(loop=self.loop) as session:
+                _all_tenants = all_tenants
+                if item == 'vim':
+                    _all_tenants = True
+                # item_id = await self._get_item_uuid(session, self.client_to_RO[item], item_id_name,
+                #                                     all_tenants=_all_tenants)
+                outdata = await self._create_item(session, self.client_to_RO[item], create_desc,
+                                                  item_id_name=item_id_name,  # item_id_name=item_id
+                                                  action=action, all_tenants=_all_tenants)
+                return remove_envelop(item, outdata)
+        except aiohttp.errors.ClientOSError as e:
+            raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
     async def attach_datacenter(self, datacenter=None, descriptor=None, descriptor_format=None, **kwargs):
 
-        if isinstance(descriptor, str):
-            descriptor = self._parse(descriptor, descriptor_format)
-        elif descriptor:
-            pass
-        else:
-            descriptor = {}
-        desc = remove_envelop("vim", descriptor)
+        try:
+            if isinstance(descriptor, str):
+                descriptor = self._parse(descriptor, descriptor_format)
+            elif descriptor:
+                pass
+            else:
+                descriptor = {}
+            desc = remove_envelop("vim", descriptor)
 
-        # # check that exist
-        # uuid = self._get_item_uuid(session, "datacenters", uuid_name, all_tenants=True)
-        # tenant_text = "/" + self._get_tenant()
-        if kwargs:
-            desc = self.update_descriptor(desc, kwargs)
+            # # check that exist
+            # uuid = self._get_item_uuid(session, "datacenters", uuid_name, all_tenants=True)
+            # tenant_text = "/" + self._get_tenant()
+            if kwargs:
+                desc = self.update_descriptor(desc, kwargs)
 
-        if not desc.get("vim_tenant_name") and not desc.get("vim_tenant_id"):
-            raise ROClientException("Wrong descriptor. At least vim_tenant_name or vim_tenant_id must be provided")
-        create_desc = self._create_envelop("vim", desc)
-        payload_req = yaml.safe_dump(create_desc)
-        with aiohttp.ClientSession(loop=self.loop) as session:
-            # check that exist
-            item_id = await self._get_item_uuid(session, "datacenters", datacenter, all_tenants=True)
-            await self._get_tenant(session)
+            if not desc.get("vim_tenant_name") and not desc.get("vim_tenant_id"):
+                raise ROClientException("Wrong descriptor. At least vim_tenant_name or vim_tenant_id must be provided")
+            create_desc = self._create_envelop("vim", desc)
+            payload_req = yaml.safe_dump(create_desc)
+            with aiohttp.ClientSession(loop=self.loop) as session:
+                # check that exist
+                item_id = await self._get_item_uuid(session, "datacenters", datacenter, all_tenants=True)
+                await self._get_tenant(session)
 
-            url = "{}/{tenant}/datacenters/{datacenter}".format(self.endpoint_url, tenant=self.tenant,
-                                                                datacenter=item_id)
-            self.logger.debug("RO POST %s %s", url, payload_req)
-            with aiohttp.Timeout(self.timeout_large):
-                async with session.post(url, headers=self.headers_req, data=payload_req) as response:
-                    response_text = await response.read()
-                    self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
-                    if response.status >= 300:
-                        raise ROClientException(response_text, http_code=response.status)
+                url = "{}/{tenant}/datacenters/{datacenter}".format(self.endpoint_url, tenant=self.tenant,
+                                                                    datacenter=item_id)
+                self.logger.debug("RO POST %s %s", url, payload_req)
+                with aiohttp.Timeout(self.timeout_large):
+                    async with session.post(url, headers=self.headers_req, data=payload_req) as response:
+                        response_text = await response.read()
+                        self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
+                        if response.status >= 300:
+                            raise ROClientException(response_text, http_code=response.status)
 
-            response_desc = self._parse_yaml(response_text, response=True)
-            desc = remove_envelop("vim", response_desc)
-            return desc
+                response_desc = self._parse_yaml(response_text, response=True)
+                desc = remove_envelop("vim", response_desc)
+                return desc
+        except aiohttp.errors.ClientOSError as e:
+            raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
     async def detach_datacenter(self, datacenter=None):
         # TODO replace the code with delete_item(vim_account,...)
-        with aiohttp.ClientSession(loop=self.loop) as session:
-            # check that exist
-            item_id = await self._get_item_uuid(session, "datacenters", datacenter, all_tenants=False)
-            tenant = await self._get_tenant(session)
+        try:
+            with aiohttp.ClientSession(loop=self.loop) as session:
+                # check that exist
+                item_id = await self._get_item_uuid(session, "datacenters", datacenter, all_tenants=False)
+                tenant = await self._get_tenant(session)
 
-            url = "{}/{tenant}/datacenters/{datacenter}".format(self.endpoint_url, tenant=tenant,
-                                                                datacenter=item_id)
-            self.logger.debug("RO DELETE %s", url)
-            with aiohttp.Timeout(self.timeout_large):
-                async with session.delete(url, headers=self.headers_req) as response:
-                    response_text = await response.read()
-                    self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
-                    if response.status >= 300:
-                        raise ROClientException(response_text, http_code=response.status)
+                url = "{}/{tenant}/datacenters/{datacenter}".format(self.endpoint_url, tenant=tenant,
+                                                                    datacenter=item_id)
+                self.logger.debug("RO DELETE %s", url)
+                with aiohttp.Timeout(self.timeout_large):
+                    async with session.delete(url, headers=self.headers_req) as response:
+                        response_text = await response.read()
+                        self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
+                        if response.status >= 300:
+                            raise ROClientException(response_text, http_code=response.status)
 
-            response_desc = self._parse_yaml(response_text, response=True)
-            desc = remove_envelop("vim", response_desc)
-            return desc
+                response_desc = self._parse_yaml(response_text, response=True)
+                desc = remove_envelop("vim", response_desc)
+                return desc
+        except aiohttp.errors.ClientOSError as e:
+            raise ROClientException(e, http_code=504)
+        except asyncio.TimeoutError:
+            raise ROClientException("Timeout", http_code=504)
 
     # TODO convert to asyncio
     # DATACENTERS
