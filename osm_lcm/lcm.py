@@ -283,8 +283,9 @@ class Lcm:
                         vim_account_RO[k] = vim_content[k]
                 if "vim_user" in vim_content:
                     vim_content["vim_username"] = vim_content["vim_user"]
-                if vim_account_RO:
-                    await RO.edit("vim_account", RO_vim_id, descriptor=vim_account_RO)
+                # vim_account must be edited always even if empty in order to ensure changes are translated to RO
+                # vim_thread. RO will remove and relaunch a new thread for this vim_account
+                await RO.edit("vim_account", RO_vim_id, descriptor=vim_account_RO)
                 db_vim["_admin"]["operationalState"] = "ENABLED"
                 self.update_db("vim_accounts", vim_id, db_vim)
 
