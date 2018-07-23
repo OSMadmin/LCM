@@ -3,13 +3,14 @@
 
 import asyncio
 import yaml
-import ROclient
 import logging
 import logging.handlers
 import getopt
 import functools
 import sys
 import traceback
+import ROclient
+# from osm_lcm import version as lcm_version, version_date as lcm_version_date, ROclient
 from osm_common import dbmemory
 from osm_common import dbmongo
 from osm_common import fslocal
@@ -189,7 +190,7 @@ class Lcm:
                 logger_module.addHandler(file_handler)
             if "loglevel" in config[k1]:
                 logger_module.setLevel(config[k1]["loglevel"])
-
+        # self.logger.critical("starting osm/lcm version {} {}".format(lcm_version, lcm_version_date))
         self.n2vc = N2VC(
             log=self.logger,
             server=config['VCA']['host'],
@@ -657,8 +658,7 @@ class Lcm:
             if ci_file:
                 ci_file.close()
 
-    def n2vc_callback(self, model_name, application_name, status, message, db_nsr, db_nslcmop, member_vnf_index,
-                      task=None):
+    def n2vc_callback(self, model_name, application_name, status, message, db_nsr, db_nslcmop, task=None):
         """
         Callback both for charm status change and task completion
         :param model_name: Charm model name
@@ -675,7 +675,6 @@ class Lcm:
         :param message: detailed message error
         :param db_nsr: nsr database content
         :param db_nslcmop: nslcmop database content
-        :param member_vnf_index: NSD member-vnf-index
         :param task: None for charm status change, or task for completion task callback
         :return:
         """
@@ -685,11 +684,15 @@ class Lcm:
         db_nslcmop_update = {}
         try:
             nsr_id = db_nsr["_id"]
-            nslcmop_id = db_nslcmop["_id"]
             nsr_lcm = db_nsr["_admin"]["deployed"]
+            nslcmop_id = db_nslcmop["_id"]
             ns_operation = db_nslcmop["lcmOperationType"]
-            logging_text = "Task ns={} {}={} [n2vc_callback] vnf_index={}".format(nsr_id, ns_operation, nslcmop_id,
-                                                                                  member_vnf_index)
+            logging_text = "Task ns={} {}={} [n2vc_callback] application={}".format(nsr_id, ns_operation, nslcmop_id,
+                                                                                    application_name)
+            vca_deployed = nsr_lcm["VCA"].get(application_name)
+            if not vca_deployed:
+                self.logger.error(logging_text + " Not present at nsr._admin.deployed.VCA")
+                return
 
             if task:
                 if task.cancelled():
@@ -702,12 +705,12 @@ class Lcm:
                     if exc:
                         self.logger.error(logging_text + " task Exception={}".format(exc))
                         if ns_operation in ("instantiate", "terminate"):
-                            nsr_lcm["VCA"][member_vnf_index]['operational-status'] = "error"
-                            db_nsr_update["_admin.deployed.VCA.{}.operational-status".format(member_vnf_index)] = \
+                            vca_deployed['operational-status'] = "error"
+                            db_nsr_update["_admin.deployed.VCA.{}.operational-status".format(application_name)] = \
                                 "error"
-                            nsr_lcm["VCA"][member_vnf_index]['detailed-status'] = str(exc)
+                            vca_deployed['detailed-status'] = str(exc)
                             db_nsr_update[
-                                "_admin.deployed.VCA.{}.detailed-status".format(member_vnf_index)] = str(exc)
+                                "_admin.deployed.VCA.{}.detailed-status".format(application_name)] = str(exc)
                         elif ns_operation == "action":
                             db_nslcmop_update["operationState"] = "FAILED"
                             db_nslcmop_update["detailed-status"] = str(exc)
@@ -725,12 +728,12 @@ class Lcm:
                         return
             elif status:
                 self.logger.debug(logging_text + " Enter status={}".format(status))
-                if nsr_lcm["VCA"][member_vnf_index]['operational-status'] == status:
+                if vca_deployed['operational-status'] == status:
                     return  # same status, ignore
-                nsr_lcm["VCA"][member_vnf_index]['operational-status'] = status
-                db_nsr_update["_admin.deployed.VCA.{}.operational-status".format(member_vnf_index)] = status
-                nsr_lcm["VCA"][member_vnf_index]['detailed-status'] = str(message)
-                db_nsr_update["_admin.deployed.VCA.{}.detailed-status".format(member_vnf_index)] = str(message)
+                vca_deployed['operational-status'] = status
+                db_nsr_update["_admin.deployed.VCA.{}.operational-status".format(application_name)] = status
+                vca_deployed['detailed-status'] = str(message)
+                db_nsr_update["_admin.deployed.VCA.{}.detailed-status".format(application_name)] = str(message)
             else:
                 self.logger.critical(logging_text + " Enter with bad parameters", exc_info=True)
                 return
@@ -738,7 +741,7 @@ class Lcm:
             all_active = True
             status_map = {}
             n2vc_error_text = []   # contain text error list. If empty no one is in error status
-            for vnf_index, vca_info in nsr_lcm["VCA"].items():
+            for _, vca_info in nsr_lcm["VCA"].items():
                 vca_status = vca_info["operational-status"]
                 if vca_status not in status_map:
                     # Initialize it
@@ -748,12 +751,12 @@ class Lcm:
                 if vca_status != "active":
                     all_active = False
                 if vca_status in ("error", "blocked"):
-                    n2vc_error_text.append("member_vnf_index={} {}: {}".format(member_vnf_index, vca_status,
-                                                                               vca_info["detailed-status"]))
+                    n2vc_error_text.append("member_vnf_index={} vdu_id={} {}: {}".format(vca_info["member-vnf-index"],
+                                                                                         vca_info["vdu_id"], vca_status,
+                                                                                         vca_info["detailed-status"]))
 
             if all_active:
-                self.logger.debug("[n2vc_callback] ns_instantiate={} vnf_index={} All active".format(nsr_id,
-                                                                                                     member_vnf_index))
+                self.logger.debug(logging_text + " All active")
                 db_nsr_update["config-status"] = "configured"
                 db_nsr_update["detailed-status"] = "done"
                 db_nslcmop_update["operationState"] = "COMPLETED"
@@ -777,7 +780,7 @@ class Lcm:
                 db_nslcmop_update["detailed-status"] = cs
 
         except Exception as e:
-            self.logger.critical("[n2vc_callback] vnf_index={} Exception {}".format(member_vnf_index, e), exc_info=True)
+            self.logger.critical(logging_text + " Exception {}".format(e), exc_info=True)
         finally:
             try:
                 if db_nslcmop_update:
@@ -785,8 +788,7 @@ class Lcm:
                 if db_nsr_update:
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
             except Exception as e:
-                self.logger.critical("[n2vc_callback] vnf_index={} Update database Exception {}".format(
-                    member_vnf_index, e), exc_info=True)
+                self.logger.critical(logging_text + " Update database Exception {}".format(e), exc_info=True)
 
     def ns_params_2_RO(self, ns_params, nsd, vnfd_dict):
         """
@@ -925,42 +927,7 @@ class Lcm:
                     RO_ns_params["networks"][vld_params["name"]] = RO_vld
         return RO_ns_params
 
-    def ns_update_vnfr(self, db_vnfrs, ns_RO_info):
-        """
-        Updates database vnfr with the RO info, e.g. ip_address, vim_id... Descriptor db_vnfrs is also updated
-        :param db_vnfrs:
-        :param ns_RO_info:
-        :return:
-        """
-        for vnf_index, db_vnfr in db_vnfrs.items():
-            vnfr_deployed = ns_RO_info.get(vnf_index)
-            if not vnfr_deployed:
-                continue
-            vnfr_update = {}
-            db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnfr_deployed.get("ip_address")
-            for index, vdur in enumerate(db_vnfr["vdur"]):
-                vdu_deployed = vnfr_deployed["vdur"].get(vdur["vdu-id-ref"])
-                if not vdu_deployed:
-                    continue
-                vnfr_update["vdur.{}.vim-id".format(index)] = vdu_deployed.get("vim_id")
-                db_vnfr["vdur"][index]["vim-id"] = vnfr_update["vdur.{}.vim-id".format(index)]
-                vnfr_update["vdur.{}.ip-address".format(index)] = vdu_deployed.get("ip_address")
-                db_vnfr["vdur"][index]["ip-address"] = vnfr_update["vdur.{}.ip-address".format(index)]
-                for index2, interface in enumerate(vdur["interfaces"]):
-                    iface_deployed = vdu_deployed["interfaces"].get(interface["name"])
-                    if not iface_deployed:
-                        continue
-                    db_vnfr["vdur"][index]["interfaces"][index2]["vim-id"] =\
-                        vnfr_update["vdur.{}.interfaces.{}.vim-id".format(index, index2)] = iface_deployed.get("vim_id")
-                    db_vnfr["vdur"][index]["interfaces"][index2]["ip-address"] =\
-                        vnfr_update["vdur.{}.interfaces.{}.ip-address".format(index, index2)] = iface_deployed.get(
-                        "ip_address")
-                    db_vnfr["vdur"][index]["interfaces"][index2]["mac-address"] =\
-                        vnfr_update["vdur.{}.interfaces.{}.mac-address".format(index, index2)] = iface_deployed.get(
-                        "mac_address")
-            self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
-
-    def ns_update_vnfr_2(self, db_vnfrs, nsr_desc_RO):
+    def ns_update_vnfr(self, db_vnfrs, nsr_desc_RO):
         """
         Updates database vnfr with the RO info, e.g. ip_address, vim_id... Descriptor db_vnfrs is also updated
         :param db_vnfrs:
@@ -996,7 +963,7 @@ class Lcm:
                     break
 
             else:
-                raise LcmException("ns_update_vnfr_2: Not found member_vnf_index={} at RO info".format(vnf_index))
+                raise LcmException("ns_update_vnfr: Not found member_vnf_index={} at RO info".format(vnf_index))
 
     async def create_monitoring(self, nsr_id, vnf_member_index, vnfd_desc):
         if not vnfd_desc.get("scaling-group-descriptor"):
@@ -1233,8 +1200,7 @@ class Lcm:
                 raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
             step = "Updating VNFRs"
-            # self.ns_update_vnfr(db_vnfrs, ns_RO_info)
-            self.ns_update_vnfr_2(db_vnfrs, desc)
+            self.ns_update_vnfr(db_vnfrs, desc)
 
             db_nsr["detailed-status"] = "Configuring vnfr"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
@@ -1242,10 +1208,12 @@ class Lcm:
             # The parameters we'll need to deploy a charm
             number_to_configure = 0
 
-            def deploy():
+            def deploy(vnf_index, vdu_id, mgmt_ip_address, config_primitive=None):
                 """An inner function to deploy the charm from either vnf or vdu
+                vnf_index is mandatory. vdu_id can be None for a vnf configuration or the id for vdu configuration
                 """
-
+                if not mgmt_ip_address:
+                    raise LcmException("vnfd/vdu has not management ip address to configure it")
                 # Login to the VCA.
                 # if number_to_configure == 0:
                 #     self.logger.debug("Logging into N2VC...")
@@ -1267,19 +1235,26 @@ class Lcm:
                 )
 
                 # Setup the runtime parameters for this VNF
-                params['rw_mgmt_ip'] = db_vnfrs[vnf_index]["ip-address"]
+                params = {'rw_mgmt_ip': mgmt_ip_address}
+                if config_primitive:
+                    params["initial-config-primitive"] = config_primitive
 
                 # ns_name will be ignored in the current version of N2VC
                 # but will be implemented for the next point release.
                 model_name = 'default'
+                vdu_id_text = "vnfd"
+                if vdu_id:
+                    vdu_id_text = vdu_id
                 application_name = self.n2vc.FormatApplicationName(
                     nsr_name,
                     vnf_index,
-                    vnfd['name'],
+                    vdu_id_text
                 )
                 if not nsr_lcm.get("VCA"):
                     nsr_lcm["VCA"] = {}
-                nsr_lcm["VCA"][vnf_index] = db_nsr_update["_admin.deployed.VCA.{}".format(vnf_index)] = {
+                nsr_lcm["VCA"][application_name] = db_nsr_update["_admin.deployed.VCA.{}".format(application_name)] = {
+                    "member-vnf-index": vnf_index,
+                    "vdu_id": vdu_id,
                     "model": model_name,
                     "application": application_name,
                     "operational-status": "init",
@@ -1301,13 +1276,12 @@ class Lcm:
                         self.n2vc_callback,  # Callback for status changes
                         db_nsr,              # Callback parameter
                         db_nslcmop,
-                        vnf_index,           # Callback parameter
                         None,                # Callback parameter (task)
                     )
                 )
                 task.add_done_callback(functools.partial(self.n2vc_callback, model_name, application_name, None, None,
-                                                         db_nsr, db_nslcmop, vnf_index))
-                self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "create_charm:" + vnf_index, task)
+                                                         db_nsr, db_nslcmop))
+                self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "create_charm:" + application_name, task)
 
             step = "Looking for needed vnfd to configure"
             self.logger.debug(logging_text + step)
@@ -1322,36 +1296,39 @@ class Lcm:
 
                 if vnf_config and vnf_config.get("juju"):
                     proxy_charm = vnf_config["juju"]["charm"]
-                    params = {}
+                    config_primitive = None
 
                     if proxy_charm:
                         if 'initial-config-primitive' in vnf_config:
-                            params['initial-config-primitive'] = vnf_config['initial-config-primitive']
+                            config_primitive = vnf_config['initial-config-primitive']
 
                         # Login to the VCA. If there are multiple calls to login(),
                         # subsequent calls will be a nop and return immediately.
                         step = "connecting to N2VC to configure vnf {}".format(vnf_index)
                         await self.n2vc.login()
-                        deploy()
+                        deploy(vnf_index, None, db_vnfrs[vnf_index]["ip-address"], config_primitive)
                         number_to_configure += 1
 
                 # Deploy charms for each VDU that supports one.
+                vdu_index = 0
                 for vdu in vnfd['vdu']:
                     vdu_config = vdu.get('vdu-configuration')
                     proxy_charm = None
-                    params = {}
+                    config_primitive = None
 
                     if vdu_config and vdu_config.get("juju"):
                         proxy_charm = vdu_config["juju"]["charm"]
 
                         if 'initial-config-primitive' in vdu_config:
-                            params['initial-config-primitive'] = vdu_config['initial-config-primitive']
+                            config_primitive = vdu_config['initial-config-primitive']
 
                         if proxy_charm:
                             step = "connecting to N2VC to configure vdu {} from vnf {}".format(vdu["id"], vnf_index)
                             await self.n2vc.login()
-                            deploy()
+                            deploy(vnf_index, vdu["id"], db_vnfrs[vnf_index]["vdur"][vdu_index]["ip-address"],
+                                   config_primitive)
                             number_to_configure += 1
+                    vdu_index += 1
 
             if number_to_configure:
                 db_nsr_update["config-status"] = "configuring"
@@ -1435,24 +1412,23 @@ class Lcm:
                     db_nsr_update["detailed-status"] = "Deleting charms"
                     self.logger.debug(logging_text + step)
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
-                    for vnf_index, deploy_info in nsr_lcm["VCA"].items():
-                        if deploy_info and deploy_info.get("application"):
+                    for application_name, deploy_info in nsr_lcm["VCA"].items():
+                        if deploy_info:  # TODO it would be desirable having a and deploy_info.get("deployed"):
                             task = asyncio.ensure_future(
                                 self.n2vc.RemoveCharms(
                                     deploy_info['model'],
-                                    deploy_info['application'],
+                                    application_name,
                                     # self.n2vc_callback,
                                     # db_nsr,
                                     # db_nslcmop,
-                                    # vnf_index,
                                 )
                             )
                             vca_task_list.append(task)
-                            vca_task_dict[vnf_index] = task
+                            vca_task_dict[application_name] = task
                             # task.add_done_callback(functools.partial(self.n2vc_callback, deploy_info['model'],
                             #                                          deploy_info['application'], None, db_nsr,
                             #                                          db_nslcmop, vnf_index))
-                            self.lcm_ns_tasks[nsr_id][nslcmop_id]["delete_charm:" + vnf_index] = task
+                            self.lcm_ns_tasks[nsr_id][nslcmop_id]["delete_charm:" + application_name] = task
                 except Exception as e:
                     self.logger.debug(logging_text + "Failed while deleting charms: {}".format(e))
 
@@ -1531,19 +1507,19 @@ class Lcm:
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
                 await asyncio.wait(vca_task_list, timeout=300)
-            for vnf_index, task in vca_task_dict.items():
+            for application_name, task in vca_task_dict.items():
                 if task.cancelled():
-                    failed_detail.append("VCA[{}] Deletion has been cancelled".format(vnf_index))
+                    failed_detail.append("VCA[{}] Deletion has been cancelled".format(application_name))
                 elif task.done():
                     exc = task.exception()
                     if exc:
-                        failed_detail.append("VCA[{}] Deletion exception: {}".format(vnf_index, exc))
+                        failed_detail.append("VCA[{}] Deletion exception: {}".format(application_name, exc))
                     else:
-                        db_nsr_update["_admin.deployed.VCA.{}".format(vnf_index)] = None
+                        db_nsr_update["_admin.deployed.VCA.{}".format(application_name)] = None
                 else:  # timeout
                     # TODO Should it be cancelled?!!
                     task.cancel()
-                    failed_detail.append("VCA[{}] Deletion timeout".format(vnf_index))
+                    failed_detail.append("VCA[{}] Deletion timeout".format(application_name))
 
             if failed_detail:
                 self.logger.error(logging_text + " ;".join(failed_detail))
@@ -1594,10 +1570,20 @@ class Lcm:
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_terminate")
 
-    async def _ns_execute_primitive(self, db_deployed, member_vnf_index, primitive, primitive_params):
-        vca_deployed = db_deployed["VCA"].get(member_vnf_index)
+    async def _ns_execute_primitive(self, db_deployed, nsr_name, member_vnf_index, vdu_id, primitive, primitive_params):
+
+        vdu_id_text = "vnfd"
+        if vdu_id:
+            vdu_id_text = vdu_id
+        application_name = self.n2vc.FormatApplicationName(
+            nsr_name,
+            member_vnf_index,
+            vdu_id_text
+        )
+        vca_deployed = db_deployed["VCA"].get(application_name)
         if not vca_deployed:
-            raise LcmException("charm for member_vnf_index={} is not deployed".format(member_vnf_index))
+            raise LcmException("charm for member_vnf_index={} vdu_id={} is not deployed".format(member_vnf_index,
+                                                                                                vdu_id))
         model_name = vca_deployed.get("model")
         application_name = vca_deployed.get("application")
         if not model_name or not application_name:
@@ -1654,12 +1640,15 @@ class Lcm:
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
             nsr_lcm = db_nsr["_admin"].get("deployed")
+            nsr_name = db_nsr["name"]
             vnf_index = db_nslcmop["operationParams"]["member_vnf_index"]
+            vdu_id = db_nslcmop["operationParams"].get("vdu_id")
 
             # TODO check if ns is in a proper status
             primitive = db_nslcmop["operationParams"]["primitive"]
             primitive_params = db_nslcmop["operationParams"]["primitive_params"]
-            result, result_detail = await self._ns_execute_primitive(nsr_lcm, vnf_index, primitive, primitive_params)
+            result, result_detail = await self._ns_execute_primitive(nsr_lcm, nsr_name, vnf_index, vdu_id, primitive,
+                                                                     primitive_params)
             db_nslcmop_update = {
                 "detailed-status": result_detail,
                 "operationState": result,
@@ -1880,8 +1869,7 @@ class Lcm:
                     raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
                 step = "Updating VNFRs"
-                # self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, ns_RO_info)
-                self.ns_update_vnfr_2({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
+                self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
 
                 # update VDU_SCALING_INFO with the obtained ip_addresses
                 if vdu_scaling_info["scaling_direction"] == "OUT":
