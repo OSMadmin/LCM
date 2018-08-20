@@ -31,6 +31,9 @@ from time import time
 
 __author__ = "Alfonso Tierno"
 min_RO_version = [0, 5, 72]
+# uncomment if LCM is installed as library and installed, and get them from __init__.py
+lcm_version = '0.1.12'
+lcm_version_date = '2018-08-23'
 
 
 class LcmException(Exception):
@@ -166,12 +169,12 @@ class Lcm:
         config["database"]["logger_name"] = "lcm.db"
         config["storage"]["logger_name"] = "lcm.fs"
         config["message"]["logger_name"] = "lcm.msg"
-        if "logfile" in config["global"]:
+        if config["global"].get("logfile"):
             file_handler = logging.handlers.RotatingFileHandler(config["global"]["logfile"],
                                                                 maxBytes=100e6, backupCount=9, delay=0)
             file_handler.setFormatter(log_formatter_simple)
             self.logger.addHandler(file_handler)
-        else:
+        if not config["global"].get("nologging"):
             str_handler = logging.StreamHandler()
             str_handler.setFormatter(log_formatter_simple)
             self.logger.addHandler(str_handler)
@@ -183,14 +186,14 @@ class Lcm:
         for k1, logname in {"message": "lcm.msg", "database": "lcm.db", "storage": "lcm.fs"}.items():
             config[k1]["logger_name"] = logname
             logger_module = logging.getLogger(logname)
-            if "logfile" in config[k1]:
+            if config[k1].get("logfile"):
                 file_handler = logging.handlers.RotatingFileHandler(config[k1]["logfile"],
                                                                     maxBytes=100e6, backupCount=9, delay=0)
                 file_handler.setFormatter(log_formatter_simple)
                 logger_module.addHandler(file_handler)
-            if "loglevel" in config[k1]:
+            if config[k1].get("loglevel"):
                 logger_module.setLevel(config[k1]["loglevel"])
-        # self.logger.critical("starting osm/lcm version {} {}".format(lcm_version, lcm_version_date))
+        self.logger.critical("starting osm/lcm version {} {}".format(lcm_version, lcm_version_date))
         self.n2vc = N2VC(
             log=self.logger,
             server=config['VCA']['host'],

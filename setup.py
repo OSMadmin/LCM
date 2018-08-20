@@ -33,7 +33,7 @@ setup(
         "git+https://osm.etsi.org/gerrit/osm/common.git@master#egg=osm-common-0.1.4"
     ],
     install_requires=[
-        'pymongo', 'PyYAML',
+        'pymongo', 'PyYAML', 'aiohttp'
         # 'osm-common',
     ],
     setup_requires=['setuptools-version-command'],
