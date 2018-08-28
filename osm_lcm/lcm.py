@@ -817,7 +817,12 @@ class Lcm:
         def ip_profile_2_RO(ip_profile):
             RO_ip_profile = deepcopy((ip_profile))
             if "dns-server" in RO_ip_profile:
-                RO_ip_profile["dns-address"] = RO_ip_profile.pop("dns-server")
+                if isinstance(RO_ip_profile["dns-server"], list):
+                    RO_ip_profile["dns-address"] = []
+                    for ds in RO_ip_profile.pop("dns-server"):
+                        RO_ip_profile["dns-address"].append(ds['address'])
+                else:
+                    RO_ip_profile["dns-address"] = RO_ip_profile.pop("dns-server")
             if RO_ip_profile.get("ip-version") == "ipv4":
                 RO_ip_profile["ip-version"] = "IPv4"
             if RO_ip_profile.get("ip-version") == "ipv6":
