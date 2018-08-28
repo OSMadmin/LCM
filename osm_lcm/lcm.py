@@ -32,8 +32,8 @@ from time import time
 __author__ = "Alfonso Tierno"
 min_RO_version = [0, 5, 72]
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.12'
-lcm_version_date = '2018-08-23'
+lcm_version = '0.1.13'
+lcm_version_date = '2018-08-28'
 
 
 class LcmException(Exception):
@@ -127,9 +127,10 @@ class TaskRegistry:
             for task_name, task in self.task_registry[topic][_id][op_id].items():
                 if target_task_name and target_task_name != task_name:
                     continue
-                result = task.cancel()
-                if result:
-                    self.logger.debug("{} _id={} order_id={} task={} cancelled".format(topic, _id, op_id, task_name))
+                # result =
+                task.cancel()
+                # if result:
+                #     self.logger.debug("{} _id={} order_id={} task={} cancelled".format(topic, _id, op_id, task_name))
 
 
 class Lcm:
@@ -1438,28 +1439,61 @@ class Lcm:
             # remove from RO
             RO_fail = False
             RO = ROclient.ROClient(self.loop, **self.ro_config)
+
             # Delete ns
-            if nsr_lcm and nsr_lcm.get("RO") and nsr_lcm["RO"].get("nsr_id"):
-                RO_nsr_id = nsr_lcm["RO"]["nsr_id"]
-                try:
+            RO_nsr_id = RO_delete_action = None
+            if nsr_lcm and nsr_lcm.get("RO"):
+                RO_nsr_id = nsr_lcm["RO"].get("nsr_id")
+                RO_delete_action = nsr_lcm["RO"].get("nsr_delete_action_id")
+            try:
+                if RO_nsr_id:
                     step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] = "Deleting ns at RO"
                     self.logger.debug(logging_text + step)
-                    await RO.delete("ns", RO_nsr_id)
+                    desc = await RO.delete("ns", RO_nsr_id)
+                    RO_delete_action = desc["action_id"]
+                    db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = RO_delete_action
                     db_nsr_update["_admin.deployed.RO.nsr_id"] = None
                     db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
-                except ROclient.ROClientException as e:
-                    if e.http_code == 404:  # not found
-                        db_nsr_update["_admin.deployed.RO.nsr_id"] = None
-                        db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
-                        self.logger.debug(logging_text + "RO_ns_id={} already deleted".format(RO_nsr_id))
-                    elif e.http_code == 409:   # conflict
-                        failed_detail.append("RO_ns_id={} delete conflict: {}".format(RO_nsr_id, e))
-                        self.logger.debug(logging_text + failed_detail[-1])
-                        RO_fail = True
-                    else:
-                        failed_detail.append("RO_ns_id={} delete error: {}".format(RO_nsr_id, e))
-                        self.logger.error(logging_text + failed_detail[-1])
-                        RO_fail = True
+                if RO_delete_action:
+                    # wait until NS is deleted from VIM
+                    step = detailed_status = "Waiting ns deleted from VIM. RO_id={}".format(RO_nsr_id)
+                    detailed_status_old = None
+                    self.logger.debug(logging_text + step)
+
+                    delete_timeout = 20 * 60   # 20 minutes
+                    while delete_timeout > 0:
+                        desc = await RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
+                                             extra_item_id=RO_delete_action)
+                        ns_status, ns_status_info = RO.check_action_status(desc)
+                        if ns_status == "ERROR":
+                            raise ROclient.ROClientException(ns_status_info)
+                        elif ns_status == "BUILD":
+                            detailed_status = step + "; {}".format(ns_status_info)
+                        elif ns_status == "ACTIVE":
+                            break
+                        else:
+                            assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
+                        await asyncio.sleep(5, loop=self.loop)
+                        delete_timeout -= 5
+                        if detailed_status != detailed_status_old:
+                            detailed_status_old = db_nslcmop_update["detailed-status"] = detailed_status
+                            self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                    else:  # delete_timeout <= 0:
+                        raise ROclient.ROClientException("Timeout waiting ns deleted from VIM")
+
+            except ROclient.ROClientException as e:
+                if e.http_code == 404:  # not found
+                    db_nsr_update["_admin.deployed.RO.nsr_id"] = None
+                    db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
+                    self.logger.debug(logging_text + "RO_ns_id={} already deleted".format(RO_nsr_id))
+                elif e.http_code == 409:   # conflict
+                    failed_detail.append("RO_ns_id={} delete conflict: {}".format(RO_nsr_id, e))
+                    self.logger.debug(logging_text + failed_detail[-1])
+                    RO_fail = True
+                else:
+                    failed_detail.append("RO_ns_id={} delete error: {}".format(RO_nsr_id, e))
+                    self.logger.error(logging_text + failed_detail[-1])
+                    RO_fail = True
 
             # Delete nsd
             if not RO_fail and nsr_lcm and nsr_lcm.get("RO") and nsr_lcm["RO"].get("nsd_id"):

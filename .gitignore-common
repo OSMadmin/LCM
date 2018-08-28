@@ -32,4 +32,5 @@ osm_nbi/test/temp
 build
 dist
 *.egg-info
+.eggs
 

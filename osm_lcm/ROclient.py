@@ -693,7 +693,14 @@ class ROClient:
                 all_tenants = None
 
             with aiohttp.ClientSession(loop=self.loop) as session:
-                return await self._del_item(session, self.client_to_RO[item], item_id_name, all_tenants=all_tenants)
+                result = await self._del_item(session, self.client_to_RO[item], item_id_name, all_tenants=all_tenants)
+                # in case of ns delete, get the action_id embeded in text
+                if item == "ns" and result.get("result"):
+                    _, _, action_id = result["result"].partition("action_id=")
+                    action_id, _, _ = action_id.partition(" ")
+                    if action_id:
+                        result["action_id"] = action_id
+                return result
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
