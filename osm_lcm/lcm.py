@@ -11,12 +11,9 @@ import sys
 import traceback
 import ROclient
 # from osm_lcm import version as lcm_version, version_date as lcm_version_date, ROclient
-from osm_common import dbmemory
-from osm_common import dbmongo
-from osm_common import fslocal
-from osm_common import msglocal
-from osm_common import msgkafka
-from osm_common.dbbase import DbException
+from osm_common import dbmemory, dbmongo, fslocal, msglocal, msgkafka
+from osm_common import version as common_version
+from osm_common.dbbase import DbException, deep_update
 from osm_common.fsbase import FsException
 from osm_common.msgbase import MsgException
 from os import environ, path
@@ -32,8 +29,8 @@ from time import time
 __author__ = "Alfonso Tierno"
 min_RO_version = [0, 5, 72]
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.13'
-lcm_version_date = '2018-08-28'
+lcm_version = '0.1.14'
+lcm_version_date = '2018-09-11'
 
 
 class LcmException(Exception):
@@ -212,6 +209,9 @@ class Lcm:
         # or with list(map(int, version.split(".")))
         if N2VC_version < "0.0.2":
             raise LcmException("Not compatible osm/N2VC version '{}'. Needed '0.0.2' or higher".format(N2VC_version))
+        if common_version < "0.1.7":
+            raise LcmException("Not compatible osm/common version '{}'. Needed '0.1.7' or higher".format(
+                common_version))
 
         try:
             # TODO check database version
@@ -892,15 +892,15 @@ class Lcm:
                                 for vdu_descriptor in vnf_descriptor["vdu"]:
                                     for vdu_interface in vdu_descriptor["interface"]:
                                         if vdu_interface.get("internal-connection-point-ref") == icp_params["id-ref"]:
-                                            if vdu_descriptor["id"] not in RO_vnf["vdus"]:
-                                                RO_vnf["vdus"][vdu_descriptor["id"]] = {}
-                                            if "interfaces" not in RO_vnf["vdus"][vdu_descriptor["id"]]:
-                                                RO_vnf["vdus"][vdu_descriptor["id"]]["interfaces"] = {}
-                                            RO_ifaces = RO_vnf["vdus"][vdu_descriptor["id"]]["interfaces"]
-                                            if vdu_interface["name"] not in RO_ifaces:
-                                                RO_ifaces[vdu_interface["name"]] = {}
-
-                                            RO_ifaces[vdu_interface["name"]]["ip_address"] = icp_params["ip-address"]
+                                            RO_interface_update = {}
+                                            if icp_params.get("ip-address"):
+                                                RO_interface_update["ip_address"] = icp_params["ip-address"]
+                                            if icp_params.get("mac-address"):
+                                                RO_interface_update["mac_address"] = icp_params["mac-address"]
+                                            if RO_interface_update:
+                                                RO_vnf_update = {"vdus": {vdu_descriptor["id"]: {
+                                                    "interfaces": {vdu_interface["name"]: RO_interface_update}}}}
+                                                deep_update(RO_vnf, RO_vnf_update)
                                             iface_found = True
                                             break
                                     if iface_found:
@@ -932,6 +932,51 @@ class Lcm:
                             })
                     else:  # isinstance str
                         RO_vld["sites"].append({"netmap-use": vld_params["vim-network-name"]})
+                if "vnfd-connection-point-ref" in vld_params:
+                    for cp_params in vld_params["vnfd-connection-point-ref"]:
+                        # look for interface
+                        for constituent_vnfd in nsd["constituent-vnfd"]:
+                            if constituent_vnfd["member-vnf-index"] == cp_params["member-vnf-index-ref"]:
+                                vnf_descriptor = vnfd_dict[constituent_vnfd["vnfd-id-ref"]]
+                                break
+                        else:
+                            raise LcmException(
+                                "Invalid instantiate parameter vld:vnfd-connection-point-ref:member-vnf-index-ref={} "
+                                "is not present at nsd:constituent-vnfd".format(cp_params["member-vnf-index-ref"]))
+                        match_cp = False
+                        for vdu_descriptor in vnf_descriptor["vdu"]:
+                            for interface_descriptor in vdu_descriptor["interface"]:
+                                if interface_descriptor.get("external-connection-point-ref") == \
+                                        cp_params["vnfd-connection-point-ref"]:
+                                    match_cp = True
+                                    break
+                            if match_cp:
+                                break
+                        else:
+                            raise LcmException(
+                                "Invalid instantiate parameter vld:vnfd-connection-point-ref:member-vnf-index-ref={}:"
+                                "vnfd-connection-point-ref={} is not present at vnfd={}".format(
+                                    cp_params["member-vnf-index-ref"],
+                                    cp_params["vnfd-connection-point-ref"],
+                                    vnf_descriptor["id"]))
+                        RO_cp_params = {}
+                        if cp_params.get("ip-address"):
+                            RO_cp_params["ip_address"] = cp_params["ip-address"]
+                        if cp_params.get("mac-address"):
+                            RO_cp_params["mac_address"] = cp_params["mac-address"]
+                        if RO_cp_params:
+                            RO_vnf_params = {
+                                cp_params["member-vnf-index-ref"]: {
+                                    "vdus": {
+                                        vdu_descriptor["id"]: {
+                                            "interfaces": {
+                                                interface_descriptor["name"]: RO_cp_params
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            deep_update(RO_ns_params["vnfs"], RO_vnf_params)
                 if RO_vld:
                     RO_ns_params["networks"][vld_params["name"]] = RO_vld
         return RO_ns_params

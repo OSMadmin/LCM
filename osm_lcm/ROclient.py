@@ -206,7 +206,7 @@ class ROClient:
         try:
             UUID(uuid_text)
             return True
-        except (ValueError, TypeError):
+        except Exception:
             return False
 
     @staticmethod
