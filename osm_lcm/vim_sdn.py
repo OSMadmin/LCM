@@ -1,0 +1,394 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+import asyncio
+import logging
+import logging.handlers
+import ROclient
+from lcm_utils import LcmException, LcmBase
+from osm_common.dbbase import DbException
+from copy import deepcopy
+
+__author__ = "Alfonso Tierno"
+
+
+class VimLcm(LcmBase):
+
+    def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
+        """
+        Init, Connect to database, filesystem storage, and messaging
+        :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
+        :return: None
+        """
+
+        self.logger = logging.getLogger('lcm.vim')
+        self.loop = loop
+        self.lcm_tasks = lcm_tasks
+        self.ro_config = ro_config
+
+        super().__init__(db, msg, fs, self.logger)
+
+    async def create(self, vim_content, order_id):
+        vim_id = vim_content["_id"]
+        logging_text = "Task vim_create={} ".format(vim_id)
+        self.logger.debug(logging_text + "Enter")
+        db_vim = None
+        db_vim_update = {}
+        exc = None
+        RO_sdn_id = None
+        try:
+            step = "Getting vim-id='{}' from db".format(vim_id)
+            db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
+            db_vim_update["_admin.deployed.RO"] = None
+            if vim_content.get("config") and vim_content["config"].get("sdn-controller"):
+                step = "Getting sdn-controller-id='{}' from db".format(vim_content["config"]["sdn-controller"])
+                db_sdn = self.db.get_one("sdns", {"_id": vim_content["config"]["sdn-controller"]})
+                if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
+                    RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
+                else:
+                    raise LcmException("sdn-controller={} is not available. Not deployed at RO".format(
+                        vim_content["config"]["sdn-controller"]))
+
+            step = "Creating vim at RO"
+            db_vim_update["_admin.detailed-status"] = step
+            self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            RO = ROclient.ROClient(self.loop, **self.ro_config)
+            vim_RO = deepcopy(vim_content)
+            vim_RO.pop("_id", None)
+            vim_RO.pop("_admin", None)
+            vim_RO.pop("schema_version", None)
+            vim_RO.pop("schema_type", None)
+            vim_RO.pop("vim_tenant_name", None)
+            vim_RO["type"] = vim_RO.pop("vim_type")
+            vim_RO.pop("vim_user", None)
+            vim_RO.pop("vim_password", None)
+            if RO_sdn_id:
+                vim_RO["config"]["sdn-controller"] = RO_sdn_id
+            desc = await RO.create("vim", descriptor=vim_RO)
+            RO_vim_id = desc["uuid"]
+            db_vim_update["_admin.deployed.RO"] = RO_vim_id
+
+            step = "Creating vim_account at RO"
+            db_vim_update["_admin.detailed-status"] = step
+            self.update_db_2("vim_accounts", vim_id, db_vim_update)
+
+            vim_account_RO = {"vim_tenant_name": vim_content["vim_tenant_name"],
+                              "vim_username": vim_content["vim_user"],
+                              "vim_password": vim_content["vim_password"]
+                              }
+            if vim_RO.get("config"):
+                vim_account_RO["config"] = vim_RO["config"]
+                if "sdn-controller" in vim_account_RO["config"]:
+                    del vim_account_RO["config"]["sdn-controller"]
+                if "sdn-port-mapping" in vim_account_RO["config"]:
+                    del vim_account_RO["config"]["sdn-port-mapping"]
+            desc = await RO.attach_datacenter(RO_vim_id, descriptor=vim_account_RO)
+            db_vim_update["_admin.deployed.RO-account"] = desc["uuid"]
+            db_vim_update["_admin.operationalState"] = "ENABLED"
+            db_vim_update["_admin.detailed-status"] = "Done"
+
+            # await asyncio.sleep(15)   # TODO remove. This is for test
+            self.logger.debug(logging_text + "Exit Ok RO_vim_id={}".format(RO_vim_id))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_vim:
+                db_vim_update["_admin.operationalState"] = "ERROR"
+                db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_vim_update:
+                self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            self.lcm_tasks.remove("vim_account", vim_id, order_id)
+
+    async def edit(self, vim_content, order_id):
+        vim_id = vim_content["_id"]
+        logging_text = "Task vim_edit={} ".format(vim_id)
+        self.logger.debug(logging_text + "Enter")
+        db_vim = None
+        exc = None
+        RO_sdn_id = None
+        RO_vim_id = None
+        db_vim_update = {}
+        step = "Getting vim-id='{}' from db".format(vim_id)
+        try:
+            db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
+
+            # look if previous tasks in process
+            task_name, task_dependency = self.lcm_tasks.lookfor_related("vim_account", vim_id, order_id)
+            if task_dependency:
+                step = "Waiting for related tasks to be completed: {}".format(task_name)
+                self.logger.debug(logging_text + step)
+                # TODO write this to database
+                await asyncio.wait(task_dependency, timeout=3600)
+
+            if db_vim.get("_admin") and db_vim["_admin"].get("deployed") and db_vim["_admin"]["deployed"].get("RO"):
+                if vim_content.get("config") and vim_content["config"].get("sdn-controller"):
+                    step = "Getting sdn-controller-id='{}' from db".format(vim_content["config"]["sdn-controller"])
+                    db_sdn = self.db.get_one("sdns", {"_id": vim_content["config"]["sdn-controller"]})
+
+                    # look if previous tasks in process
+                    task_name, task_dependency = self.lcm_tasks.lookfor_related("sdn", db_sdn["_id"])
+                    if task_dependency:
+                        step = "Waiting for related tasks to be completed: {}".format(task_name)
+                        self.logger.debug(logging_text + step)
+                        # TODO write this to database
+                        await asyncio.wait(task_dependency, timeout=3600)
+
+                    if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get(
+                            "RO"):
+                        RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
+                    else:
+                        raise LcmException("sdn-controller={} is not available. Not deployed at RO".format(
+                            vim_content["config"]["sdn-controller"]))
+
+                RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
+                step = "Editing vim at RO"
+                RO = ROclient.ROClient(self.loop, **self.ro_config)
+                vim_RO = deepcopy(vim_content)
+                vim_RO.pop("_id", None)
+                vim_RO.pop("_admin", None)
+                vim_RO.pop("schema_version", None)
+                vim_RO.pop("schema_type", None)
+                vim_RO.pop("vim_tenant_name", None)
+                if "vim_type" in vim_RO:
+                    vim_RO["type"] = vim_RO.pop("vim_type")
+                vim_RO.pop("vim_user", None)
+                vim_RO.pop("vim_password", None)
+                if RO_sdn_id:
+                    vim_RO["config"]["sdn-controller"] = RO_sdn_id
+                # TODO make a deep update of sdn-port-mapping 
+                if vim_RO:
+                    await RO.edit("vim", RO_vim_id, descriptor=vim_RO)
+
+                step = "Editing vim-account at RO tenant"
+                vim_account_RO = {}
+                if "config" in vim_content:
+                    if "sdn-controller" in vim_content["config"]:
+                        del vim_content["config"]["sdn-controller"]
+                    if "sdn-port-mapping" in vim_content["config"]:
+                        del vim_content["config"]["sdn-port-mapping"]
+                    if not vim_content["config"]:
+                        del vim_content["config"]
+                for k in ("vim_tenant_name", "vim_password", "config"):
+                    if k in vim_content:
+                        vim_account_RO[k] = vim_content[k]
+                if "vim_user" in vim_content:
+                    vim_content["vim_username"] = vim_content["vim_user"]
+                # vim_account must be edited always even if empty in order to ensure changes are translated to RO
+                # vim_thread. RO will remove and relaunch a new thread for this vim_account
+                await RO.edit("vim_account", RO_vim_id, descriptor=vim_account_RO)
+                db_vim_update["_admin.operationalState"] = "ENABLED"
+
+            self.logger.debug(logging_text + "Exit Ok RO_vim_id={}".format(RO_vim_id))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_vim:
+                db_vim_update["_admin.operationalState"] = "ERROR"
+                db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_vim_update:
+                self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            self.lcm_tasks.remove("vim_account", vim_id, order_id)
+
+    async def delete(self, vim_id, order_id):
+        logging_text = "Task vim_delete={} ".format(vim_id)
+        self.logger.debug(logging_text + "Enter")
+        db_vim = None
+        db_vim_update = {}
+        exc = None
+        step = "Getting vim from db"
+        try:
+            db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
+            if db_vim.get("_admin") and db_vim["_admin"].get("deployed") and db_vim["_admin"]["deployed"].get("RO"):
+                RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
+                RO = ROclient.ROClient(self.loop, **self.ro_config)
+                step = "Detaching vim from RO tenant"
+                try:
+                    await RO.detach_datacenter(RO_vim_id)
+                except ROclient.ROClientException as e:
+                    if e.http_code == 404:  # not found
+                        self.logger.debug(logging_text + "RO_vim_id={} already detached".format(RO_vim_id))
+                    else:
+                        raise
+
+                step = "Deleting vim from RO"
+                try:
+                    await RO.delete("vim", RO_vim_id)
+                except ROclient.ROClientException as e:
+                    if e.http_code == 404:  # not found
+                        self.logger.debug(logging_text + "RO_vim_id={} already deleted".format(RO_vim_id))
+                    else:
+                        raise
+            else:
+                # nothing to delete
+                self.logger.error(logging_text + "Nohing to remove at RO")
+            self.db.del_one("vim_accounts", {"_id": vim_id})
+            self.logger.debug(logging_text + "Exit Ok")
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            self.lcm_tasks.remove("vim_account", vim_id, order_id)
+            if exc and db_vim:
+                db_vim_update["_admin.operationalState"] = "ERROR"
+                db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_vim_update:
+                self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            self.lcm_tasks.remove("vim_account", vim_id, order_id)
+
+
+class SdnLcm(LcmBase):
+
+    def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
+        """
+        Init, Connect to database, filesystem storage, and messaging
+        :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
+        :return: None
+        """
+
+        self.logger = logging.getLogger('lcm.sdn')
+        self.loop = loop
+        self.lcm_tasks = lcm_tasks
+        self.ro_config = ro_config
+
+        super().__init__(db, msg, fs, self.logger)
+
+    async def create(self, sdn_content, order_id):
+        sdn_id = sdn_content["_id"]
+        logging_text = "Task sdn_create={} ".format(sdn_id)
+        self.logger.debug(logging_text + "Enter")
+        db_sdn = None
+        db_sdn_update = {}
+        RO_sdn_id = None
+        exc = None
+        try:
+            step = "Getting sdn from db"
+            db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
+            db_sdn_update["_admin.deployed.RO"] = None
+
+            step = "Creating sdn at RO"
+            RO = ROclient.ROClient(self.loop, **self.ro_config)
+            sdn_RO = deepcopy(sdn_content)
+            sdn_RO.pop("_id", None)
+            sdn_RO.pop("_admin", None)
+            sdn_RO.pop("schema_version", None)
+            sdn_RO.pop("schema_type", None)
+            sdn_RO.pop("description", None)
+            desc = await RO.create("sdn", descriptor=sdn_RO)
+            RO_sdn_id = desc["uuid"]
+            db_sdn_update["_admin.deployed.RO"] = RO_sdn_id
+            db_sdn_update["_admin.operationalState"] = "ENABLED"
+            self.logger.debug(logging_text + "Exit Ok RO_sdn_id={}".format(RO_sdn_id))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_sdn:
+                db_sdn_update["_admin.operationalState"] = "ERROR"
+                db_sdn_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_sdn_update:
+                self.update_db_2("sdns", sdn_id, db_sdn_update)
+            self.lcm_tasks.remove("sdn", sdn_id, order_id)
+
+    async def edit(self, sdn_content, order_id):
+        sdn_id = sdn_content["_id"]
+        logging_text = "Task sdn_edit={} ".format(sdn_id)
+        self.logger.debug(logging_text + "Enter")
+        db_sdn = None
+        db_sdn_update = {}
+        exc = None
+        step = "Getting sdn from db"
+        try:
+            db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
+            if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
+                RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
+                RO = ROclient.ROClient(self.loop, **self.ro_config)
+                step = "Editing sdn at RO"
+                sdn_RO = deepcopy(sdn_content)
+                sdn_RO.pop("_id", None)
+                sdn_RO.pop("_admin", None)
+                sdn_RO.pop("schema_version", None)
+                sdn_RO.pop("schema_type", None)
+                sdn_RO.pop("description", None)
+                if sdn_RO:
+                    await RO.edit("sdn", RO_sdn_id, descriptor=sdn_RO)
+                db_sdn_update["_admin.operationalState"] = "ENABLED"
+
+            self.logger.debug(logging_text + "Exit Ok RO_sdn_id".format(RO_sdn_id))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_sdn:
+                db_sdn["_admin.operationalState"] = "ERROR"
+                db_sdn["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_sdn_update:
+                self.update_db_2("sdns", sdn_id, db_sdn_update)
+            self.lcm_tasks.remove("sdn", sdn_id, order_id)
+
+    async def delete(self, sdn_id, order_id):
+        logging_text = "Task sdn_delete={} ".format(sdn_id)
+        self.logger.debug(logging_text + "Enter")
+        db_sdn = None
+        db_sdn_update = {}
+        exc = None
+        step = "Getting sdn from db"
+        try:
+            db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
+            if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
+                RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
+                RO = ROclient.ROClient(self.loop, **self.ro_config)
+                step = "Deleting sdn from RO"
+                try:
+                    await RO.delete("sdn", RO_sdn_id)
+                except ROclient.ROClientException as e:
+                    if e.http_code == 404:  # not found
+                        self.logger.debug(logging_text + "RO_sdn_id={} already deleted".format(RO_sdn_id))
+                    else:
+                        raise
+            else:
+                # nothing to delete
+                self.logger.error(logging_text + "Skipping. There is not RO information at database")
+            self.db.del_one("sdns", {"_id": sdn_id})
+            self.logger.debug("sdn_delete task sdn_id={} Exit Ok".format(sdn_id))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_sdn:
+                db_sdn["_admin.operationalState"] = "ERROR"
+                db_sdn["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_sdn_update:
+                self.update_db_2("sdns", sdn_id, db_sdn_update)
+            self.lcm_tasks.remove("sdn", sdn_id, order_id)
