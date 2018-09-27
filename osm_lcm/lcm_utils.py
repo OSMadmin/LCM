@@ -13,10 +13,13 @@ class LcmException(Exception):
 
 
 def versiontuple(v):
-    """utility for compare dot separate versions. Fills with zeros to proper number comparison"""
+    """utility for compare dot separate versions. Fills with zeros to proper number comparison
+    package version will be something like 4.0.1.post11+gb3f024d.dirty-1. Where 4.0.1 is the git tag, postXX is the
+    number of commits from this tag, and +XXXXXXX is the git commit short id. Total length is 16 with until 999 commits
+    """
     filled = []
     for point in v.split("."):
-        filled.append(point.zfill(8))
+        filled.append(point.zfill(16))
     return tuple(filled)
 
 

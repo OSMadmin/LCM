@@ -27,8 +27,8 @@ min_RO_version = [0, 5, 72]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.18'
-lcm_version_date = '2018-10-11'
+lcm_version = '0.1.20'
+lcm_version_date = '2018-10-15'
 
 
 class Lcm:
@@ -105,7 +105,7 @@ class Lcm:
             raise LcmException("Not compatible osm/N2VC version '{}'. Needed '{}' or higher".format(
                 n2vc_version, min_n2vc_version))
         # check version of common
-        if versiontuple(common_version) < versiontuple("0.1.7"):
+        if versiontuple(common_version) < versiontuple(min_common_version):
             raise LcmException("Not compatible osm/common version '{}'. Needed '{}' or higher".format(
                 common_version, min_common_version))
 

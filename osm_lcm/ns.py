@@ -11,16 +11,44 @@ import traceback
 import ROclient
 from lcm_utils import LcmException, LcmBase
 
-from osm_common.dbbase import DbException, deep_update
+from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
 from n2vc.vnf import N2VC
 
-from copy import deepcopy
+from copy import copy, deepcopy
 from http import HTTPStatus
 from time import time
-
+from uuid import uuid4
 
 __author__ = "Alfonso Tierno"
+
+
+def get_iterable(in_dict, in_key):
+    """
+    Similar to <dict>.get(), but if value is None, False, ..., An empty tuple is returned instead
+    :param in_dict: a dictionary
+    :param in_key: the key to look for at in_dict
+    :return: in_dict[in_var] or () if it is None or not present
+    """
+    if not in_dict.get(in_key):
+        return ()
+    return in_dict[in_key]
+
+
+def populate_dict(target_dict, key_list, value):
+    """
+    Upate target_dict creating nested dictionaries with the key_list. Last key_list item is asigned the value.
+    Example target_dict={K: J}; key_list=[a,b,c];  target_dict will be {K: J, a: {b: {c: value}}}
+    :param target_dict: dictionary to be changed
+    :param key_list: list of keys to insert at target_dict
+    :param value:
+    :return: None
+    """
+    for key in key_list[0:-1]:
+        if key not in target_dict:
+            target_dict[key] = {}
+        target_dict = target_dict[key]
+    target_dict[key_list[-1]] = value
 
 
 class NsLcm(LcmBase):
@@ -52,6 +80,58 @@ class NsLcm(LcmBase):
             # artifacts=vca_config[''],
             artifacts=None,
         )
+
+    def _look_for_pdu(self, vdur, vnfr, vim_account):  # TODO feature 1417: project_id
+        """
+        Look for a free PDU in the catalog matching vdur type and interfaces. Fills vdur with ip_address information
+        :param vdur: vnfr:vdur descriptor. It is modified with pdu interface info if pdu is found
+        :param member_vnf_index: used just for logging. Target vnfd of nsd
+        :param vim_account:
+        :return: vder_update: dictionary to update vnfr:vdur with pdu info. In addition it modified choosen pdu to set
+        at status IN_USE
+        """
+        pdu_type = vdur.get("pdu-type")
+        assert pdu_type
+        pdu_filter = {
+            "vim.vim_accounts": vim_account,
+            "type": pdu_type,
+            "_admin.operationalState": "ENABLED",
+            "_admin.usageSate": "NOT_IN_USE",
+            # TODO feature 1417: "shared": True,
+            # TODO feature 1417:  "_admin.projects_read.cont": ["ANY", project_id],
+        }
+        available_pdus = self.db.get_list("pdus", pdu_filter)
+        for pdu in available_pdus:
+            # step 1 check if this pdu contains needed interfaces:
+            match_interfaces = True
+            for vdur_interface in vdur["interfaces"]:
+                for pdu_interface in pdu["interfaces"]:
+                    if pdu_interface["name"] == vdur_interface["name"]:
+                        # TODO feature 1417: match per mgmt type
+                        break
+                else:  # no interface found
+                    match_interfaces = False
+                    break
+            if not match_interfaces:
+                continue
+
+            # step 2. Update pdu
+            self.update_db_2("pdus", pdu["_id"], {"_admin.usageSate": "IN_USE",
+                                                  "_admin.usage.vnfr_id": vnfr["_id"],
+                                                  "_admin.usage.nsr_id": vnfr["nsr-id-ref"],
+                                                  "_admin.usage.vdur": vdur["vdu-id-ref"],
+                                                  })
+            # step 3. Fill vnfr info by filling vdur
+            vdur["pdu-id"] = pdu["_id"]
+            for vdur_interface in vdur["interfaces"]:
+                for pdu_interface in pdu["interfaces"]:
+                    if pdu_interface["name"] == vdur_interface["name"]:
+                        vdur_interface.update(pdu_interface)
+                        break
+
+            return
+        raise LcmException("No PDU of type={} found for member_vng_index={} at vim_account={} matching interface "
+                           "names".format(vdur["vdu-id-ref"], vnfr["member-vnf-index-ref"], pdu_type))
 
     def vnfd2RO(self, vnfd, new_id=None):
         """
@@ -109,7 +189,7 @@ class NsLcm(LcmBase):
             - removing,
             - removed
         :param message: detailed message error
-        :param n2vc_info dictionary with information shared with instantiate task. Contains:
+        :param n2vc_info: dictionary with information shared with instantiate task. It contains:
             nsr_id:
             nslcmop_id:
             lcmOperationType: currently "instantiate"
@@ -154,7 +234,7 @@ class NsLcm(LcmBase):
                         # task is Done, but callback is still ongoing. So ignore
                         return
             elif status:
-                self.logger.debug(logging_text + " Enter status={}".format(status))
+                self.logger.debug(logging_text + " Enter status={} message={}".format(status, message))
                 if vca_deployed['operational-status'] == status:
                     return  # same status, ignore
                 vca_deployed['operational-status'] = status
@@ -169,13 +249,16 @@ class NsLcm(LcmBase):
         except Exception as e:
             self.logger.critical(logging_text + " Exception {}".format(e), exc_info=True)
 
-    def ns_params_2_RO(self, ns_params, nsd, vnfd_dict):
+    def ns_params_2_RO(self, ns_params, nsd, vnfd_dict, n2vc_key_list):
         """
-        Creates a RO ns descriptor from OSM ns_instantite params
+        Creates a RO ns descriptor from OSM ns_instantiate params
         :param ns_params: OSM instantiate params
         :return: The RO ns descriptor
         """
         vim_2_RO = {}
+        # TODO feature 1417: Check that no instantiation is set over PDU
+        # check if PDU forces a concrete vim-network-id and add it
+        # check if PDU contains a SDN-assist info (dpid, switch, port) and pass it to RO
 
         def vim_account_2_RO(vim_account):
             if vim_account in vim_2_RO:
@@ -213,186 +296,258 @@ class NsLcm(LcmBase):
             # "description": ns_params.get("nsDescription"),
             "datacenter": vim_account_2_RO(ns_params["vimAccountId"]),
             # "scenario": ns_params["nsdId"],
-            "vnfs": {},
-            "networks": {},
         }
+        if n2vc_key_list:
+            for vnfd_ref, vnfd in vnfd_dict.items():
+                vdu_needed_access = []
+                mgmt_cp = None
+                if vnfd.get("vnf-configuration"):
+                    if vnfd.get("mgmt-interface"):
+                        if vnfd["mgmt-interface"].get("vdu-id"):
+                            vdu_needed_access.append(vnfd["mgmt-interface"]["vdu-id"])
+                        elif vnfd["mgmt-interface"].get("cp"):
+                            mgmt_cp = vnfd["mgmt-interface"]["cp"]
+
+                for vdu in vnfd.get("vdu"):
+                    if vdu.get("vdu-configuration"):
+                        vdu_needed_access.append(vdu["id"])
+                    elif mgmt_cp:
+                        for vdu_interface in vdu.get("interface"):
+                            if vdu_interface.get("external-connection-point-ref") and \
+                                    vdu_interface["external-connection-point-ref"] == mgmt_cp:
+                                vdu_needed_access.append(vdu["id"])
+                                mgmt_cp = None
+                                break
+
+                if vdu_needed_access:
+                    for vnf_member in nsd.get("constituent-vnfd"):
+                        if vnf_member["vnfd-id-ref"] != vnfd_ref:
+                            continue
+                        for vdu in vdu_needed_access:
+                            populate_dict(RO_ns_params,
+                                          ("vnfs", vnf_member["member-vnf-index"], "vdus", vdu, "mgmt_keys"),
+                                          n2vc_key_list)
+
         if ns_params.get("vduImage"):
             RO_ns_params["vduImage"] = ns_params["vduImage"]
 
         if ns_params.get("ssh-authorized-key"):
             RO_ns_params["cloud-config"] = {"key-pairs": ns_params["ssh-authorized-key"]}
-        if ns_params.get("vnf"):
-            for vnf_params in ns_params["vnf"]:
-                for constituent_vnfd in nsd["constituent-vnfd"]:
-                    if constituent_vnfd["member-vnf-index"] == vnf_params["member-vnf-index"]:
-                        vnf_descriptor = vnfd_dict[constituent_vnfd["vnfd-id-ref"]]
-                        break
-                else:
-                    raise LcmException("Invalid instantiate parameter vnf:member-vnf-index={} is not present at nsd:"
-                                       "constituent-vnfd".format(vnf_params["member-vnf-index"]))
-                RO_vnf = {"vdus": {}, "networks": {}}
-                if vnf_params.get("vimAccountId"):
-                    RO_vnf["datacenter"] = vim_account_2_RO(vnf_params["vimAccountId"])
-                if vnf_params.get("vdu"):
-                    for vdu_params in vnf_params["vdu"]:
-                        RO_vnf["vdus"][vdu_params["id"]] = {}
-                        if vdu_params.get("volume"):
-                            RO_vnf["vdus"][vdu_params["id"]]["devices"] = {}
-                            for volume_params in vdu_params["volume"]:
-                                RO_vnf["vdus"][vdu_params["id"]]["devices"][volume_params["name"]] = {}
-                                if volume_params.get("vim-volume-id"):
-                                    RO_vnf["vdus"][vdu_params["id"]]["devices"][volume_params["name"]]["vim_id"] = \
-                                        volume_params["vim-volume-id"]
-                        if vdu_params.get("interface"):
-                            RO_vnf["vdus"][vdu_params["id"]]["interfaces"] = {}
-                            for interface_params in vdu_params["interface"]:
-                                RO_interface = {}
-                                RO_vnf["vdus"][vdu_params["id"]]["interfaces"][interface_params["name"]] = RO_interface
-                                if interface_params.get("ip-address"):
-                                    RO_interface["ip_address"] = interface_params["ip-address"]
-                                if interface_params.get("mac-address"):
-                                    RO_interface["mac_address"] = interface_params["mac-address"]
-                                if interface_params.get("floating-ip-required"):
-                                    RO_interface["floating-ip"] = interface_params["floating-ip-required"]
-                if vnf_params.get("internal-vld"):
-                    for internal_vld_params in vnf_params["internal-vld"]:
-                        RO_vnf["networks"][internal_vld_params["name"]] = {}
-                        if internal_vld_params.get("vim-network-name"):
-                            RO_vnf["networks"][internal_vld_params["name"]]["vim-network-name"] = \
-                                internal_vld_params["vim-network-name"]
-                        if internal_vld_params.get("ip-profile"):
-                            RO_vnf["networks"][internal_vld_params["name"]]["ip-profile"] = \
-                                ip_profile_2_RO(internal_vld_params["ip-profile"])
-                        if internal_vld_params.get("internal-connection-point"):
-                            for icp_params in internal_vld_params["internal-connection-point"]:
-                                # look for interface
-                                iface_found = False
-                                for vdu_descriptor in vnf_descriptor["vdu"]:
-                                    for vdu_interface in vdu_descriptor["interface"]:
-                                        if vdu_interface.get("internal-connection-point-ref") == icp_params["id-ref"]:
-                                            RO_interface_update = {}
-                                            if icp_params.get("ip-address"):
-                                                RO_interface_update["ip_address"] = icp_params["ip-address"]
-                                            if icp_params.get("mac-address"):
-                                                RO_interface_update["mac_address"] = icp_params["mac-address"]
-                                            if RO_interface_update:
-                                                RO_vnf_update = {"vdus": {vdu_descriptor["id"]: {
-                                                    "interfaces": {vdu_interface["name"]: RO_interface_update}}}}
-                                                deep_update(RO_vnf, RO_vnf_update)
-                                            iface_found = True
-                                            break
-                                    if iface_found:
-                                        break
-                                else:
-                                    raise LcmException("Invalid instantiate parameter vnf:member-vnf-index[{}]:"
-                                                       "internal-vld:id-ref={} is not present at vnfd:internal-"
-                                                       "connection-point".format(vnf_params["member-vnf-index"],
-                                                                                 icp_params["id-ref"]))
+        for vnf_params in get_iterable(ns_params, "vnf"):
+            for constituent_vnfd in nsd["constituent-vnfd"]:
+                if constituent_vnfd["member-vnf-index"] == vnf_params["member-vnf-index"]:
+                    vnf_descriptor = vnfd_dict[constituent_vnfd["vnfd-id-ref"]]
+                    break
+            else:
+                raise LcmException("Invalid instantiate parameter vnf:member-vnf-index={} is not present at nsd:"
+                                   "constituent-vnfd".format(vnf_params["member-vnf-index"]))
+            if vnf_params.get("vimAccountId"):
+                populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "datacenter"),
+                              vim_account_2_RO(vnf_params["vimAccountId"]))
 
-                if not RO_vnf["vdus"]:
-                    del RO_vnf["vdus"]
-                if not RO_vnf["networks"]:
-                    del RO_vnf["networks"]
-                if RO_vnf:
-                    RO_ns_params["vnfs"][vnf_params["member-vnf-index"]] = RO_vnf
-        if ns_params.get("vld"):
-            for vld_params in ns_params["vld"]:
-                RO_vld = {}
-                if "ip-profile" in vld_params:
-                    RO_vld["ip-profile"] = ip_profile_2_RO(vld_params["ip-profile"])
-                if "vim-network-name" in vld_params:
-                    RO_vld["sites"] = []
-                    if isinstance(vld_params["vim-network-name"], dict):
-                        for vim_account, vim_net in vld_params["vim-network-name"].items():
-                            RO_vld["sites"].append({
-                                "netmap-use": vim_net,
-                                "datacenter": vim_account_2_RO(vim_account)
-                            })
-                    else:  # isinstance str
-                        RO_vld["sites"].append({"netmap-use": vld_params["vim-network-name"]})
-                if "vnfd-connection-point-ref" in vld_params:
-                    for cp_params in vld_params["vnfd-connection-point-ref"]:
-                        # look for interface
-                        for constituent_vnfd in nsd["constituent-vnfd"]:
-                            if constituent_vnfd["member-vnf-index"] == cp_params["member-vnf-index-ref"]:
-                                vnf_descriptor = vnfd_dict[constituent_vnfd["vnfd-id-ref"]]
+            for vdu_params in get_iterable(vnf_params, "vdu"):
+                # TODO feature 1417: check that this VDU exist and it is not a PDU
+                if vdu_params.get("volume"):
+                    for volume_params in vdu_params["volume"]:
+                        if volume_params.get("vim-volume-id"):
+                            populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "vdus",
+                                                         vdu_params["id"], "devices", volume_params["name"], "vim_id"),
+                                          volume_params["vim-volume-id"])
+                if vdu_params.get("interface"):
+                    for interface_params in vdu_params["interface"]:
+                        if interface_params.get("ip-address"):
+                            populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "vdus",
+                                                         vdu_params["id"], "interfaces", interface_params["name"],
+                                                         "ip_address"),
+                                          interface_params["ip-address"])
+                        if interface_params.get("mac-address"):
+                            populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "vdus",
+                                                         vdu_params["id"], "interfaces", interface_params["name"],
+                                                         "mac_address"),
+                                          interface_params["mac-address"])
+                        if interface_params.get("floating-ip-required"):
+                            populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "vdus",
+                                                         vdu_params["id"], "interfaces", interface_params["name"],
+                                                         "floating-ip"),
+                                          interface_params["floating-ip-required"])
+
+            for internal_vld_params in get_iterable(vnf_params, "internal-vld"):
+                if internal_vld_params.get("vim-network-name"):
+                    populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
+                                                 internal_vld_params["name"], "vim-network-name"),
+                                  internal_vld_params["vim-network-name"])
+                if internal_vld_params.get("ip-profile"):
+                    populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
+                                                 internal_vld_params["name"], "ip-profile"),
+                                  ip_profile_2_RO(internal_vld_params["ip-profile"]))
+
+                for icp_params in get_iterable(internal_vld_params, "internal-connection-point"):
+                    # look for interface
+                    iface_found = False
+                    for vdu_descriptor in vnf_descriptor["vdu"]:
+                        for vdu_interface in vdu_descriptor["interface"]:
+                            if vdu_interface.get("internal-connection-point-ref") == icp_params["id-ref"]:
+                                if icp_params.get("ip-address"):
+                                    populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "vdus",
+                                                                 vdu_descriptor["id"], "interfaces",
+                                                                 vdu_interface["name"], "ip_address"),
+                                                  icp_params["ip-address"])
+
+                                if icp_params.get("mac-address"):
+                                    populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "vdus",
+                                                                 vdu_descriptor["id"], "interfaces",
+                                                                 vdu_interface["name"], "mac_address"),
+                                                  icp_params["mac-address"])
+                                iface_found = True
                                 break
-                        else:
-                            raise LcmException(
-                                "Invalid instantiate parameter vld:vnfd-connection-point-ref:member-vnf-index-ref={} "
-                                "is not present at nsd:constituent-vnfd".format(cp_params["member-vnf-index-ref"]))
-                        match_cp = False
-                        for vdu_descriptor in vnf_descriptor["vdu"]:
-                            for interface_descriptor in vdu_descriptor["interface"]:
-                                if interface_descriptor.get("external-connection-point-ref") == \
-                                        cp_params["vnfd-connection-point-ref"]:
-                                    match_cp = True
-                                    break
-                            if match_cp:
+                        if iface_found:
+                            break
+                    else:
+                        raise LcmException("Invalid instantiate parameter vnf:member-vnf-index[{}]:"
+                                           "internal-vld:id-ref={} is not present at vnfd:internal-"
+                                           "connection-point".format(vnf_params["member-vnf-index"],
+                                                                     icp_params["id-ref"]))
+
+        for vld_params in get_iterable(ns_params, "vld"):
+            if "ip-profile" in vld_params:
+                populate_dict(RO_ns_params, ("networks", vld_params["name"], "ip-profile"),
+                              ip_profile_2_RO(vld_params["ip-profile"]))
+            if vld_params.get("vim-network-name"):
+                RO_vld_sites = []
+                if isinstance(vld_params["vim-network-name"], dict):
+                    for vim_account, vim_net in vld_params["vim-network-name"].items():
+                        RO_vld_sites.append({
+                            "netmap-use": vim_net,
+                            "datacenter": vim_account_2_RO(vim_account)
+                        })
+                else:  # isinstance str
+                    RO_vld_sites.append({"netmap-use": vld_params["vim-network-name"]})
+                if RO_vld_sites:
+                    populate_dict(RO_ns_params, ("networks", vld_params["name"], "sites"), RO_vld_sites)
+            if "vnfd-connection-point-ref" in vld_params:
+                for cp_params in vld_params["vnfd-connection-point-ref"]:
+                    # look for interface
+                    for constituent_vnfd in nsd["constituent-vnfd"]:
+                        if constituent_vnfd["member-vnf-index"] == cp_params["member-vnf-index-ref"]:
+                            vnf_descriptor = vnfd_dict[constituent_vnfd["vnfd-id-ref"]]
+                            break
+                    else:
+                        raise LcmException(
+                            "Invalid instantiate parameter vld:vnfd-connection-point-ref:member-vnf-index-ref={} "
+                            "is not present at nsd:constituent-vnfd".format(cp_params["member-vnf-index-ref"]))
+                    match_cp = False
+                    for vdu_descriptor in vnf_descriptor["vdu"]:
+                        for interface_descriptor in vdu_descriptor["interface"]:
+                            if interface_descriptor.get("external-connection-point-ref") == \
+                                    cp_params["vnfd-connection-point-ref"]:
+                                match_cp = True
                                 break
-                        else:
-                            raise LcmException(
-                                "Invalid instantiate parameter vld:vnfd-connection-point-ref:member-vnf-index-ref={}:"
-                                "vnfd-connection-point-ref={} is not present at vnfd={}".format(
-                                    cp_params["member-vnf-index-ref"],
-                                    cp_params["vnfd-connection-point-ref"],
-                                    vnf_descriptor["id"]))
-                        RO_cp_params = {}
-                        if cp_params.get("ip-address"):
-                            RO_cp_params["ip_address"] = cp_params["ip-address"]
-                        if cp_params.get("mac-address"):
-                            RO_cp_params["mac_address"] = cp_params["mac-address"]
-                        if RO_cp_params:
-                            RO_vnf_params = {
-                                cp_params["member-vnf-index-ref"]: {
-                                    "vdus": {
-                                        vdu_descriptor["id"]: {
-                                            "interfaces": {
-                                                interface_descriptor["name"]: RO_cp_params
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            deep_update(RO_ns_params["vnfs"], RO_vnf_params)
-                if RO_vld:
-                    RO_ns_params["networks"][vld_params["name"]] = RO_vld
+                        if match_cp:
+                            break
+                    else:
+                        raise LcmException(
+                            "Invalid instantiate parameter vld:vnfd-connection-point-ref:member-vnf-index-ref={}:"
+                            "vnfd-connection-point-ref={} is not present at vnfd={}".format(
+                                cp_params["member-vnf-index-ref"],
+                                cp_params["vnfd-connection-point-ref"],
+                                vnf_descriptor["id"]))
+                    if cp_params.get("ip-address"):
+                        populate_dict(RO_ns_params, ("vnfs", cp_params["member-vnf-index-ref"], "vdus",
+                                                     vdu_descriptor["id"], "interfaces",
+                                                     interface_descriptor["name"], "ip_address"),
+                                      cp_params["ip-address"])
+                    if cp_params.get("mac-address"):
+                        populate_dict(RO_ns_params, ("vnfs", cp_params["member-vnf-index-ref"], "vdus",
+                                                     vdu_descriptor["id"], "interfaces",
+                                                     interface_descriptor["name"], "mac_address"),
+                                      cp_params["mac-address"])
         return RO_ns_params
+
+    def scale_vnfr(self, db_vnfr, vdu_create=None, vdu_delete=None):
+        # make a copy to do not change
+        vdu_create = copy(vdu_create)
+        vdu_delete = copy(vdu_delete)
+
+        vdurs = db_vnfr.get("vdur")
+        if vdurs is None:
+            vdurs = []
+        vdu_index = len(vdurs)
+        while vdu_index:
+            vdu_index -= 1
+            vdur = vdurs[vdu_index]
+            if vdur.get("pdu-type"):
+                continue
+            vdu_id_ref = vdur["vdu-id-ref"]
+            if vdu_create and vdu_create.get(vdu_id_ref):
+                for index in range(0, vdu_create[vdu_id_ref]):
+                    vdur = deepcopy(vdur)
+                    vdur["_id"] = str(uuid4())
+                    vdur["count-index"] += 1
+                    vdurs.insert(vdu_index+1+index, vdur)
+                del vdu_create[vdu_id_ref]
+            if vdu_delete and vdu_delete.get(vdu_id_ref):
+                del vdurs[vdu_index]
+                vdu_delete[vdu_id_ref] -= 1
+                if not vdu_delete[vdu_id_ref]:
+                    del vdu_delete[vdu_id_ref]
+        # check all operations are done
+        if vdu_create or vdu_delete:
+            raise LcmException("Error scaling OUT VNFR for {}. There is not any existing vnfr. Scaled to 0?".format(
+                vdu_create))
+        if vdu_delete:
+            raise LcmException("Error scaling IN VNFR for {}. There is not any existing vnfr. Scaled to 0?".format(
+                vdu_delete))
+
+        vnfr_update = {"vdur": vdurs}
+        db_vnfr["vdur"] = vdurs
+        self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
 
     def ns_update_vnfr(self, db_vnfrs, nsr_desc_RO):
         """
         Updates database vnfr with the RO info, e.g. ip_address, vim_id... Descriptor db_vnfrs is also updated
-        :param db_vnfrs:
-        :param nsr_desc_RO:
-        :return:
+        :param db_vnfrs: dictionary with member-vnf-index: vnfr-content
+        :param nsr_desc_RO: nsr descriptor from RO
+        :return: Nothing, LcmException is raised on errors
         """
         for vnf_index, db_vnfr in db_vnfrs.items():
             for vnf_RO in nsr_desc_RO["vnfs"]:
-                if vnf_RO["member_vnf_index"] == vnf_index:
-                    vnfr_update = {}
-                    db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO.get("ip_address")
-                    vdur_list = []
-                    for vdur_RO in vnf_RO.get("vms", ()):
-                        vdur = {
-                            "vim-id": vdur_RO.get("vim_vm_id"),
-                            "ip-address": vdur_RO.get("ip_address"),
-                            "vdu-id-ref": vdur_RO.get("vdu_osm_id"),
-                            "name": vdur_RO.get("vim_name"),
-                            "status": vdur_RO.get("status"),
-                            "status-detailed": vdur_RO.get("error_msg"),
-                            "interfaces": []
-                        }
+                if vnf_RO["member_vnf_index"] != vnf_index:
+                    continue
+                vnfr_update = {}
+                db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO.get("ip_address")
 
-                        for interface_RO in vdur_RO.get("interfaces", ()):
-                            vdur["interfaces"].append({
-                                "ip-address": interface_RO.get("ip_address"),
-                                "mac-address": interface_RO.get("mac_address"),
-                                "name": interface_RO.get("internal_name"),
-                            })
-                        vdur_list.append(vdur)
-                    db_vnfr["vdur"] = vnfr_update["vdur"] = vdur_list
-                    self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
-                    break
+                for vdu_index, vdur in enumerate(get_iterable(db_vnfr, "vdur")):
+                    vdur_RO_count_index = 0
+                    if vdur.get("pdu-type"):
+                        continue
+                    for vdur_RO in get_iterable(vnf_RO, "vms"):
+                        if vdur["vdu-id-ref"] != vdur_RO["vdu_osm_id"]:
+                            continue
+                        if vdur["count-index"] != vdur_RO_count_index:
+                            vdur_RO_count_index += 1
+                            continue
+                        vdur["vim-id"] = vdur_RO.get("vim_vm_id")
+                        vdur["ip-address"] = vdur_RO.get("ip_address")
+                        vdur["vdu-id-ref"] = vdur_RO.get("vdu_osm_id")
+                        vdur["name"] = vdur_RO.get("vim_name")
+                        vdur["status"] = vdur_RO.get("status")
+                        vdur["status-detailed"] = vdur_RO.get("error_msg")
+                        for ifacer in get_iterable(vdur, "interfaces"):
+                            for interface_RO in get_iterable(vdur_RO, "interfaces"):
+                                if ifacer["name"] == interface_RO.get("internal_name"):
+                                    ifacer["ip-address"] = interface_RO.get("ip_address")
+                                    ifacer["mac-address"] = interface_RO.get("mac_address")
+                                    break
+                            else:
+                                raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vdur={} interface={} "
+                                                   "at RO info".format(vnf_index, vdur["vdu-id-ref"], ifacer["name"]))
+                        vnfr_update["vdur.{}".format(vdu_index)] = vdur
+                        break
+                    else:
+                        raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vdur={} count_index={} at "
+                                           "RO info".format(vnf_index, vdur["vdu-id-ref"], vdur["count-index"]))
+                self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
+                break
 
             else:
                 raise LcmException("ns_update_vnfr: Not found member_vnf_index={} at RO info".format(vnf_index))
@@ -431,16 +586,48 @@ class NsLcm(LcmBase):
                 if pending:
                     raise LcmException("Timeout waiting related tasks to be completed")
 
-            needed_vnfd = {}
-            vnfr_filter = {"nsr-id-ref": nsr_id, "member-vnf-index-ref": None}
-            for c_vnf in nsd["constituent-vnfd"]:
-                vnfd_id = c_vnf["vnfd-id-ref"]
-                vnfr_filter["member-vnf-index-ref"] = c_vnf["member-vnf-index"]
-                step = "Getting vnfr={} of nsr={} from db".format(c_vnf["member-vnf-index"], nsr_id)
-                db_vnfrs[c_vnf["member-vnf-index"]] = self.db.get_one("vnfrs", vnfr_filter)
-                if vnfd_id not in needed_vnfd:
-                    step = "Getting vnfd={} from db".format(vnfd_id)
-                    needed_vnfd[vnfd_id] = self.db.get_one("vnfds", {"id": vnfd_id})
+            step = "Getting vnfrs from db"
+            db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
+            db_vnfds_ref = {}
+            db_vnfds = {}
+            for vnfr in db_vnfrs_list:
+                db_vnfrs[vnfr["member-vnf-index-ref"]] = vnfr
+                vnfd_id = vnfr["vnfd-id"]
+                vnfd_ref = vnfr["vnfd-ref"]
+                if vnfd_id not in db_vnfds:
+                    step = "Getting vnfd={} id='{}' from db".format(vnfd_id, vnfd_ref)
+                    vnfd = self.db.get_one("vnfds", {"_id": vnfd_id})
+                    db_vnfds_ref[vnfd_ref] = vnfd
+                    db_vnfds[vnfd_id] = vnfd
+
+                # update VNFR vimAccount and pdu information
+
+                vim_account = vnfr.get("vim-account-id")
+                vnfr_update = {}
+                if not vim_account:
+                    step = "Updating VNFR vimAccount"
+                    vim_account = db_nsr["instantiate_params"]["vimAccountId"]
+                    # check instantiate parameters
+                    if db_nsr["instantiate_params"].get("vnf"):
+                        for vnf_params in db_nsr["instantiate_params"]["vnf"]:
+                            if vnf_params.get("member-vnf-index") == vnfr["member-vnf-index-ref"]:
+                                if vnf_params.get("vimAccountId"):
+                                    vim_account = vnf_params.get("vimAccountId")
+                                break
+                    vnfr_update["vim-account-id"] = vim_account
+                    vnfr["vim-account-id"] = vim_account
+
+                # check PDUs and get PDU
+                for vdur_index, vdur in enumerate(get_iterable(vnfr, "vdur")):
+                    pdu_type = vdur.get("pdu-type")
+                    if not pdu_type:
+                        continue
+                    # look for free pdu
+                    self._look_for_pdu(vdur, vnfr, vim_account)
+                    # fill vnfr with pdu info
+                    vnfr_update["vdur.{}".format(vdur_index)] = vdur
+                if vnfr_update:
+                    self.update_db_2("vnfrs", vnfr["_id"], vnfr_update)
 
             nsr_lcm = db_nsr["_admin"].get("deployed")
             if not nsr_lcm:
@@ -456,11 +643,12 @@ class NsLcm(LcmBase):
             RO = ROclient.ROClient(self.loop, **self.ro_config)
 
             # get vnfds, instantiate at RO
-            for vnfd_id, vnfd in needed_vnfd.items():
-                step = db_nsr_update["detailed-status"] = "Creating vnfd={} at RO".format(vnfd_id)
+            for vnfd_id, vnfd in db_vnfds.items():
+                vnfd_ref = vnfd["id"]
+                step = db_nsr_update["detailed-status"] = "Creating vnfd={} at RO".format(vnfd_ref)
                 # self.logger.debug(logging_text + step)
-                vnfd_id_RO = "{}.{}.{}".format(nsr_id, RO_descriptor_number, vnfd_id[:23])
-                descriptor_id_2_RO[vnfd_id] = vnfd_id_RO
+                vnfd_id_RO = "{}.{}.{}".format(nsr_id, RO_descriptor_number, vnfd_ref[:23])
+                descriptor_id_2_RO[vnfd_ref] = vnfd_id_RO
                 RO_descriptor_number += 1
 
                 # look if present
@@ -468,29 +656,29 @@ class NsLcm(LcmBase):
                 if vnfd_list:
                     db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnfd_id)] = vnfd_list[0]["uuid"]
                     self.logger.debug(logging_text + "vnfd={} exists at RO. Using RO_id={}".format(
-                        vnfd_id, vnfd_list[0]["uuid"]))
+                        vnfd_ref, vnfd_list[0]["uuid"]))
                 else:
                     vnfd_RO = self.vnfd2RO(vnfd, vnfd_id_RO)
                     desc = await RO.create("vnfd", descriptor=vnfd_RO)
                     db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnfd_id)] = desc["uuid"]
                     db_nsr_update["_admin.nsState"] = "INSTANTIATED"
                     self.logger.debug(logging_text + "vnfd={} created at RO. RO_id={}".format(
-                        vnfd_id, desc["uuid"]))
+                        vnfd_ref, desc["uuid"]))
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             # create nsd at RO
-            nsd_id = nsd["id"]
-            step = db_nsr_update["detailed-status"] = "Creating nsd={} at RO".format(nsd_id)
+            nsd_ref = nsd["id"]
+            step = db_nsr_update["detailed-status"] = "Creating nsd={} at RO".format(nsd_ref)
             # self.logger.debug(logging_text + step)
 
-            RO_osm_nsd_id = "{}.{}.{}".format(nsr_id, RO_descriptor_number, nsd_id[:23])
-            descriptor_id_2_RO[nsd_id] = RO_osm_nsd_id
+            RO_osm_nsd_id = "{}.{}.{}".format(nsr_id, RO_descriptor_number, nsd_ref[:23])
+            descriptor_id_2_RO[nsd_ref] = RO_osm_nsd_id
             RO_descriptor_number += 1
             nsd_list = await RO.get_list("nsd", filter_by={"osm_id": RO_osm_nsd_id})
             if nsd_list:
                 db_nsr_update["_admin.deployed.RO.nsd_id"] = RO_nsd_uuid = nsd_list[0]["uuid"]
                 self.logger.debug(logging_text + "nsd={} exists at RO. Using RO_id={}".format(
-                    nsd_id, RO_nsd_uuid))
+                    nsd_ref, RO_nsd_uuid))
             else:
                 nsd_RO = deepcopy(nsd)
                 nsd_RO["id"] = RO_osm_nsd_id
@@ -502,7 +690,7 @@ class NsLcm(LcmBase):
                 desc = await RO.create("nsd", descriptor=nsd_RO)
                 db_nsr_update["_admin.nsState"] = "INSTANTIATED"
                 db_nsr_update["_admin.deployed.RO.nsd_id"] = RO_nsd_uuid = desc["uuid"]
-                self.logger.debug(logging_text + "nsd={} created at RO. RO_id={}".format(nsd_id, RO_nsd_uuid))
+                self.logger.debug(logging_text + "nsd={} created at RO. RO_id={}".format(nsd_ref, RO_nsd_uuid))
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             # Crate ns at RO
@@ -546,11 +734,10 @@ class NsLcm(LcmBase):
                             await asyncio.wait(task_dependency, timeout=3600)
 
                 step = db_nsr_update["detailed-status"] = "Checking instantiation parameters"
-                RO_ns_params = self.ns_params_2_RO(ns_params, nsd, needed_vnfd)
 
+                # feature 1429. Add n2vc public key to needed VMs
                 n2vc_key = await self.n2vc.GetPublicKey()
-                RO_ns_params["mgmt_keys"] = [n2vc_key]
-                # TODO feature 1429. Add this option only to VMs with configuration and no password
+                RO_ns_params = self.ns_params_2_RO(ns_params, nsd, db_vnfds_ref, [n2vc_key])
 
                 step = db_nsr_update["detailed-status"] = "Creating ns at RO"
                 desc = await RO.create("ns", descriptor=RO_ns_params,
@@ -561,20 +748,6 @@ class NsLcm(LcmBase):
                 db_nsr_update["_admin.deployed.RO.nsr_status"] = "BUILD"
                 self.logger.debug(logging_text + "ns created at RO. RO_id={}".format(desc["uuid"]))
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
-
-            # update VNFR vimAccount
-            step = "Updating VNFR vimAcccount"
-            for vnf_index, vnfr in db_vnfrs.items():
-                if vnfr.get("vim-account-id"):
-                    continue
-                vnfr_update = {"vim-account-id": db_nsr["instantiate_params"]["vimAccountId"]}
-                if db_nsr["instantiate_params"].get("vnf"):
-                    for vnf_params in db_nsr["instantiate_params"]["vnf"]:
-                        if vnf_params.get("member-vnf-index") == vnf_index:
-                            if vnf_params.get("vimAccountId"):
-                                vnfr_update["vim-account-id"] = vnf_params.get("vimAccountId")
-                            break
-                self.update_db_2("vnfrs", vnfr["_id"], vnfr_update)
 
             # wait until NS is ready
             step = ns_status_detailed = detailed_status = "Waiting ns ready at RO. RO_id={}".format(RO_nsr_id)
@@ -704,7 +877,7 @@ class NsLcm(LcmBase):
             for c_vnf in nsd["constituent-vnfd"]:
                 vnfd_id = c_vnf["vnfd-id-ref"]
                 vnf_index = str(c_vnf["member-vnf-index"])
-                vnfd = needed_vnfd[vnfd_id]
+                vnfd = db_vnfds_ref[vnfd_id]
 
                 # Check if this VNF has a charm configuration
                 vnf_config = vnfd.get("vnf-configuration")
@@ -1037,6 +1210,8 @@ class NsLcm(LcmBase):
                 nslcmop_operation_state = "COMPLETED"
                 db_nslcmop_update.clear()
                 self.db.del_list("vnfrs", {"nsr-id-ref": nsr_id})
+                self.db.set_list("pdus", {"_admin.usage.nsr_id": nsr_id},
+                                 {"_admin.usageSate": "NOT_IN_USE", "_admin.usage": None})
                 self.logger.debug(logging_text + "Delete from database")
             else:
                 db_nsr_update["operational-status"] = "terminated"
@@ -1293,11 +1468,12 @@ class NsLcm(LcmBase):
                     vdu_scaling_info["vdu-create"][vdu_scale_info["vdu-id-ref"]] = vdu_scale_info.get("count", 1)
             elif scaling_type == "SCALE_IN":
                 # count if min-instance-count is reached
+                min_instance_count = 0
                 if "min-instance-count" in scaling_descriptor and scaling_descriptor["min-instance-count"] is not None:
                     min_instance_count = int(scaling_descriptor["min-instance-count"])
-                    if nb_scale_op <= min_instance_count:
-                        raise LcmException("reached the limit of {} (min-instance-count) scaling-in operations for the "
-                                           "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
+                if nb_scale_op <= min_instance_count:
+                    raise LcmException("reached the limit of {} (min-instance-count) scaling-in operations for the "
+                                       "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
                 nb_scale_op = nb_scale_op - 1
                 vdu_scaling_info["scaling_direction"] = "IN"
                 vdu_scaling_info["vdu-delete"] = {}
@@ -1307,10 +1483,12 @@ class NsLcm(LcmBase):
                     vdu_scaling_info["vdu-delete"][vdu_scale_info["vdu-id-ref"]] = vdu_scale_info.get("count", 1)
 
             # update VDU_SCALING_INFO with the VDUs to delete ip_addresses
+            vdu_create = vdu_scaling_info.get("vdu-create")
+            vdu_delete = copy(vdu_scaling_info.get("vdu-delete"))
             if vdu_scaling_info["scaling_direction"] == "IN":
                 for vdur in reversed(db_vnfr["vdur"]):
-                    if vdu_scaling_info["vdu-delete"].get(vdur["vdu-id-ref"]):
-                        vdu_scaling_info["vdu-delete"][vdur["vdu-id-ref"]] -= 1
+                    if vdu_delete.get(vdur["vdu-id-ref"]):
+                        vdu_delete[vdur["vdu-id-ref"]] -= 1
                         vdu_scaling_info["vdu"].append({
                             "name": vdur["name"],
                             "vdu_id": vdur["vdu-id-ref"],
@@ -1322,7 +1500,7 @@ class NsLcm(LcmBase):
                                 "ip_address": interface["ip-address"],
                                 "mac_address": interface.get("mac-address"),
                             })
-                del vdu_scaling_info["vdu-delete"]
+                vdu_delete = vdu_scaling_info.pop("vdu-delete")
 
             # execute primitive service PRE-SCALING
             step = "Executing pre-scale vnf-config-primitive"
@@ -1419,6 +1597,7 @@ class NsLcm(LcmBase):
                     raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
                 step = "Updating VNFRs"
+                self.scale_vnfr(db_vnfr, vdu_create=vdu_create, vdu_delete=vdu_delete)
                 self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
 
                 # update VDU_SCALING_INFO with the obtained ip_addresses
