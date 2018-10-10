@@ -124,7 +124,9 @@ class VimLcm(LcmBase):
                 step = "Waiting for related tasks to be completed: {}".format(task_name)
                 self.logger.debug(logging_text + step)
                 # TODO write this to database
-                await asyncio.wait(task_dependency, timeout=3600)
+                _, pending = await asyncio.wait(task_dependency, timeout=3600)
+                if pending:
+                    raise LcmException("Timeout waiting related tasks to be completed")
 
             if db_vim.get("_admin") and db_vim["_admin"].get("deployed") and db_vim["_admin"]["deployed"].get("RO"):
                 if vim_content.get("config") and vim_content["config"].get("sdn-controller"):
@@ -137,7 +139,9 @@ class VimLcm(LcmBase):
                         step = "Waiting for related tasks to be completed: {}".format(task_name)
                         self.logger.debug(logging_text + step)
                         # TODO write this to database
-                        await asyncio.wait(task_dependency, timeout=3600)
+                        _, pending = await asyncio.wait(task_dependency, timeout=3600)
+                        if pending:
+                            raise LcmException("Timeout waiting related tasks to be completed")
 
                     if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get(
                             "RO"):

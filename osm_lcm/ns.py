@@ -444,7 +444,7 @@ class NsLcm(LcmBase):
         # get all needed from database
         db_nsr = None
         db_nslcmop = None
-        db_nsr_update = {}
+        db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         db_nslcmop_update = {}
         nslcmop_operation_state = None
         db_vnfrs = {}
@@ -460,6 +460,18 @@ class NsLcm(LcmBase):
             ns_params = db_nsr.get("instantiate_params")
             nsd = db_nsr["nsd"]
             nsr_name = db_nsr["name"]   # TODO short-name??
+
+            # look if previous tasks in process
+            task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
+            if task_dependency:
+                step = db_nslcmop_update["detailed-status"] = \
+                    "Waiting for related tasks to be completed: {}".format(task_name)
+                self.logger.debug(logging_text + step)
+                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                _, pending = await asyncio.wait(task_dependency, timeout=3600)
+                if pending:
+                    raise LcmException("Timeout waiting related tasks to be completed")
+
             needed_vnfd = {}
             vnfr_filter = {"nsr-id-ref": nsr_id, "member-vnf-index-ref": None}
             for c_vnf in nsd["constituent-vnfd"]:
@@ -858,7 +870,8 @@ class NsLcm(LcmBase):
                     db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                     db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                     db_nslcmop_update["statusEnteredTime"] = time()
-            if db_nsr_update:
+            if db_nsr:
+                db_nsr_update["_admin.nslcmop"] = None
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
             if db_nslcmop_update:
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
@@ -881,7 +894,7 @@ class NsLcm(LcmBase):
         failed_detail = []   # annotates all failed error messages
         vca_task_list = []
         vca_task_dict = {}
-        db_nsr_update = {}
+        db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         db_nslcmop_update = {}
         nslcmop_operation_state = None
         try:
@@ -1088,7 +1101,8 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["statusEnteredTime"] = time()
             if db_nslcmop_update:
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-            if db_nsr_update:
+            if db_nsr:
+                db_nsr_update["_admin.nslcmop"] = None
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
             if nslcmop_operation_state:
                 try:
@@ -1162,6 +1176,7 @@ class NsLcm(LcmBase):
         # get all needed from database
         db_nsr = None
         db_nslcmop = None
+        db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         db_nslcmop_update = {}
         nslcmop_operation_state = None
         exc = None
@@ -1173,6 +1188,17 @@ class NsLcm(LcmBase):
             nsr_name = db_nsr["name"]
             vnf_index = db_nslcmop["operationParams"]["member_vnf_index"]
             vdu_id = db_nslcmop["operationParams"].get("vdu_id")
+
+            # look if previous tasks in process
+            task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
+            if task_dependency:
+                step = db_nslcmop_update["detailed-status"] = \
+                    "Waiting for related tasks to be completed: {}".format(task_name)
+                self.logger.debug(logging_text + step)
+                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                _, pending = await asyncio.wait(task_dependency, timeout=3600)
+                if pending:
+                    raise LcmException("Timeout waiting related tasks to be completed")
 
             # TODO check if ns is in a proper status
             primitive = db_nslcmop["operationParams"]["primitive"]
@@ -1201,6 +1227,9 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["statusEnteredTime"] = time()
             if db_nslcmop_update:
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+            if db_nsr:
+                db_nsr_update["_admin.nslcmop"] = None
+                self.update_db_2("nsrs", nsr_id, db_nsr_update)
             self.logger.debug(logging_text + "Exit")
             if nslcmop_operation_state:
                 try:
@@ -1219,7 +1248,7 @@ class NsLcm(LcmBase):
         db_nslcmop = None
         db_nslcmop_update = {}
         nslcmop_operation_state = None
-        db_nsr_update = {}
+        db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         exc = None
         # in case of error, indicates what part of scale was failed to put nsr at error status
         scale_process = None
@@ -1232,6 +1261,18 @@ class NsLcm(LcmBase):
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
             old_operational_status = db_nsr["operational-status"]
             old_config_status = db_nsr["config-status"]
+
+            # look if previous tasks in process
+            task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
+            if task_dependency:
+                step = db_nslcmop_update["detailed-status"] = \
+                    "Waiting for related tasks to be completed: {}".format(task_name)
+                self.logger.debug(logging_text + step)
+                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                _, pending = await asyncio.wait(task_dependency, timeout=3600)
+                if pending:
+                    raise LcmException("Timeout waiting related tasks to be completed")
+
             step = "Parsing scaling parameters"
             db_nsr_update["operational-status"] = "scaling"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
@@ -1364,7 +1405,6 @@ class NsLcm(LcmBase):
                 RO_desc = await RO.create_action("ns", RO_nsr_id, {"vdu-scaling": RO_scaling_info})
                 db_nsr_update["_admin.scaling-group.{}.nb-scale-op".format(admin_scale_index)] = nb_scale_op
                 db_nsr_update["_admin.scaling-group.{}.time".format(admin_scale_index)] = time()
-                # TODO mark db_nsr_update as scaling
                 # wait until ready
                 RO_nslcmop_id = RO_desc["instance_action_id"]
                 db_nslcmop_update["_admin.deploy.RO"] = RO_nslcmop_id
@@ -1465,8 +1505,8 @@ class NsLcm(LcmBase):
                         else:
                             raise LcmException("Invalid vnfd descriptor at scaling-group-descriptor[name='{}']:"
                                                "scaling-config-action[vnf-config-primitive-name-ref='{}'] does not "
-                                               "match any vnf-cnfiguration:config-primitive".format(scaling_group,
-                                                                                                    config_primitive))
+                                               "match any vnf-configuration:config-primitive".format(scaling_group,
+                                                                                                     config_primitive))
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring post-scaling"
 
@@ -1505,6 +1545,7 @@ class NsLcm(LcmBase):
                     db_nsr_update["operational-status"] = old_operational_status
                     db_nsr_update["config-status"] = old_config_status
                     db_nsr_update["detailed-status"] = ""
+                    db_nsr_update["_admin.nslcmop"] = None
                     if scale_process:
                         if "VCA" in scale_process:
                             db_nsr_update["config-status"] = "failed"
@@ -1514,7 +1555,8 @@ class NsLcm(LcmBase):
                                                                                                      exc)
             if db_nslcmop_update:
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-            if db_nsr_update:
+            if db_nsr:
+                db_nsr_update["_admin.nslcmop"] = None
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
             if nslcmop_operation_state:
                 try:
