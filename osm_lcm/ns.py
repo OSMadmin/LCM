@@ -1223,11 +1223,15 @@ class NsLcm(LcmBase):
         exc = None
         # in case of error, indicates what part of scale was failed to put nsr at error status
         scale_process = None
+        old_operational_status = ""
+        old_config_status = ""
         try:
             step = "Getting nslcmop from database"
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr from database"
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            old_operational_status = db_nsr["operational-status"]
+            old_config_status = db_nsr["config-status"]
             step = "Parsing scaling parameters"
             db_nsr_update["operational-status"] = "scaling"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
@@ -1344,12 +1348,15 @@ class NsLcm(LcmBase):
                                 "[vnf-config-primitive-name-ref='{}'] does not match any vnf-cnfiguration:config-"
                                 "primitive".format(scaling_group, config_primitive))
                         scale_process = "VCA"
+                        db_nsr_update["config-status"] = "configuring pre-scaling"
                         result, result_detail = await self._ns_execute_primitive(nsr_lcm, vnf_index,
                                                                                  vnf_config_primitive, primitive_params)
                         self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                             vnf_config_primitive, result, result_detail))
                         if result == "FAILED":
                             raise LcmException(result_detail)
+                        db_nsr_update["config-status"] = old_config_status
+                        scale_process = None
 
             if RO_scaling_info:
                 scale_process = "RO"
@@ -1461,18 +1468,23 @@ class NsLcm(LcmBase):
                                                "match any vnf-cnfiguration:config-primitive".format(scaling_group,
                                                                                                     config_primitive))
                         scale_process = "VCA"
+                        db_nsr_update["config-status"] = "configuring post-scaling"
+
                         result, result_detail = await self._ns_execute_primitive(nsr_lcm, vnf_index,
                                                                                  vnf_config_primitive, primitive_params)
                         self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                             vnf_config_primitive, result, result_detail))
                         if result == "FAILED":
                             raise LcmException(result_detail)
+                        db_nsr_update["config-status"] = old_config_status
+                        scale_process = None
 
             db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
             db_nslcmop_update["statusEnteredTime"] = time()
             db_nslcmop_update["detailed-status"] = "done"
-            db_nsr_update["detailed-status"] = "done"
-            db_nsr_update["operational-status"] = "running"
+            db_nsr_update["detailed-status"] = ""  # "scaled {} {}".format(scaling_group, scaling_type)
+            db_nsr_update["operational-status"] = old_operational_status
+            db_nsr_update["config-status"] = old_config_status
             return
         except (ROclient.ROClientException, DbException, LcmException) as e:
             self.logger.error(logging_text + "Exit Exception {}".format(e))
@@ -1490,11 +1502,16 @@ class NsLcm(LcmBase):
                     db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                     db_nslcmop_update["statusEnteredTime"] = time()
                 if db_nsr:
-                    if scale_process and "VCA" in scale_process:
-                        db_nsr_update["config-status"] = "failed"
-                    if scale_process and "RO" in scale_process:
-                        db_nsr_update["operational-status"] = "failed"
-                    db_nsr_update["detailed-status"] = "FAILED scaling nslcmop={} {}: {}".format(nslcmop_id, step, exc)
+                    db_nsr_update["operational-status"] = old_operational_status
+                    db_nsr_update["config-status"] = old_config_status
+                    db_nsr_update["detailed-status"] = ""
+                    if scale_process:
+                        if "VCA" in scale_process:
+                            db_nsr_update["config-status"] = "failed"
+                        if "RO" in scale_process:
+                            db_nsr_update["operational-status"] = "failed"
+                        db_nsr_update["detailed-status"] = "FAILED scaling nslcmop={} {}: {}".format(nslcmop_id, step,
+                                                                                                     exc)
             if db_nslcmop_update:
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
             if db_nsr_update:
