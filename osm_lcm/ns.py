@@ -394,50 +394,6 @@ class NsLcm(LcmBase):
             else:
                 raise LcmException("ns_update_vnfr: Not found member_vnf_index={} at RO info".format(vnf_index))
 
-    async def create_monitoring(self, nsr_id, vnf_member_index, vnfd_desc):
-        if not vnfd_desc.get("scaling-group-descriptor"):
-            return
-        for scaling_group in vnfd_desc["scaling-group-descriptor"]:
-            scaling_policy_desc = {}
-            scaling_desc = {
-                "ns_id": nsr_id,
-                "scaling_group_descriptor": {
-                    "name": scaling_group["name"],
-                    "scaling_policy": scaling_policy_desc
-                }
-            }
-            for scaling_policy in scaling_group.get("scaling-policy"):
-                scaling_policy_desc["scale_in_operation_type"] = scaling_policy_desc["scale_out_operation_type"] = \
-                    scaling_policy["scaling-type"]
-                scaling_policy_desc["threshold_time"] = scaling_policy["threshold-time"]
-                scaling_policy_desc["cooldown_time"] = scaling_policy["cooldown-time"]
-                scaling_policy_desc["scaling_criteria"] = []
-                for scaling_criteria in scaling_policy.get("scaling-criteria"):
-                    scaling_criteria_desc = {"scale_in_threshold": scaling_criteria.get("scale-in-threshold"),
-                                             "scale_out_threshold": scaling_criteria.get("scale-out-threshold"),
-                                             }
-                    if not scaling_criteria.get("vnf-monitoring-param-ref"):
-                        continue
-                    for monitoring_param in vnfd_desc.get("monitoring-param", ()):
-                        if monitoring_param["id"] == scaling_criteria["vnf-monitoring-param-ref"]:
-                            scaling_criteria_desc["monitoring_param"] = {
-                                "id": monitoring_param["id"],
-                                "name": monitoring_param["name"],
-                                "aggregation_type": monitoring_param.get("aggregation-type"),
-                                "vdu_name": monitoring_param.get("vdu-ref"),
-                                "vnf_member_index": vnf_member_index,
-                            }
-
-                            scaling_policy_desc["scaling_criteria"].append(scaling_criteria_desc)
-                            break
-                    else:
-                        self.logger.error(
-                            "Task ns={} member_vnf_index={} Invalid vnfd vnf-monitoring-param-ref={} not in "
-                            "monitoring-param list".format(nsr_id, vnf_member_index,
-                                                           scaling_criteria["vnf-monitoring-param-ref"]))
-
-            await self.msg.aiowrite("lcm_pm", "configure_scaling", scaling_desc, self.loop)
-
     async def instantiate(self, nsr_id, nslcmop_id):
         logging_text = "Task ns={} instantiate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
@@ -846,9 +802,6 @@ class NsLcm(LcmBase):
                 db_nsr_update["config-status"] = "configured"
                 db_nsr_update["detailed-status"] = "done"
 
-            # step = "Sending monitoring parameters to PM"
-            # for c_vnf in nsd["constituent-vnfd"]:
-            #     await self.create_monitoring(nsr_id, c_vnf["member-vnf-index"], needed_vnfd[c_vnf["vnfd-id-ref"]])
             return
 
         except (ROclient.ROClientException, DbException, LcmException) as e:
