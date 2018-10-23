@@ -25,7 +25,7 @@ from n2vc import version as n2vc_version
 __author__ = "Alfonso Tierno"
 min_RO_version = [0, 5, 72]
 min_n2vc_version = "0.0.2"
-min_common_version = "0.1.7"
+min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
 lcm_version = '0.1.18'
 lcm_version_date = '2018-10-11'
@@ -385,12 +385,14 @@ class Lcm:
                 if not k.startswith("OSMLCM_"):
                     continue
                 k_items = k.lower().split("_")
+                if len(k_items) < 3:
+                    continue
+                if k_items[1] in ("ro", "vca"):
+                    # put in capital letter
+                    k_items[1] = k_items[1].upper()
                 c = conf
                 try:
                     for k_item in k_items[1:-1]:
-                        if k_item in ("ro", "vca"):
-                            # put in capital letter
-                            k_item = k_item.upper()
                         c = c[k_item]
                     if k_items[-1] == "port":
                         c[k_items[-1]] = int(v)
@@ -440,14 +442,14 @@ if __name__ == '__main__':
                 assert False, "Unhandled option"
         if config_file:
             if not path.isfile(config_file):
-                print("configuration file '{}' that not exist".format(config_file), file=sys.stderr)
+                print("configuration file '{}' not exist".format(config_file), file=sys.stderr)
                 exit(1)
         else:
             for config_file in (__file__[:__file__.rfind(".")] + ".cfg", "./lcm.cfg", "/etc/osm/lcm.cfg"):
                 if path.isfile(config_file):
                     break
             else:
-                print("No configuration file 'nbi.cfg' found neither at local folder nor at /etc/osm/", file=sys.stderr)
+                print("No configuration file 'lcm.cfg' found neither at local folder nor at /etc/osm/", file=sys.stderr)
                 exit(1)
         lcm = Lcm(config_file)
         if health_check:

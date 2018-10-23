@@ -13,6 +13,8 @@ __author__ = "Alfonso Tierno"
 
 
 class VimLcm(LcmBase):
+    # values that are encrypted at vim config because they are passwords
+    vim_config_encrypted = ("admin_password", "nsx_password", "vcenter_password")
 
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
         """
@@ -56,7 +58,7 @@ class VimLcm(LcmBase):
             vim_RO = deepcopy(vim_content)
             vim_RO.pop("_id", None)
             vim_RO.pop("_admin", None)
-            vim_RO.pop("schema_version", None)
+            schema_version = vim_RO.pop("schema_version", None)
             vim_RO.pop("schema_type", None)
             vim_RO.pop("vim_tenant_name", None)
             vim_RO["type"] = vim_RO.pop("vim_type")
@@ -72,6 +74,10 @@ class VimLcm(LcmBase):
             db_vim_update["_admin.detailed-status"] = step
             self.update_db_2("vim_accounts", vim_id, db_vim_update)
 
+            if vim_content.get("vim_password"):
+                vim_content["vim_password"] = self.db.decrypt(vim_content["vim_password"],
+                                                              schema_version=schema_version,
+                                                              salt=vim_id)
             vim_account_RO = {"vim_tenant_name": vim_content["vim_tenant_name"],
                               "vim_username": vim_content["vim_user"],
                               "vim_password": vim_content["vim_password"]
@@ -82,6 +88,12 @@ class VimLcm(LcmBase):
                     del vim_account_RO["config"]["sdn-controller"]
                 if "sdn-port-mapping" in vim_account_RO["config"]:
                     del vim_account_RO["config"]["sdn-port-mapping"]
+                for p in self.vim_config_encrypted:
+                    if vim_account_RO["config"].get(p):
+                        vim_account_RO["config"][p] = self.db.decrypt(vim_account_RO["config"][p],
+                                                                      schema_version=schema_version,
+                                                                      salt=vim_id)
+
             desc = await RO.attach_datacenter(RO_vim_id, descriptor=vim_account_RO)
             db_vim_update["_admin.deployed.RO-account"] = desc["uuid"]
             db_vim_update["_admin.operationalState"] = "ENABLED"
@@ -156,7 +168,7 @@ class VimLcm(LcmBase):
                 vim_RO = deepcopy(vim_content)
                 vim_RO.pop("_id", None)
                 vim_RO.pop("_admin", None)
-                vim_RO.pop("schema_version", None)
+                schema_version = vim_RO.pop("schema_version", None)
                 vim_RO.pop("schema_type", None)
                 vim_RO.pop("vim_tenant_name", None)
                 if "vim_type" in vim_RO:
@@ -178,9 +190,23 @@ class VimLcm(LcmBase):
                         del vim_content["config"]["sdn-port-mapping"]
                     if not vim_content["config"]:
                         del vim_content["config"]
-                for k in ("vim_tenant_name", "vim_password", "config"):
-                    if k in vim_content:
-                        vim_account_RO[k] = vim_content[k]
+                if "vim_tenant_name" in vim_content:
+                    vim_account_RO["vim_tenant_name"] = vim_content["vim_tenant_name"]
+                if "vim_password" in vim_content:
+                    vim_account_RO["vim_password"] = vim_content["vim_password"]
+                if vim_content.get("vim_password"):
+                    vim_account_RO["vim_password"] = self.db.decrypt(vim_content["vim_password"],
+                                                                     schema_version=schema_version,
+                                                                     salt=vim_id)
+                if "config" in vim_content:
+                    vim_account_RO["config"] = vim_content["config"]
+                if vim_content.get("config"):
+                    for p in self.vim_config_encrypted:
+                        if vim_content["config"].get(p):
+                            vim_account_RO["config"][p] = self.db.decrypt(vim_content["config"][p],
+                                                                          schema_version=schema_version,
+                                                                          salt=vim_id)
+
                 if "vim_user" in vim_content:
                     vim_content["vim_username"] = vim_content["vim_user"]
                 # vim_account must be edited always even if empty in order to ensure changes are translated to RO
@@ -291,9 +317,12 @@ class SdnLcm(LcmBase):
             sdn_RO = deepcopy(sdn_content)
             sdn_RO.pop("_id", None)
             sdn_RO.pop("_admin", None)
-            sdn_RO.pop("schema_version", None)
+            schema_version = sdn_RO.pop("schema_version", None)
             sdn_RO.pop("schema_type", None)
             sdn_RO.pop("description", None)
+            if sdn_RO.get("password"):
+                sdn_RO["password"] = self.db.decrypt(sdn_RO["password"], schema_version=schema_version, salt=sdn_id)
+
             desc = await RO.create("sdn", descriptor=sdn_RO)
             RO_sdn_id = desc["uuid"]
             db_sdn_update["_admin.deployed.RO"] = RO_sdn_id
@@ -332,9 +361,11 @@ class SdnLcm(LcmBase):
                 sdn_RO = deepcopy(sdn_content)
                 sdn_RO.pop("_id", None)
                 sdn_RO.pop("_admin", None)
-                sdn_RO.pop("schema_version", None)
+                schema_version = sdn_RO.pop("schema_version", None)
                 sdn_RO.pop("schema_type", None)
                 sdn_RO.pop("description", None)
+                if sdn_RO.get("password"):
+                    sdn_RO["password"] = self.db.decrypt(sdn_RO["password"], schema_version=schema_version, salt=sdn_id)
                 if sdn_RO:
                     await RO.edit("sdn", RO_sdn_id, descriptor=sdn_RO)
                 db_sdn_update["_admin.operationalState"] = "ENABLED"
