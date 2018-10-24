@@ -33,6 +33,9 @@ lcm_version_date = '2018-10-11'
 
 class Lcm:
 
+    ping_interval_pace = 120  # how many time ping is send once is confirmed all is running
+    ping_interval_boot = 5    # how mnay time ping is sent when booting
+
     def __init__(self, config_file, loop=None):
         """
         Init, Connect to database, filesystem storage, and messaging
@@ -168,7 +171,7 @@ class Lcm:
             try:
                 await self.msg.aiowrite("admin", "ping", {"from": "lcm", "to": "lcm"}, self.loop)
                 # time between pings are low when it is not received and at starting
-                wait_time = 5 if not kafka_has_received else 120
+                wait_time = self.ping_interval_boot if not kafka_has_received else self.ping_interval_pace
                 if not self.pings_not_received:
                     kafka_has_received = True
                 self.pings_not_received += 1
@@ -322,6 +325,27 @@ class Lcm:
         # self.logger.debug("Task kafka_read terminating")
         self.logger.debug("Task kafka_read exit")
 
+    def health_check(self):
+
+        global exit_code
+        task = None
+        exit_code = 1
+
+        def health_check_callback(topic, command, params):
+            global exit_code
+            print("receiving callback {} {} {}".format(topic, command, params))
+            if topic == "admin" and command == "ping" and params["to"] == "lcm" and params["from"] == "lcm":
+                # print("received LCM ping")
+                exit_code = 0
+                task.cancel()
+
+        try:
+            task = asyncio.ensure_future(self.msg.aioread(("admin",), self.loop, health_check_callback))
+            self.loop.run_until_complete(task)
+        except Exception:
+            pass
+        exit(exit_code)
+
     def start(self):
 
         # check RO version
@@ -384,6 +408,7 @@ class Lcm:
 def usage():
     print("""Usage: {} [options]
         -c|--config [configuration_file]: loads the configuration file (default: ./nbi.cfg)
+        --health-check: do not run lcm, but inspect kafka bus to determine if lcm is healthy
         -h|--help: shows this help
         """.format(sys.argv[0]))
     # --log-socket-host HOST: send logs to this host")
@@ -393,15 +418,18 @@ def usage():
 if __name__ == '__main__':
     try:
         # load parameters and configuration
-        opts, args = getopt.getopt(sys.argv[1:], "hc:", ["config=", "help"])
+        opts, args = getopt.getopt(sys.argv[1:], "hc:", ["config=", "help", "health-check"])
         # TODO add  "log-socket-host=", "log-socket-port=", "log-file="
         config_file = None
+        health_check = None
         for o, a in opts:
             if o in ("-h", "--help"):
                 usage()
                 sys.exit()
             elif o in ("-c", "--config"):
                 config_file = a
+            elif o == "--health-check":
+                health_check = True
             # elif o == "--log-socket-port":
             #     log_socket_port = a
             # elif o == "--log-socket-host":
@@ -422,7 +450,10 @@ if __name__ == '__main__':
                 print("No configuration file 'nbi.cfg' found neither at local folder nor at /etc/osm/", file=sys.stderr)
                 exit(1)
         lcm = Lcm(config_file)
-        lcm.start()
+        if health_check:
+            lcm.health_check()
+        else:
+            lcm.start()
     except (LcmException, getopt.GetoptError) as e:
         print(str(e), file=sys.stderr)
         # usage()

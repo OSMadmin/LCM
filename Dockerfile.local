@@ -71,3 +71,7 @@ ENV OSMLCM_GLOBAL_LOGLEVEL DEBUG
 
 # Run app.py when the container launches
 CMD ["python3", "lcm.py"]
+
+# HEALTHCHECK --interval=30 --timeout=140 --retries=1 \
+#     CMD python3 /usr/lib/python3/dist-packages/osm_lcm/lcm.py --health-check || exit 1
+
