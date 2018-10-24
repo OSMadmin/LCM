@@ -216,6 +216,9 @@ class NsLcm(LcmBase):
             "vnfs": {},
             "networks": {},
         }
+        if ns_params.get("vduImage"):
+            RO_ns_params["vduImage"] = ns_params["vduImage"]
+
         if ns_params.get("ssh-authorized-key"):
             RO_ns_params["cloud-config"] = {"key-pairs": ns_params["ssh-authorized-key"]}
         if ns_params.get("vnf"):
@@ -544,6 +547,11 @@ class NsLcm(LcmBase):
 
                 step = db_nsr_update["detailed-status"] = "Checking instantiation parameters"
                 RO_ns_params = self.ns_params_2_RO(ns_params, nsd, needed_vnfd)
+
+                n2vc_key = await self.n2vc.GetPublicKey()
+                RO_ns_params["mgmt_keys"] = [n2vc_key]
+                # TODO feature 1429. Add this option only to VMs with configuration and no password
+
                 step = db_nsr_update["detailed-status"] = "Creating ns at RO"
                 desc = await RO.create("ns", descriptor=RO_ns_params,
                                        name=db_nsr["name"],
