@@ -331,8 +331,8 @@ class NsLcm(LcmBase):
         if ns_params.get("vduImage"):
             RO_ns_params["vduImage"] = ns_params["vduImage"]
 
-        if ns_params.get("ssh-authorized-key"):
-            RO_ns_params["cloud-config"] = {"key-pairs": ns_params["ssh-authorized-key"]}
+        if ns_params.get("ssh_keys"):
+            RO_ns_params["cloud-config"] = {"key-pairs": ns_params["ssh_keys"]}
         for vnf_params in get_iterable(ns_params, "vnf"):
             for constituent_vnfd in nsd["constituent-vnfd"]:
                 if constituent_vnfd["member-vnf-index"] == vnf_params["member-vnf-index"]:
