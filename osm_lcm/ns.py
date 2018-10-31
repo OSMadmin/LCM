@@ -52,6 +52,8 @@ def populate_dict(target_dict, key_list, value):
 
 
 class NsLcm(LcmBase):
+    timeout_vca_on_error = 5 * 60   # Time for charm from first time at blocked,error status to mark as failed
+    total_deploy_timeout = 2 * 3600   # global timeout for deployment
 
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
         """
@@ -556,6 +558,7 @@ class NsLcm(LcmBase):
         logging_text = "Task ns={} instantiate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
         # get all needed from database
+        start_deploy = time()
         db_nsr = None
         db_nslcmop = None
         db_nsr_update = {"_admin.nslcmop": nslcmop_id}
@@ -754,8 +757,7 @@ class NsLcm(LcmBase):
             detailed_status_old = None
             self.logger.debug(logging_text + step)
 
-            deployment_timeout = 2 * 3600   # Two hours
-            while deployment_timeout > 0:
+            while time() <= start_deploy + self.total_deploy_timeout:
                 desc = await RO.show("ns", RO_nsr_id)
                 ns_status, ns_status_info = RO.check_ns_status(desc)
                 db_nsr_update["admin.deployed.RO.nsr_status"] = ns_status
@@ -777,8 +779,7 @@ class NsLcm(LcmBase):
                     detailed_status_old = db_nsr_update["detailed-status"] = detailed_status
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
                 await asyncio.sleep(5, loop=self.loop)
-                deployment_timeout -= 5
-            if deployment_timeout <= 0:
+            else:   # total_deploy_timeout
                 raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
             step = "Updating VNFRs"
@@ -927,16 +928,18 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["detailed-status"] = old_status
 
                 # wait until all are configured.
-                while True:
+                while time() <= start_deploy + self.total_deploy_timeout:
                     if db_nsr_update:
                         self.update_db_2("nsrs", nsr_id, db_nsr_update)
                     if db_nslcmop_update:
                         self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                    # TODO add a fake tast that set n2vc_event after some time
                     await n2vc_info["n2vc_event"].wait()
                     n2vc_info["n2vc_event"].clear()
                     all_active = True
                     status_map = {}
                     n2vc_error_text = []  # contain text error list. If empty no one is in error status
+                    now = time()
                     for _, vca_info in nsr_lcm["VCA"].items():
                         vca_status = vca_info["operational-status"]
                         if vca_status not in status_map:
@@ -944,13 +947,24 @@ class NsLcm(LcmBase):
                             status_map[vca_status] = 0
                         status_map[vca_status] += 1
 
-                        if vca_status != "active":
-                            all_active = False
+                        if vca_status == "active":
+                            vca_info.pop("time_first_error", None)
+                            vca_info.pop("status_first_error", None)
+                            continue
+
+                        all_active = False
                         if vca_status in ("error", "blocked"):
-                            n2vc_error_text.append(
-                                "member_vnf_index={} vdu_id={} {}: {}".format(vca_info["member-vnf-index"],
-                                                                              vca_info["vdu_id"], vca_status,
-                                                                              vca_info["detailed-status"]))
+                            vca_info["detailed-status-error"] = vca_info["detailed-status"]
+                            # if not first time in this status error
+                            if not vca_info.get("time_first_error"):
+                                vca_info["time_first_error"] = now
+                                continue
+                        if vca_info.get("time_first_error") and \
+                                now <= vca_info["time_first_error"] + self.timeout_vca_on_error:
+                            n2vc_error_text.append("member_vnf_index={} vdu_id={} {}: {}"
+                                                   .format(vca_info["member-vnf-index"],
+                                                           vca_info["vdu_id"], vca_status,
+                                                           vca_info["detailed-status-error"]))
 
                     if all_active:
                         break
@@ -974,6 +988,8 @@ class NsLcm(LcmBase):
                             db_nsr_update["detailed-status"] = cs
                             db_nslcmop_update["detailed-status"] = cs
                             old_status = cs
+                else:   # total_deploy_timeout
+                    raise LcmException("Timeout waiting ns to be configured")
 
             if not configuration_failed:
                 # all is done
