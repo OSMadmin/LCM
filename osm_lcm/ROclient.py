@@ -104,7 +104,7 @@ class ROClient:
     mandatory_for_create = {
         'tenant': ("name", ),
         'vnfd': ("name", "id", "connection-point", "vdu"),
-        'nsd': ("name", "id", "constituent-vnfd"),
+        'nsd': ("name", "id"),
         'ns': ("name", "scenario", "datacenter"),
         'vim': ("name", "vim_url"),
         'vim_account': (),

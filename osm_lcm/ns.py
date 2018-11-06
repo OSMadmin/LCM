@@ -687,7 +687,7 @@ class NsLcm(LcmBase):
                 nsd_RO["id"] = RO_osm_nsd_id
                 nsd_RO.pop("_id", None)
                 nsd_RO.pop("_admin", None)
-                for c_vnf in nsd_RO["constituent-vnfd"]:
+                for c_vnf in nsd_RO.get("constituent-vnfd", ()):
                     vnfd_id = c_vnf["vnfd-id-ref"]
                     c_vnf["vnfd-id-ref"] = descriptor_id_2_RO[vnfd_id]
                 desc = await RO.create("nsd", descriptor=nsd_RO)
@@ -875,7 +875,7 @@ class NsLcm(LcmBase):
             step = "Looking for needed vnfd to configure"
             self.logger.debug(logging_text + step)
 
-            for c_vnf in nsd["constituent-vnfd"]:
+            for c_vnf in nsd.get("constituent-vnfd", ()):
                 vnfd_id = c_vnf["vnfd-id-ref"]
                 vnf_index = str(c_vnf["member-vnf-index"])
                 vnfd = db_vnfds_ref[vnfd_id]
