@@ -27,14 +27,14 @@ min_RO_version = [0, 5, 72]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.22'
-lcm_version_date = '2018-10-31'
+lcm_version = '0.1.23'
+lcm_version_date = '2018-11-13'
 
 
 class Lcm:
 
     ping_interval_pace = 120  # how many time ping is send once is confirmed all is running
-    ping_interval_boot = 5    # how mnay time ping is sent when booting
+    ping_interval_boot = 5    # how many time ping is sent when booting
 
     def __init__(self, config_file, loop=None):
         """

@@ -9,7 +9,7 @@ import functools
 import traceback
 
 import ROclient
-from lcm_utils import LcmException, LcmBase
+from lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
 
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
@@ -82,58 +82,6 @@ class NsLcm(LcmBase):
             # artifacts=vca_config[''],
             artifacts=None,
         )
-
-    def _look_for_pdu(self, vdur, vnfr, vim_account):  # TODO feature 1417: project_id
-        """
-        Look for a free PDU in the catalog matching vdur type and interfaces. Fills vdur with ip_address information
-        :param vdur: vnfr:vdur descriptor. It is modified with pdu interface info if pdu is found
-        :param member_vnf_index: used just for logging. Target vnfd of nsd
-        :param vim_account:
-        :return: vder_update: dictionary to update vnfr:vdur with pdu info. In addition it modified choosen pdu to set
-        at status IN_USE
-        """
-        pdu_type = vdur.get("pdu-type")
-        assert pdu_type
-        pdu_filter = {
-            "vim.vim_accounts": vim_account,
-            "type": pdu_type,
-            "_admin.operationalState": "ENABLED",
-            "_admin.usageSate": "NOT_IN_USE",
-            # TODO feature 1417: "shared": True,
-            # TODO feature 1417:  "_admin.projects_read.cont": ["ANY", project_id],
-        }
-        available_pdus = self.db.get_list("pdus", pdu_filter)
-        for pdu in available_pdus:
-            # step 1 check if this pdu contains needed interfaces:
-            match_interfaces = True
-            for vdur_interface in vdur["interfaces"]:
-                for pdu_interface in pdu["interfaces"]:
-                    if pdu_interface["name"] == vdur_interface["name"]:
-                        # TODO feature 1417: match per mgmt type
-                        break
-                else:  # no interface found
-                    match_interfaces = False
-                    break
-            if not match_interfaces:
-                continue
-
-            # step 2. Update pdu
-            self.update_db_2("pdus", pdu["_id"], {"_admin.usageSate": "IN_USE",
-                                                  "_admin.usage.vnfr_id": vnfr["_id"],
-                                                  "_admin.usage.nsr_id": vnfr["nsr-id-ref"],
-                                                  "_admin.usage.vdur": vdur["vdu-id-ref"],
-                                                  })
-            # step 3. Fill vnfr info by filling vdur
-            vdur["pdu-id"] = pdu["_id"]
-            for vdur_interface in vdur["interfaces"]:
-                for pdu_interface in pdu["interfaces"]:
-                    if pdu_interface["name"] == vdur_interface["name"]:
-                        vdur_interface.update(pdu_interface)
-                        break
-
-            return
-        raise LcmException("No PDU of type={} found for member_vng_index={} at vim_account={} matching interface "
-                           "names".format(vdur["vdu-id-ref"], vnfr["member-vnf-index-ref"], pdu_type))
 
     def vnfd2RO(self, vnfd, new_id=None):
         """
@@ -504,6 +452,28 @@ class NsLcm(LcmBase):
         db_vnfr["vdur"] = vdurs
         self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
 
+    def ns_update_nsr(self, ns_update_nsr, db_nsr, nsr_desc_RO):
+        """
+        Updates database nsr with the RO info for the created vld
+        :param ns_update_nsr: dictionary to be filled with the updated info
+        :param db_nsr: content of db_nsr. This is also modified
+        :param nsr_desc_RO: nsr descriptor from RO
+        :return: Nothing, LcmException is raised on errors
+        """
+
+        for vld_index, vld in enumerate(get_iterable(db_nsr, "vld")):
+            for net_RO in get_iterable(nsr_desc_RO, "nets"):
+                if vld["id"] != net_RO.get("ns_net_osm_id"):
+                    continue
+                vld["vim-id"] = net_RO.get("vim_net_id")
+                vld["name"] = net_RO.get("vim_name")
+                vld["status"] = net_RO.get("status")
+                vld["status-detailed"] = net_RO.get("error_msg")
+                ns_update_nsr["vld.{}".format(vld_index)] = vld
+                break
+            else:
+                raise LcmException("ns_update_nsr: Not found vld={} at RO info".format(vld["id"]))
+
     def ns_update_vnfr(self, db_vnfrs, nsr_desc_RO):
         """
         Updates database vnfr with the RO info, e.g. ip_address, vim_id... Descriptor db_vnfrs is also updated
@@ -516,7 +486,10 @@ class NsLcm(LcmBase):
                 if vnf_RO["member_vnf_index"] != vnf_index:
                     continue
                 vnfr_update = {}
-                db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO.get("ip_address")
+                if vnf_RO.get("ip_address"):
+                    db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO["ip_address"]
+                elif not db_vnfr.get("ip-address"):
+                    raise LcmExceptionNoMgmtIP("ns member_vnf_index '{}' has no IP address".format(vnf_index))
 
                 for vdu_index, vdur in enumerate(get_iterable(db_vnfr, "vdur")):
                     vdur_RO_count_index = 0
@@ -548,6 +521,21 @@ class NsLcm(LcmBase):
                     else:
                         raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vdur={} count_index={} at "
                                            "RO info".format(vnf_index, vdur["vdu-id-ref"], vdur["count-index"]))
+
+                for vld_index, vld in enumerate(get_iterable(db_vnfr, "vld")):
+                    for net_RO in get_iterable(nsr_desc_RO, "nets"):
+                        if vld["id"] != net_RO.get("vnf_net_osm_id"):
+                            continue
+                        vld["vim-id"] = net_RO.get("vim_net_id")
+                        vld["name"] = net_RO.get("vim_name")
+                        vld["status"] = net_RO.get("status")
+                        vld["status-detailed"] = net_RO.get("error_msg")
+                        vnfr_update["vld.{}".format(vld_index)] = vld
+                        break
+                    else:
+                        raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vld={} at RO info".format(
+                            vnf_index, vld["id"]))
+
                 self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
                 break
 
@@ -574,7 +562,7 @@ class NsLcm(LcmBase):
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr={} from db".format(nsr_id)
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
-            ns_params = db_nsr.get("instantiate_params")
+            ns_params = db_nslcmop.get("operationParams")
             nsd = db_nsr["nsd"]
             nsr_name = db_nsr["name"]   # TODO short-name??
 
@@ -603,41 +591,12 @@ class NsLcm(LcmBase):
                     db_vnfds_ref[vnfd_ref] = vnfd
                     db_vnfds[vnfd_id] = vnfd
 
-                # update VNFR vimAccount and pdu information
-
-                vim_account = vnfr.get("vim-account-id")
-                vnfr_update = {}
-                if not vim_account:
-                    step = "Updating VNFR vimAccount"
-                    vim_account = db_nsr["instantiate_params"]["vimAccountId"]
-                    # check instantiate parameters
-                    if db_nsr["instantiate_params"].get("vnf"):
-                        for vnf_params in db_nsr["instantiate_params"]["vnf"]:
-                            if vnf_params.get("member-vnf-index") == vnfr["member-vnf-index-ref"]:
-                                if vnf_params.get("vimAccountId"):
-                                    vim_account = vnf_params.get("vimAccountId")
-                                break
-                    vnfr_update["vim-account-id"] = vim_account
-                    vnfr["vim-account-id"] = vim_account
-
-                # check PDUs and get PDU
-                for vdur_index, vdur in enumerate(get_iterable(vnfr, "vdur")):
-                    pdu_type = vdur.get("pdu-type")
-                    if not pdu_type:
-                        continue
-                    # look for free pdu
-                    self._look_for_pdu(vdur, vnfr, vim_account)
-                    # fill vnfr with pdu info
-                    vnfr_update["vdur.{}".format(vdur_index)] = vdur
-                if vnfr_update:
-                    self.update_db_2("vnfrs", vnfr["_id"], vnfr_update)
-
             nsr_lcm = db_nsr["_admin"].get("deployed")
             if not nsr_lcm:
                 nsr_lcm = db_nsr["_admin"]["deployed"] = {
                     "id": nsr_id,
                     "RO": {"vnfd_id": {}, "nsd_id": None, "nsr_id": None, "nsr_status": "SCHEDULED"},
-                    "nsr_ip": {},
+                    # "nsr_ip": {},
                     "VCA": {},
                 }
             db_nsr_update["detailed-status"] = "creating"
@@ -766,13 +725,13 @@ class NsLcm(LcmBase):
                 elif ns_status == "BUILD":
                     detailed_status = ns_status_detailed + "; {}".format(ns_status_info)
                 elif ns_status == "ACTIVE":
-                    step = detailed_status = "Waiting for management IP address reported by the VIM"
+                    step = detailed_status = "Waiting for management IP address reported by the VIM. Updating VNFRs"
                     try:
-                        nsr_lcm["nsr_ip"] = RO.get_ns_vnf_info(desc)
+                        # nsr_lcm["nsr_ip"] = RO.get_ns_vnf_info(desc)
+                        self.ns_update_vnfr(db_vnfrs, desc)
                         break
-                    except ROclient.ROClientException as e:
-                        if e.http_code != 409:  # IP address is not ready return code is 409 CONFLICT
-                            raise e
+                    except LcmExceptionNoMgmtIP:
+                        pass
                 else:
                     assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
                 if detailed_status != detailed_status_old:
@@ -782,8 +741,8 @@ class NsLcm(LcmBase):
             else:   # total_deploy_timeout
                 raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
-            step = "Updating VNFRs"
-            self.ns_update_vnfr(db_vnfrs, desc)
+            step = "Updating NSR"
+            self.ns_update_nsr(db_nsr_update, db_nsr, desc)
 
             db_nsr["detailed-status"] = "Configuring vnfr"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
@@ -1406,6 +1365,7 @@ class NsLcm(LcmBase):
         scale_process = None
         old_operational_status = ""
         old_config_status = ""
+        vnfr_scaled = False
         try:
             step = "Getting nslcmop from database"
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
@@ -1593,14 +1553,18 @@ class NsLcm(LcmBase):
                         elif ns_status == "BUILD":
                             detailed_status = step + "; {}".format(ns_status_info)
                         elif ns_status == "ACTIVE":
-                            step = detailed_status = "Waiting for management IP address reported by the VIM"
+                            step = detailed_status = \
+                                "Waiting for management IP address reported by the VIM. Updating VNFRs"
+                            if not vnfr_scaled:
+                                self.scale_vnfr(db_vnfr, vdu_create=vdu_create, vdu_delete=vdu_delete)
+                                vnfr_scaled = True
                             try:
                                 desc = await RO.show("ns", RO_nsr_id)
-                                nsr_lcm["nsr_ip"] = RO.get_ns_vnf_info(desc)
+                                # nsr_lcm["nsr_ip"] = RO.get_ns_vnf_info(desc)
+                                self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
                                 break
-                            except ROclient.ROClientException as e:
-                                if e.http_code != 409:  # IP address is not ready return code is 409 CONFLICT
-                                    raise e
+                            except LcmExceptionNoMgmtIP:
+                                pass
                         else:
                             assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
                     if detailed_status != detailed_status_old:
@@ -1611,10 +1575,6 @@ class NsLcm(LcmBase):
                     deployment_timeout -= 5
                 if deployment_timeout <= 0:
                     raise ROclient.ROClientException("Timeout waiting ns to be ready")
-
-                step = "Updating VNFRs"
-                self.scale_vnfr(db_vnfr, vdu_create=vdu_create, vdu_delete=vdu_delete)
-                self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
 
                 # update VDU_SCALING_INFO with the obtained ip_addresses
                 if vdu_scaling_info["scaling_direction"] == "OUT":

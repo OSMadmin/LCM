@@ -34,5 +34,5 @@ RUN apt-get update && \
 # WORKDIR /app
 # # Copy the current directory contents into the container at /app
 # ADD . /app
-#i CMD /app/devops-stages/stage-build.sh && find -name "*.deb" -exec dpkg -I  {} ";"
+# CMD /app/devops-stages/stage-build.sh && find -name "*.deb" -exec dpkg -I  {} ";"
 

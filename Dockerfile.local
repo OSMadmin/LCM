@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y git tox python3 \
 RUN git clone https://osm.etsi.org/gerrit/osm/N2VC.git \
     && pip3 install -e N2VC \
     && pip3 install -e N2VC/modules/libjuju \
-    && apt-get install -y libffi-dev libssl-dev
+    && apt-get install -y libffi-dev libssl-dev openssh-client
     # cd N2VC; python3 setup.py develop
     # cd modules/libjuju; python3 setup.py develop
 

@@ -12,6 +12,10 @@ class LcmException(Exception):
     pass
 
 
+class LcmExceptionNoMgmtIP(LcmException):
+    pass
+
+
 def versiontuple(v):
     """utility for compare dot separate versions. Fills with zeros to proper number comparison
     package version will be something like 4.0.1.post11+gb3f024d.dirty-1. Where 4.0.1 is the git tag, postXX is the
