@@ -149,7 +149,7 @@ class NsLcm(LcmBase):
             vnfd_RO.pop("_admin", None)
             if new_id:
                 vnfd_RO["id"] = new_id
-            for vdu in vnfd_RO["vdu"]:
+            for vdu in vnfd_RO.get("vdu", ()):
                 if "cloud-init-file" in vdu:
                     base_folder = vnfd["_admin"]["storage"]
                     clout_init_file = "{}/{}/cloud_init/{}".format(
@@ -310,7 +310,7 @@ class NsLcm(LcmBase):
                         elif vnfd["mgmt-interface"].get("cp"):
                             mgmt_cp = vnfd["mgmt-interface"]["cp"]
 
-                for vdu in vnfd.get("vdu"):
+                for vdu in vnfd.get("vdu", ()):
                     if vdu.get("vdu-configuration"):
                         vdu_needed_access.append(vdu["id"])
                     elif mgmt_cp:
@@ -900,7 +900,7 @@ class NsLcm(LcmBase):
 
                 # Deploy charms for each VDU that supports one.
                 vdu_index = 0
-                for vdu in vnfd['vdu']:
+                for vdu in vnfd.get('vdu', ()):
                     vdu_config = vdu.get('vdu-configuration')
                     proxy_charm = None
                     config_primitive = None

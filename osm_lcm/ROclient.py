@@ -103,7 +103,7 @@ class ROClient:
                     'ns': 'instances'}
     mandatory_for_create = {
         'tenant': ("name", ),
-        'vnfd': ("name", "id", "connection-point", "vdu"),
+        'vnfd': ("name", "id"),
         'nsd': ("name", "id"),
         'ns': ("name", "scenario", "datacenter"),
         'vim': ("name", "vim_url"),
@@ -353,7 +353,7 @@ class ROClient:
         """
         ns_info = {}
         for vnf in ns_descriptor["vnfs"]:
-            if not vnf.get("ip_address"):
+            if not vnf.get("ip_address") and vnf.get("vms"):
                 raise ROClientException("ns member_vnf_index '{}' has no IP address".format(
                     vnf["member_vnf_index"]), http_code=409)
             vnfr_info = {
