@@ -40,6 +40,7 @@ class TaskRegistry:
     def __init__(self):
         self.task_registry = {
             "ns": {},
+            "nsi": {},
             "vim_account": {},
             "sdn": {},
         }
@@ -47,7 +48,7 @@ class TaskRegistry:
     def register(self, topic, _id, op_id, task_name, task):
         """
         Register a new task
-        :param topic: Can be "ns", "vim_account", "sdn"
+        :param topic: Can be "ns", "nsi", "vim_account", "sdn"
         :param _id: _id of the related item
         :param op_id: id of the operation of the related item
         :param task_name: Task descriptive name, as create, instantiate, terminate. Must be unique in this op_id
@@ -65,7 +66,7 @@ class TaskRegistry:
     def remove(self, topic, _id, op_id, task_name=None):
         """
         When task is ended, it should removed. It ignores missing tasks
-        :param topic: Can be "ns", "vim_account", "sdn"
+        :param topic: Can be "ns", "nsi", "vim_account", "sdn"
         :param _id: _id of the related item
         :param op_id: id of the operation of the related item
         :param task_name: Task descriptive name. If note it deletes all
@@ -103,8 +104,8 @@ class TaskRegistry:
 
     def cancel(self, topic, _id, target_op_id=None, target_task_name=None):
         """
-        Cancel all active tasks of a concrete ns, vim_account, sdn identified for _id. If op_id is supplied only this is
-        cancelled, and the same with task_name
+        Cancel all active tasks of a concrete ns, nsi, vim_account, sdn identified for _id. If op_id is supplied only 
+        this is cancelled, and the same with task_name
         """
         if not self.task_registry[topic].get(_id):
             return

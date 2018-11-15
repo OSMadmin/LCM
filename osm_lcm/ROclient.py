@@ -99,7 +99,7 @@ def remove_envelop(item, indata=None):
 class ROClient:
     headers_req = {'Accept': 'application/yaml', 'content-type': 'application/yaml'}
     client_to_RO = {'tenant': 'tenants', 'vim': 'datacenters', 'vim_account': 'datacenters', 'sdn': 'sdn_controllers',
-                    'vnfd': 'vnfs', 'nsd': 'scenarios',
+                    'vnfd': 'vnfs', 'nsd': 'scenarios', 
                     'ns': 'instances'}
     mandatory_for_create = {
         'tenant': ("name", ),
@@ -757,7 +757,7 @@ class ROClient:
     async def create(self, item, descriptor=None, descriptor_format=None, **kwargs):
         """
         Creates an item from its descriptor
-        :param item: can be 'tenant', 'vnfd', 'nsd', 'ns', 'vim', 'vim_account', 'sdn'
+        :param item: can be 'tenant', 'vnfd', 'nsd', 'ns', 'vim', 'vim_account', 'sdn', nstd
         :param descriptor: can be a dict, or a yaml/json text. Autodetect unless descriptor_format is provided
         :param descriptor_format: Can be 'json' or 'yaml'
         :param kwargs: Overrides descriptor with values as name, description, vim_url, vim_url_admin, vim_type
