@@ -10,6 +10,7 @@ import sys
 import ROclient
 import ns
 import vim_sdn
+import netslice
 from lcm_utils import versiontuple, LcmException, TaskRegistry
 
 # from osm_lcm import version as lcm_version, version_date as lcm_version_date, ROclient
@@ -27,8 +28,8 @@ min_RO_version = [0, 5, 72]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.23'
-lcm_version_date = '2018-11-13'
+lcm_version = '0.1.24'
+lcm_version_date = '2018-11-16'
 
 
 class Lcm:
@@ -142,6 +143,8 @@ class Lcm:
             raise LcmException(str(e))
 
         self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.vca_config, self.loop)
+        self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, 
+                                             self.vca_config, self.loop)
         self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
         self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
 
@@ -201,7 +204,7 @@ class Lcm:
         first_start = True
         while consecutive_errors < 10:
             try:
-                topics = ("admin", "ns", "vim_account", "sdn")
+                topics = ("admin", "ns", "vim_account", "sdn", "nsi")
                 topic, command, params = await self.msg.aioread(topics, self.loop)
                 if topic != "admin" and command != "ping":
                     self.logger.debug("Task kafka_read receives {} {}: {}".format(topic, command, params))
@@ -270,6 +273,40 @@ class Lcm:
                                             db_nsr["_admin"]["deployed"], self.lcm_ns_tasks.get(nsr_id)))
                         except Exception as e:
                             print("nsr {} not found: {}".format(nsr_id, e))
+                        sys.stdout.flush()
+                        continue
+                    elif command == "deleted":
+                        continue  # TODO cleaning of task just in case should be done
+                    elif command in ("terminated", "instantiated", "scaled", "actioned"):  # "scaled-cooldown-time"
+                        continue
+                elif topic == "nsi":  # netslice LCM processes (instantiate, terminate, etc)
+                    if command == "instantiate":
+                        # self.logger.debug("Instantiating Network Slice {}".format(nsilcmop["netsliceInstanceId"]))
+                        nsilcmop = params
+                        nsilcmop_id = nsilcmop["_id"]                               # slice operation id
+                        nsir_id = nsilcmop["netsliceInstanceId"]                    # slice record id
+                        task = asyncio.ensure_future(self.netslice.instantiate(nsir_id, nsilcmop_id))
+                        self.lcm_tasks.register("nsi", nsir_id, nsilcmop_id, "nsi_instantiate", task)
+                        continue
+                    elif command == "terminate":
+                        # self.logger.debug("Terminating Network Slice NS {}".format(nsilcmop["netsliceInstanceId"]))
+                        nsilcmop = params
+                        nsilcmop_id = nsilcmop["_id"]                               # slice operation id
+                        nsir_id = nsilcmop["netsliceInstanceId"]                    # slice record id
+                        self.lcm_tasks.cancel(topic, nsir_id)
+                        task = asyncio.ensure_future(self.netslice.terminate(nsir_id, nsilcmop_id))
+                        self.lcm_tasks.register("nsi", nsir_id, nsilcmop_id, "nsi_terminate", task)
+                        continue
+                    elif command == "show":
+                        try:
+                            db_nsir = self.db.get_one("nsirs", {"_id": nsir_id})
+                            print("nsir:\n    _id={}\n    operational-status: {}\n    config-status: {}"
+                                  "\n    detailed-status: {}\n    deploy: {}\n    tasks: {}"
+                                  "".format(nsir_id, db_nsir["operational-status"], db_nsir["config-status"],
+                                            db_nsir["detailed-status"],
+                                            db_nsir["_admin"]["deployed"], self.lcm_netslice_tasks.get(nsir_id)))
+                        except Exception as e:
+                            print("nsir {} not found: {}".format(nsir_id, e))
                         sys.stdout.flush()
                         continue
                     elif command == "deleted":
