@@ -28,8 +28,8 @@ min_RO_version = [0, 5, 72]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.24'
-lcm_version_date = '2018-11-16'
+lcm_version = '0.1.25'
+lcm_version_date = '2018-11-20'
 
 
 class Lcm:

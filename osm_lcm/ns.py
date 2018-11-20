@@ -1371,6 +1371,7 @@ class NsLcm(LcmBase):
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr from database"
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            nsr_name = db_nsr["name"]
             old_operational_status = db_nsr["operational-status"]
             old_config_status = db_nsr["config-status"]
 
@@ -1505,7 +1506,7 @@ class NsLcm(LcmBase):
                                 "primitive".format(scaling_group, config_primitive))
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring pre-scaling"
-                        result, result_detail = await self._ns_execute_primitive(nsr_lcm, vnf_index,
+                        result, result_detail = await self._ns_execute_primitive(nsr_lcm, nsr_name, vnf_index, None,
                                                                                  vnf_config_primitive, primitive_params)
                         self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                             vnf_config_primitive, result, result_detail))
@@ -1626,7 +1627,7 @@ class NsLcm(LcmBase):
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring post-scaling"
 
-                        result, result_detail = await self._ns_execute_primitive(nsr_lcm, vnf_index,
+                        result, result_detail = await self._ns_execute_primitive(nsr_lcm, nsr_name, vnf_index, None,
                                                                                  vnf_config_primitive, primitive_params)
                         self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                             vnf_config_primitive, result, result_detail))
