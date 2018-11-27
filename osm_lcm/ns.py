@@ -1048,6 +1048,12 @@ class NsLcm(LcmBase):
                     db_nsr_update["detailed-status"] = "Deleting charms"
                     self.logger.debug(logging_text + step)
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
+                    # for backward compatibility
+                    if isinstance(nsr_deployed["VCA"], dict):
+                        nsr_deployed["VCA"] = list(nsr_deployed["VCA"].values())
+                        db_nsr_update["_admin.deployed.VCA"] = nsr_deployed["VCA"]
+                        self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
                     for vca_index, vca_deployed in enumerate(nsr_deployed["VCA"]):
                         if vca_deployed:  # TODO it would be desirable having a and deploy_info.get("deployed"):
                             task = asyncio.ensure_future(
@@ -1340,6 +1346,12 @@ class NsLcm(LcmBase):
                 if pending:
                     raise LcmException("Timeout waiting related tasks to be completed")
 
+            # for backward compatibility
+            if nsr_deployed and isinstance(nsr_deployed.get("VCA"), dict):
+                nsr_deployed["VCA"] = list(nsr_deployed["VCA"].values())
+                db_nsr_update["_admin.deployed.VCA"] = nsr_deployed["VCA"]
+                self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
             # TODO check if ns is in a proper status
             primitive = db_nslcmop["operationParams"]["primitive"]
             primitive_params = db_nslcmop["operationParams"]["primitive_params"]
@@ -1425,6 +1437,12 @@ class NsLcm(LcmBase):
             scaling_group = db_nslcmop["operationParams"]["scaleVnfData"]["scaleByStepData"]["scaling-group-descriptor"]
             scaling_type = db_nslcmop["operationParams"]["scaleVnfData"]["scaleVnfType"]
             # scaling_policy = db_nslcmop["operationParams"]["scaleVnfData"]["scaleByStepData"].get("scaling-policy")
+
+            # for backward compatibility
+            if nsr_deployed and isinstance(nsr_deployed.get("VCA"), dict):
+                nsr_deployed["VCA"] = list(nsr_deployed["VCA"].values())
+                db_nsr_update["_admin.deployed.VCA"] = nsr_deployed["VCA"]
+                self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             step = "Getting vnfr from database"
             db_vnfr = self.db.get_one("vnfrs", {"member-vnf-index-ref": vnf_index, "nsr-id-ref": nsr_id})
