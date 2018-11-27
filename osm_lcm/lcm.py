@@ -24,12 +24,12 @@ from n2vc import version as n2vc_version
 
 
 __author__ = "Alfonso Tierno"
-min_RO_version = [0, 5, 72]
+min_RO_version = [0, 5, 84]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.25'
-lcm_version_date = '2018-11-20'
+lcm_version = '0.1.26'
+lcm_version_date = '2018-11-27'
 
 
 class Lcm:
