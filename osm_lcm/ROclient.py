@@ -3,8 +3,6 @@
 
 ##
 # Copyright 2015 Telefónica Investigación y Desarrollo, S.A.U.
-# This file is part of openmano
-# All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License"); you may
 # not use this file except in compliance with the License. You may obtain
@@ -18,8 +16,6 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 #
-# For those usages not covered by the Apache License, Version 2.0 please
-# contact with: nfvlabs@tid.es
 ##
 
 """
