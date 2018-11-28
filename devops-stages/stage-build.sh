@@ -14,8 +14,7 @@
 # under the License.
 ##
 
-# moved to a Makefile in order to add post install. Needed for "pip3 install aiokafka",
-# that is not available with a package
+# For the moment it is not needed any post-intall action, so tox instead of Makefile is used
 
 make clean     # rm -rf deb_dist
 tox -e build   # make package
