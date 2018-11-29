@@ -805,20 +805,18 @@ class NsLcm(LcmBase):
 
                 # ns_name will be ignored in the current version of N2VC
                 # but will be implemented for the next point release.
-                model_name = 'default'   # TODO bug 581 : change to nsr_id
+                model_name = "default"    # TODO bug 585  nsr_id
                 if vdu_id:
-                    vdu_id_text = vdu_id
+                    vdu_id_text = vdu_id + "-"
                 else:
-                    vdu_id_text = "vnfd"  # TODO bug 581 remove and add just an empty string ""
+                    vdu_id_text = "-"
                 application_name = self.n2vc.FormatApplicationName(nsr_name, vnf_index, vdu_id_text)
-                # TODO bug 581 Add "-" as a final argument
 
                 vca_index = len(vca_deployed_list)
                 # trunk name and add two char index at the end to ensure that it is unique. It is assumed no more than
                 # 26*26 charm in the same NS
-                # TODO bug 581 uncoment
-                # application_name = application_name[0:48]
-                # application_name += chr(97 + vca_index / 26) + chr(97 + vca_index % 26)
+                application_name = application_name[0:48]
+                application_name += chr(97 + vca_index // 26) + chr(97 + vca_index % 26)
                 vca_deployed_ = {
                     "member-vnf-index": vnf_index,
                     "vdu_id": vdu_id,
@@ -1103,6 +1101,8 @@ class NsLcm(LcmBase):
             try:
                 if RO_nsr_id:
                     step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] = "Deleting ns at RO"
+                    self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
                     self.logger.debug(logging_text + step)
                     desc = await RO.delete("ns", RO_nsr_id)
                     RO_delete_action = desc["action_id"]
@@ -1128,11 +1128,13 @@ class NsLcm(LcmBase):
                             break
                         else:
                             assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
+                        if detailed_status != detailed_status_old:
+                            detailed_status_old = db_nslcmop_update["detailed-status"] = \
+                                db_nsr_update["detailed-status"] = detailed_status
+                            self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                            self.update_db_2("nsrs", nsr_id, db_nsr_update)
                         await asyncio.sleep(5, loop=self.loop)
                         delete_timeout -= 5
-                        if detailed_status != detailed_status_old:
-                            detailed_status_old = db_nslcmop_update["detailed-status"] = detailed_status
-                            self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
                     else:  # delete_timeout <= 0:
                         raise ROclient.ROClientException("Timeout waiting ns deleted from VIM")
 
