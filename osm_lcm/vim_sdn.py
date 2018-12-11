@@ -84,6 +84,7 @@ class VimLcm(LcmBase):
             desc = await RO.create("vim", descriptor=vim_RO)
             RO_vim_id = desc["uuid"]
             db_vim_update["_admin.deployed.RO"] = RO_vim_id
+            self.logger.debug(logging_text + "VIM created at RO_vim_id={}".format(RO_vim_id))
 
             step = "Creating vim_account at RO"
             db_vim_update["_admin.detailed-status"] = step
@@ -109,13 +110,13 @@ class VimLcm(LcmBase):
                                                                       schema_version=schema_version,
                                                                       salt=vim_id)
 
-            desc = await RO.attach_datacenter(RO_vim_id, descriptor=vim_account_RO)
+            desc = await RO.attach("vim_account", RO_vim_id, descriptor=vim_account_RO)
             db_vim_update["_admin.deployed.RO-account"] = desc["uuid"]
             db_vim_update["_admin.operationalState"] = "ENABLED"
             db_vim_update["_admin.detailed-status"] = "Done"
 
             # await asyncio.sleep(15)   # TODO remove. This is for test
-            self.logger.debug(logging_text + "Exit Ok RO_vim_id={}".format(RO_vim_id))
+            self.logger.debug(logging_text + "Exit Ok VIM account created at RO_vim_account_id={}".format(desc["uuid"]))
             return
 
         except (ROclient.ROClientException, DbException) as e:
@@ -260,7 +261,7 @@ class VimLcm(LcmBase):
                 RO = ROclient.ROClient(self.loop, **self.ro_config)
                 step = "Detaching vim from RO tenant"
                 try:
-                    await RO.detach_datacenter(RO_vim_id)
+                    await RO.detach("vim_account", RO_vim_id)
                 except ROclient.ROClientException as e:
                     if e.http_code == 404:  # not found
                         self.logger.debug(logging_text + "RO_vim_id={} already detached".format(RO_vim_id))
@@ -296,6 +297,239 @@ class VimLcm(LcmBase):
             if db_vim_update:
                 self.update_db_2("vim_accounts", vim_id, db_vim_update)
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
+
+
+class WimLcm(LcmBase):
+    # values that are encrypted at wim config because they are passwords
+    wim_config_encrypted = ()
+
+    def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
+        """
+        Init, Connect to database, filesystem storage, and messaging
+        :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
+        :return: None
+        """
+
+        self.logger = logging.getLogger('lcm.vim')
+        self.loop = loop
+        self.lcm_tasks = lcm_tasks
+        self.ro_config = ro_config
+
+        super().__init__(db, msg, fs, self.logger)
+
+    async def create(self, wim_content, order_id):
+        wim_id = wim_content["_id"]
+        logging_text = "Task wim_create={} ".format(wim_id)
+        self.logger.debug(logging_text + "Enter")
+        db_wim = None
+        db_wim_update = {}
+        exc = None
+        try:
+            step = "Getting wim-id='{}' from db".format(wim_id)
+            db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
+            db_wim_update["_admin.deployed.RO"] = None
+
+            step = "Creating wim at RO"
+            db_wim_update["_admin.detailed-status"] = step
+            self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            RO = ROclient.ROClient(self.loop, **self.ro_config)
+            wim_RO = deepcopy(wim_content)
+            wim_RO.pop("_id", None)
+            wim_RO.pop("_admin", None)
+            schema_version = wim_RO.pop("schema_version", None)
+            wim_RO.pop("schema_type", None)
+            wim_RO.pop("wim_tenant_name", None)
+            wim_RO["type"] = wim_RO.pop("wim_type")
+            wim_RO.pop("wim_user", None)
+            wim_RO.pop("wim_password", None)
+            desc = await RO.create("wim", descriptor=wim_RO)
+            RO_wim_id = desc["uuid"]
+            db_wim_update["_admin.deployed.RO"] = RO_wim_id
+            self.logger.debug(logging_text + "WIM created at RO_wim_id={}".format(RO_wim_id))
+
+            step = "Creating wim_account at RO"
+            db_wim_update["_admin.detailed-status"] = step
+            self.update_db_2("wim_accounts", wim_id, db_wim_update)
+
+            if wim_content.get("wim_password"):
+                wim_content["wim_password"] = self.db.decrypt(wim_content["wim_password"],
+                                                              schema_version=schema_version,
+                                                              salt=wim_id)
+            wim_account_RO = {"name": wim_content["name"],
+                              "user": wim_content["user"],
+                              "password": wim_content["password"]
+                              }
+            if wim_RO.get("config"):
+                wim_account_RO["config"] = wim_RO["config"]
+                if "wim_port_mapping" in wim_account_RO["config"]:
+                    del wim_account_RO["config"]["wim_port_mapping"]
+                for p in self.wim_config_encrypted:
+                    if wim_account_RO["config"].get(p):
+                        wim_account_RO["config"][p] = self.db.decrypt(wim_account_RO["config"][p],
+                                                                      schema_version=schema_version,
+                                                                      salt=wim_id)
+
+            desc = await RO.attach("wim_account", RO_wim_id, descriptor=wim_account_RO)
+            db_wim_update["_admin.deployed.RO-account"] = desc["uuid"]
+            db_wim_update["_admin.operationalState"] = "ENABLED"
+            db_wim_update["_admin.detailed-status"] = "Done"
+
+            self.logger.debug(logging_text + "Exit Ok WIM account created at RO_wim_account_id={}".format(desc["uuid"]))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_wim:
+                db_wim_update["_admin.operationalState"] = "ERROR"
+                db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_wim_update:
+                self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            self.lcm_tasks.remove("wim_account", wim_id, order_id)
+
+    async def edit(self, wim_content, order_id):
+        wim_id = wim_content["_id"]
+        logging_text = "Task wim_edit={} ".format(wim_id)
+        self.logger.debug(logging_text + "Enter")
+        db_wim = None
+        exc = None
+        RO_wim_id = None
+        db_wim_update = {}
+        step = "Getting wim-id='{}' from db".format(wim_id)
+        try:
+            db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
+
+            # look if previous tasks in process
+            task_name, task_dependency = self.lcm_tasks.lookfor_related("wim_account", wim_id, order_id)
+            if task_dependency:
+                step = "Waiting for related tasks to be completed: {}".format(task_name)
+                self.logger.debug(logging_text + step)
+                # TODO write this to database
+                _, pending = await asyncio.wait(task_dependency, timeout=3600)
+                if pending:
+                    raise LcmException("Timeout waiting related tasks to be completed")
+
+            if db_wim.get("_admin") and db_wim["_admin"].get("deployed") and db_wim["_admin"]["deployed"].get("RO"):
+
+                RO_wim_id = db_wim["_admin"]["deployed"]["RO"]
+                step = "Editing wim at RO"
+                RO = ROclient.ROClient(self.loop, **self.ro_config)
+                wim_RO = deepcopy(wim_content)
+                wim_RO.pop("_id", None)
+                wim_RO.pop("_admin", None)
+                schema_version = wim_RO.pop("schema_version", None)
+                wim_RO.pop("schema_type", None)
+                wim_RO.pop("wim_tenant_name", None)
+                if "wim_type" in wim_RO:
+                    wim_RO["type"] = wim_RO.pop("wim_type")
+                wim_RO.pop("wim_user", None)
+                wim_RO.pop("wim_password", None)
+                # TODO make a deep update of wim_port_mapping
+                if wim_RO:
+                    await RO.edit("wim", RO_wim_id, descriptor=wim_RO)
+
+                step = "Editing wim-account at RO tenant"
+                wim_account_RO = {}
+                if "config" in wim_content:
+                    if "wim_port_mapping" in wim_content["config"]:
+                        del wim_content["config"]["wim_port_mapping"]
+                    if not wim_content["config"]:
+                        del wim_content["config"]
+                if "wim_tenant_name" in wim_content:
+                    wim_account_RO["wim_tenant_name"] = wim_content["wim_tenant_name"]
+                if "wim_password" in wim_content:
+                    wim_account_RO["wim_password"] = wim_content["wim_password"]
+                if wim_content.get("wim_password"):
+                    wim_account_RO["wim_password"] = self.db.decrypt(wim_content["wim_password"],
+                                                                     schema_version=schema_version,
+                                                                     salt=wim_id)
+                if "config" in wim_content:
+                    wim_account_RO["config"] = wim_content["config"]
+                if wim_content.get("config"):
+                    for p in self.wim_config_encrypted:
+                        if wim_content["config"].get(p):
+                            wim_account_RO["config"][p] = self.db.decrypt(wim_content["config"][p],
+                                                                          schema_version=schema_version,
+                                                                          salt=wim_id)
+
+                if "wim_user" in wim_content:
+                    wim_content["wim_username"] = wim_content["wim_user"]
+                # wim_account must be edited always even if empty in order to ensure changes are translated to RO
+                # wim_thread. RO will remove and relaunch a new thread for this wim_account
+                await RO.edit("wim_account", RO_wim_id, descriptor=wim_account_RO)
+                db_wim_update["_admin.operationalState"] = "ENABLED"
+
+            self.logger.debug(logging_text + "Exit Ok RO_wim_id={}".format(RO_wim_id))
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_wim:
+                db_wim_update["_admin.operationalState"] = "ERROR"
+                db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_wim_update:
+                self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            self.lcm_tasks.remove("wim_account", wim_id, order_id)
+
+    async def delete(self, wim_id, order_id):
+        logging_text = "Task wim_delete={} ".format(wim_id)
+        self.logger.debug(logging_text + "Enter")
+        db_wim = None
+        db_wim_update = {}
+        exc = None
+        step = "Getting wim from db"
+        try:
+            db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
+            if db_wim.get("_admin") and db_wim["_admin"].get("deployed") and db_wim["_admin"]["deployed"].get("RO"):
+                RO_wim_id = db_wim["_admin"]["deployed"]["RO"]
+                RO = ROclient.ROClient(self.loop, **self.ro_config)
+                step = "Detaching wim from RO tenant"
+                try:
+                    await RO.detach("wim_account", RO_wim_id)
+                except ROclient.ROClientException as e:
+                    if e.http_code == 404:  # not found
+                        self.logger.debug(logging_text + "RO_wim_id={} already detached".format(RO_wim_id))
+                    else:
+                        raise
+
+                step = "Deleting wim from RO"
+                try:
+                    await RO.delete("wim", RO_wim_id)
+                except ROclient.ROClientException as e:
+                    if e.http_code == 404:  # not found
+                        self.logger.debug(logging_text + "RO_wim_id={} already deleted".format(RO_wim_id))
+                    else:
+                        raise
+            else:
+                # nothing to delete
+                self.logger.error(logging_text + "Nohing to remove at RO")
+            self.db.del_one("wim_accounts", {"_id": wim_id})
+            self.logger.debug(logging_text + "Exit Ok")
+            return
+
+        except (ROclient.ROClientException, DbException) as e:
+            self.logger.error(logging_text + "Exit Exception {}".format(e))
+            exc = e
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            self.lcm_tasks.remove("wim_account", wim_id, order_id)
+            if exc and db_wim:
+                db_wim_update["_admin.operationalState"] = "ERROR"
+                db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+            if db_wim_update:
+                self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            self.lcm_tasks.remove("wim_account", wim_id, order_id)
 
 
 class SdnLcm(LcmBase):
@@ -369,6 +603,7 @@ class SdnLcm(LcmBase):
         step = "Getting sdn from db"
         try:
             db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
+            RO_sdn_id = None
             if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
                 RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
                 RO = ROclient.ROClient(self.loop, **self.ro_config)
@@ -385,7 +620,7 @@ class SdnLcm(LcmBase):
                     await RO.edit("sdn", RO_sdn_id, descriptor=sdn_RO)
                 db_sdn_update["_admin.operationalState"] = "ENABLED"
 
-            self.logger.debug(logging_text + "Exit Ok RO_sdn_id".format(RO_sdn_id))
+            self.logger.debug(logging_text + "Exit Ok RO_sdn_id={}".format(RO_sdn_id))
             return
 
         except (ROclient.ROClientException, DbException) as e:

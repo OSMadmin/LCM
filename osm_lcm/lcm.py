@@ -40,7 +40,7 @@ from n2vc import version as n2vc_version
 
 
 __author__ = "Alfonso Tierno"
-min_RO_version = [0, 5, 84]
+min_RO_version = [0, 6, 0]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
@@ -162,6 +162,7 @@ class Lcm:
         self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, 
                                              self.vca_config, self.loop)
         self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
+        self.wim = vim_sdn.WimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
         self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
 
     async def check_RO_version(self):
@@ -220,7 +221,7 @@ class Lcm:
         first_start = True
         while consecutive_errors < 10:
             try:
-                topics = ("admin", "ns", "vim_account", "sdn", "nsi")
+                topics = ("admin", "ns", "vim_account", "wim_account", "sdn", "nsi")
                 topic, command, params = await self.msg.aioread(topics, self.loop)
                 if topic != "admin" and command != "ping":
                     self.logger.debug("Task kafka_read receives {} {}: {}".format(topic, command, params))
@@ -347,6 +348,25 @@ class Lcm:
                     elif command == "edit":
                         task = asyncio.ensure_future(self.vim.edit(params, order_id))
                         self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_edit", task)
+                        continue
+                elif topic == "wim_account":
+                    wim_id = params["_id"]
+                    if command == "create":
+                        task = asyncio.ensure_future(self.wim.create(params, order_id))
+                        self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_create", task)
+                        continue
+                    elif command == "delete":
+                        self.lcm_tasks.cancel(topic, wim_id)
+                        task = asyncio.ensure_future(self.wim.delete(wim_id, order_id))
+                        self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_delete", task)
+                        continue
+                    elif command == "show":
+                        print("not implemented show with wim_account")
+                        sys.stdout.flush()
+                        continue
+                    elif command == "edit":
+                        task = asyncio.ensure_future(self.wim.edit(params, order_id))
+                        self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_edit", task)
                         continue
                 elif topic == "sdn":
                     _sdn_id = params["_id"]

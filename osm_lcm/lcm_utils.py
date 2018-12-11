@@ -56,6 +56,7 @@ class TaskRegistry:
             "ns": {},
             "nsi": {},
             "vim_account": {},
+            "wim_account": {},
             "sdn": {},
         }
 
