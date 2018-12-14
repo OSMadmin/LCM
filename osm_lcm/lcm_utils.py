@@ -17,7 +17,7 @@
 ##
 
 from collections import OrderedDict
-from osm_common.dbbase import DbException
+# from osm_common.dbbase import DbException
 
 __author__ = "Alfonso Tierno"
 
@@ -84,23 +84,27 @@ class TaskRegistry:
 
     def remove(self, topic, _id, op_id, task_name=None):
         """
-        When task is ended, it should removed. It ignores missing tasks
+        When task is ended, it should be removed. It ignores missing tasks. It also removes tasks done with this _id
         :param topic: Can be "ns", "nsi", "vim_account", "sdn"
         :param _id: _id of the related item
         :param op_id: id of the operation of the related item
-        :param task_name: Task descriptive name. If note it deletes all
-        :return:
+        :param task_name: Task descriptive name. If none it deletes all tasks with same _id and op_id
+        :return: None
         """
-        if not self.task_registry[topic].get(_id) or not self.task_registry[topic][_id].get(op_id):
+        if not self.task_registry[topic].get(_id):
             return
         if not task_name:
-            # print("deleting tasks", topic, _id, op_id, self.task_registry[topic][_id][op_id])
-            del self.task_registry[topic][_id][op_id]
-        elif task_name in self.task_registry[topic][_id][op_id]:
-            # print("deleting tasks", topic, _id, op_id, task_name, self.task_registry[topic][_id][op_id][task_name])
-            del self.task_registry[topic][_id][op_id][task_name]
-            if not self.task_registry[topic][_id][op_id]:
-                del self.task_registry[topic][_id][op_id]
+            self.task_registry[topic][_id].pop(op_id, None)
+        elif self.task_registry[topic][_id].get(op_id):
+            self.task_registry[topic][_id][op_id].pop(task_name, None)
+
+        # delete done tasks
+        for op_id_ in list(self.task_registry[topic][_id]):
+            for name, task in self.task_registry[topic][_id][op_id_].items():
+                if not task.done():
+                    break
+            else:
+                del self.task_registry[topic][_id][op_id_]
         if not self.task_registry[topic][_id]:
             del self.task_registry[topic][_id]
 
@@ -116,8 +120,9 @@ class TaskRegistry:
                 continue
 
             for task_name, task in self.task_registry[topic][_id][op_id].items():
-                task_list.append(task)
-                task_name_list.append(task_name)
+                if not task.done():
+                    task_list.append(task)
+                    task_name_list.append(task_name)
             break
         return ", ".join(task_name_list), task_list
 
@@ -154,16 +159,15 @@ class LcmBase:
 
     def update_db_2(self, item, _id, _desc):
         """
-        Updates database with _desc information. Upon success _desc is cleared
+        Updates database with _desc information. If success _desc is cleared
         :param item:
         :param _id:
-        :param _desc:
-        :return:
+        :param _desc: dictionary with the content to update. Keys are dot separated keys for
+        :return: None. Exception is raised on error
         """
         if not _desc:
             return
-        try:
-            self.db.set_one(item, {"_id": _id}, _desc)
-            _desc.clear()
-        except DbException as e:
-            self.logger.error("Updating {} _id={} with '{}'. Error: {}".format(item, _id, _desc, e))
+        self.db.set_one(item, {"_id": _id}, _desc)
+        _desc.clear()
+        # except DbException as e:
+        #     self.logger.error("Updating {} _id={} with '{}'. Error: {}".format(item, _id, _desc, e))

@@ -143,6 +143,10 @@ class NetsliceLcm(LcmBase):
                 RO_ns_params["scenario"] = {"nets": nets}
                 RO_ns_params["datacenter"] = vim_account_2_RO(netslice_vld["vimAccountId"])
 
+            # set state to INSTANTIATED. When instantiated NBI will not delete directly
+            db_nsir_update["_admin.nsState"] = "INSTANTIATED"
+            self.update_db_2("nsis", nsir_id, db_nsir_update)
+
             # Crate ns at RO
             # if present use it unless in error status
             RO_nsir_id = db_nsir["_admin"].get("deployed", {}).get("RO", {}).get("nsir_id")
@@ -177,7 +181,6 @@ class NetsliceLcm(LcmBase):
                 step = db_nsir_update["detailed-status"] = "Creating ns at RO"
                 desc = await RO.create("ns", descriptor=RO_ns_params)
                 RO_nsir_id = db_nsir_update["_admin.deployed.RO.nsir_id"] = desc["uuid"]
-                db_nsir_update["_admin.nsState"] = "INSTANTIATED"
                 db_nsir_update["_admin.deployed.RO.nsir_status"] = "BUILD"
                 self.logger.debug(logging_text + "ns created at RO. RO_id={}".format(desc["uuid"]))
             self.update_db_2("nsis", nsir_id, db_nsir_update)
@@ -292,13 +295,15 @@ class NetsliceLcm(LcmBase):
                     db_nsilcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                     db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "FAILED"
                     db_nsilcmop_update["statusEnteredTime"] = time()
-            if db_nsir:
-                db_nsir_update["_admin.nsiState"] = "INSTANTIATED"
-                db_nsir_update["_admin.nsilcmop"] = None
-                self.update_db_2("nsis", nsir_id, db_nsir_update)
-            if db_nsilcmop:
-
-                self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
+            try:
+                if db_nsir:
+                    db_nsir_update["_admin.nsiState"] = "INSTANTIATED"
+                    db_nsir_update["_admin.nsilcmop"] = None
+                    self.update_db_2("nsis", nsir_id, db_nsir_update)
+                if db_nsilcmop:
+                    self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             if nsilcmop_operation_state:
                 try:
                     await self.msg.aiowrite("nsi", "instantiated", {"nsir_id": nsir_id, "nsilcmop_id": nsilcmop_id,
@@ -483,12 +488,15 @@ class NetsliceLcm(LcmBase):
                     db_nsilcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                     db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "FAILED"
                     db_nsilcmop_update["statusEnteredTime"] = time()
-            if db_nsir:
-                db_nsir_update["_admin.nsilcmop"] = None
-                db_nsir_update["_admin.nsiState"] = "TERMINATED"
-                self.update_db_2("nsis", nsir_id, db_nsir_update)
-            if db_nsilcmop:
-                self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
+            try:
+                if db_nsir:
+                    db_nsir_update["_admin.nsilcmop"] = None
+                    db_nsir_update["_admin.nsiState"] = "TERMINATED"
+                    self.update_db_2("nsis", nsir_id, db_nsir_update)
+                if db_nsilcmop:
+                    self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
 
             if nsilcmop_operation_state:
                 try:

@@ -56,7 +56,6 @@ class VimLcm(LcmBase):
         try:
             step = "Getting vim-id='{}' from db".format(vim_id)
             db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
-            db_vim_update["_admin.deployed.RO"] = None
             if vim_content.get("config") and vim_content["config"].get("sdn-controller"):
                 step = "Getting sdn-controller-id='{}' from db".format(vim_content["config"]["sdn-controller"])
                 db_sdn = self.db.get_one("sdns", {"_id": vim_content["config"]["sdn-controller"]})
@@ -67,6 +66,7 @@ class VimLcm(LcmBase):
                         vim_content["config"]["sdn-controller"]))
 
             step = "Creating vim at RO"
+            db_vim_update["_admin.deployed.RO"] = None
             db_vim_update["_admin.detailed-status"] = step
             self.update_db_2("vim_accounts", vim_id, db_vim_update)
             RO = ROclient.ROClient(self.loop, **self.ro_config)
@@ -129,8 +129,12 @@ class VimLcm(LcmBase):
             if exc and db_vim:
                 db_vim_update["_admin.operationalState"] = "ERROR"
                 db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_vim_update:
-                self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            try:
+                if db_vim_update:
+                    self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
 
     async def edit(self, vim_content, order_id):
@@ -243,8 +247,12 @@ class VimLcm(LcmBase):
             if exc and db_vim:
                 db_vim_update["_admin.operationalState"] = "ERROR"
                 db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_vim_update:
-                self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            try:
+                if db_vim_update:
+                    self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
 
     async def delete(self, vim_id, order_id):
@@ -280,6 +288,7 @@ class VimLcm(LcmBase):
                 # nothing to delete
                 self.logger.error(logging_text + "Nohing to remove at RO")
             self.db.del_one("vim_accounts", {"_id": vim_id})
+            db_vim = None
             self.logger.debug(logging_text + "Exit Ok")
             return
 
@@ -294,8 +303,11 @@ class VimLcm(LcmBase):
             if exc and db_vim:
                 db_vim_update["_admin.operationalState"] = "ERROR"
                 db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_vim_update:
-                self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            try:
+                if db_vim and db_vim_update:
+                    self.update_db_2("vim_accounts", vim_id, db_vim_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
 
 
@@ -387,8 +399,11 @@ class WimLcm(LcmBase):
             if exc and db_wim:
                 db_wim_update["_admin.operationalState"] = "ERROR"
                 db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_wim_update:
-                self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            try:
+                if db_wim_update:
+                    self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("wim_account", wim_id, order_id)
 
     async def edit(self, wim_content, order_id):
@@ -476,8 +491,11 @@ class WimLcm(LcmBase):
             if exc and db_wim:
                 db_wim_update["_admin.operationalState"] = "ERROR"
                 db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_wim_update:
-                self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            try:
+                if db_wim_update:
+                    self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("wim_account", wim_id, order_id)
 
     async def delete(self, wim_id, order_id):
@@ -513,6 +531,7 @@ class WimLcm(LcmBase):
                 # nothing to delete
                 self.logger.error(logging_text + "Nohing to remove at RO")
             self.db.del_one("wim_accounts", {"_id": wim_id})
+            db_wim = None
             self.logger.debug(logging_text + "Exit Ok")
             return
 
@@ -527,8 +546,11 @@ class WimLcm(LcmBase):
             if exc and db_wim:
                 db_wim_update["_admin.operationalState"] = "ERROR"
                 db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_wim_update:
-                self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            try:
+                if db_wim and db_wim_update:
+                    self.update_db_2("wim_accounts", wim_id, db_wim_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("wim_account", wim_id, order_id)
 
 
@@ -562,6 +584,9 @@ class SdnLcm(LcmBase):
             db_sdn_update["_admin.deployed.RO"] = None
 
             step = "Creating sdn at RO"
+            db_sdn_update["_admin.detailed-status"] = step
+            self.update_db_2("sdns", sdn_id, db_sdn_update)
+
             RO = ROclient.ROClient(self.loop, **self.ro_config)
             sdn_RO = deepcopy(sdn_content)
             sdn_RO.pop("_id", None)
@@ -589,8 +614,11 @@ class SdnLcm(LcmBase):
             if exc and db_sdn:
                 db_sdn_update["_admin.operationalState"] = "ERROR"
                 db_sdn_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_sdn_update:
-                self.update_db_2("sdns", sdn_id, db_sdn_update)
+            try:
+                if db_sdn and db_sdn_update:
+                    self.update_db_2("sdns", sdn_id, db_sdn_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)
 
     async def edit(self, sdn_content, order_id):
@@ -633,8 +661,11 @@ class SdnLcm(LcmBase):
             if exc and db_sdn:
                 db_sdn["_admin.operationalState"] = "ERROR"
                 db_sdn["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_sdn_update:
-                self.update_db_2("sdns", sdn_id, db_sdn_update)
+            try:
+                if db_sdn_update:
+                    self.update_db_2("sdns", sdn_id, db_sdn_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)
 
     async def delete(self, sdn_id, order_id):
@@ -661,6 +692,7 @@ class SdnLcm(LcmBase):
                 # nothing to delete
                 self.logger.error(logging_text + "Skipping. There is not RO information at database")
             self.db.del_one("sdns", {"_id": sdn_id})
+            db_sdn = None
             self.logger.debug("sdn_delete task sdn_id={} Exit Ok".format(sdn_id))
             return
 
@@ -674,6 +706,9 @@ class SdnLcm(LcmBase):
             if exc and db_sdn:
                 db_sdn["_admin.operationalState"] = "ERROR"
                 db_sdn["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
-            if db_sdn_update:
-                self.update_db_2("sdns", sdn_id, db_sdn_update)
+            try:
+                if db_sdn and db_sdn_update:
+                    self.update_db_2("sdns", sdn_id, db_sdn_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)

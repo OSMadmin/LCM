@@ -69,6 +69,7 @@ def populate_dict(target_dict, key_list, value):
 class NsLcm(LcmBase):
     timeout_vca_on_error = 5 * 60   # Time for charm from first time at blocked,error status to mark as failed
     total_deploy_timeout = 2 * 3600   # global timeout for deployment
+    timeout_charm_delete = 10 * 60
 
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
         """
@@ -626,6 +627,10 @@ class NsLcm(LcmBase):
 
             RO = ROclient.ROClient(self.loop, **self.ro_config)
 
+            # set state to INSTANTIATED. When instantiated NBI will not delete directly
+            db_nsr_update["_admin.nsState"] = "INSTANTIATED"
+            self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
             # get vnfds, instantiate at RO
             for vnfd_id, vnfd in db_vnfds.items():
                 vnfd_ref = vnfd["id"]
@@ -645,7 +650,6 @@ class NsLcm(LcmBase):
                     vnfd_RO = self.vnfd2RO(vnfd, vnfd_id_RO)
                     desc = await RO.create("vnfd", descriptor=vnfd_RO)
                     db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnfd_id)] = desc["uuid"]
-                    db_nsr_update["_admin.nsState"] = "INSTANTIATED"
                     self.logger.debug(logging_text + "vnfd={} created at RO. RO_id={}".format(
                         vnfd_ref, desc["uuid"]))
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
@@ -1010,11 +1014,14 @@ class NsLcm(LcmBase):
                     db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                     db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                     db_nslcmop_update["statusEnteredTime"] = time()
-            if db_nsr:
-                db_nsr_update["_admin.nslcmop"] = None
-                self.update_db_2("nsrs", nsr_id, db_nsr_update)
-            if db_nslcmop_update:
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+            try:
+                if db_nsr:
+                    db_nsr_update["_admin.nslcmop"] = None
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
+                if db_nslcmop_update:
+                    self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "instantiated", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
@@ -1025,6 +1032,34 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + "Exit")
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_instantiate")
 
+    async def _destroy_charm(self, model, application):
+        """
+        Order N2VC destroy a charm
+        :param model:
+        :param application:
+        :return: True if charm does not exist. False if it exist
+        """
+        if not await self.n2vc.HasApplication(model, application):
+            return True  # Already removed
+        await self.n2vc.RemoveCharms(model, application)
+        return False
+
+    async def _wait_charm_destroyed(self, model, application, timeout):
+        """
+        Wait until charm does not exist
+        :param model:
+        :param application:
+        :param timeout:
+        :return: True if not exist, False if timeout
+        """
+        while True:
+            if not await self.n2vc.HasApplication(model, application):
+                return True
+            if timeout < 0:
+                return False
+            await asyncio.sleep(10)
+            timeout -= 10
+
     async def terminate(self, nsr_id, nslcmop_id):
         logging_text = "Task ns={} terminate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
@@ -1032,9 +1067,7 @@ class NsLcm(LcmBase):
         db_nslcmop = None
         exc = None
         failed_detail = []   # annotates all failed error messages
-        vca_task_list = []
-        vca_task_dict = {}
-        vca_application_name2index = {}
+        vca_time_destroy = None   # time of where destroy charm order
         db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         db_nslcmop_update = {}
         nslcmop_operation_state = None
@@ -1047,8 +1080,6 @@ class NsLcm(LcmBase):
             nsr_deployed = deepcopy(db_nsr["_admin"].get("deployed"))
             if db_nsr["_admin"]["nsState"] == "NOT_INSTANTIATED":
                 return
-            # TODO ALF remove
-            # db_vim = self.db.get_one("vim_accounts", {"_id":  db_nsr["datacenter"]})
             # #TODO check if VIM is creating and wait
             # RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
 
@@ -1068,24 +1099,12 @@ class NsLcm(LcmBase):
                         self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
                     for vca_index, vca_deployed in enumerate(nsr_deployed["VCA"]):
-                        if vca_deployed:  # TODO it would be desirable having a and deploy_info.get("deployed"):
-                            task = asyncio.ensure_future(
-                                self.n2vc.RemoveCharms(
-                                    vca_deployed['model'],
-                                    vca_deployed["application"],
-                                    # self.n2vc_callback,
-                                    # db_nsr,
-                                    # db_nslcmop,
-                                )
-                            )
-                            vca_application_name2index[vca_deployed["application"]] = vca_index
-                            vca_task_list.append(task)
-                            vca_task_dict[vca_deployed["application"]] = task
-                            # task.add_done_callback(functools.partial(self.n2vc_callback, vca_deployed['model'],
-                            #                                          vca_deployed['application'], None, db_nsr,
-                            #                                          db_nslcmop, vnf_index))
-                            self.lcm_tasks.register("ns", nsr_id, nslcmop_id,
-                                                    "delete_charm:" + vca_deployed["application"], task)
+                        if vca_deployed:
+                            if await self._destroy_charm(vca_deployed['model'], vca_deployed["application"]):
+                                vca_deployed.clear()
+                                db_nsr["_admin.deployed.VCA.{}".format(vca_index)] = None
+                            else:
+                                vca_time_destroy = time()
                 except Exception as e:
                     self.logger.debug(logging_text + "Failed while deleting charms: {}".format(e))
 
@@ -1111,7 +1130,8 @@ class NsLcm(LcmBase):
                     db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
                 if RO_delete_action:
                     # wait until NS is deleted from VIM
-                    step = detailed_status = "Waiting ns deleted from VIM. RO_id={}".format(RO_nsr_id)
+                    step = detailed_status = "Waiting ns deleted from VIM. RO_id={} RO_delete_action={}".\
+                        format(RO_nsr_id, RO_delete_action)
                     detailed_status_old = None
                     self.logger.debug(logging_text + step)
 
@@ -1125,6 +1145,8 @@ class NsLcm(LcmBase):
                         elif ns_status == "BUILD":
                             detailed_status = step + "; {}".format(ns_status_info)
                         elif ns_status == "ACTIVE":
+                            db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = None
+                            db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
                             break
                         else:
                             assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
@@ -1142,6 +1164,7 @@ class NsLcm(LcmBase):
                 if e.http_code == 404:  # not found
                     db_nsr_update["_admin.deployed.RO.nsr_id"] = None
                     db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
+                    db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = None
                     self.logger.debug(logging_text + "RO_ns_id={} already deleted".format(RO_nsr_id))
                 elif e.http_code == 409:   # conflict
                     failed_detail.append("RO_ns_id={} delete conflict: {}".format(RO_nsr_id, e))
@@ -1195,28 +1218,23 @@ class NsLcm(LcmBase):
                             failed_detail.append("RO_vnfd_id={} delete error: {}".format(RO_vnfd_id, e))
                             self.logger.error(logging_text + failed_detail[-1])
 
-            if vca_task_list:
-                db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] =\
+            # wait until charm deleted
+            if vca_time_destroy:
+                db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] = step = \
                     "Waiting for deletion of configuration charms"
                 self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
-                await asyncio.wait(vca_task_list, timeout=300)
-            for application_name, task in vca_task_dict.items():
-                if task.cancelled():
-                    failed_detail.append("VCA[application_name={}] Deletion has been cancelled"
-                                         .format(application_name))
-                elif task.done():
-                    exc = task.exception()
-                    if exc:
-                        failed_detail.append("VCA[application_name={}] Deletion exception: {}"
-                                             .format(application_name, exc))
+                for vca_index, vca_deployed in enumerate(nsr_deployed["VCA"]):
+                    if not vca_deployed:
+                        continue
+                    step = "Waiting for deletion of charm application_name={}".format(vca_deployed["application"])
+                    timeout = self.timeout_charm_delete - int(time() - vca_time_destroy)
+                    if not await self._wait_charm_destroyed(vca_deployed['model'], vca_deployed["application"],
+                                                            timeout):
+                        failed_detail.append("VCA[application_name={}] Deletion timeout".format(
+                            vca_deployed["application"]))
                     else:
-                        vca_index = vca_application_name2index[application_name]
-                        db_nsr_update["_admin.deployed.VCA.{}".format(vca_index)] = None
-                else:  # timeout
-                    # TODO Should it be cancelled?!!
-                    task.cancel()
-                    failed_detail.append("VCA[application_name={}] Deletion timeout".format(application_name))
+                        db_nsr["_admin.deployed.VCA.{}".format(vca_index)] = None
 
             if failed_detail:
                 self.logger.error(logging_text + " ;".join(failed_detail))
@@ -1227,8 +1245,10 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["statusEnteredTime"] = time()
             elif db_nslcmop["operationParams"].get("autoremove"):
                 self.db.del_one("nsrs", {"_id": nsr_id})
+                db_nsr = None
                 db_nsr_update.clear()
                 self.db.del_list("nslcmops", {"nsInstanceId": nsr_id})
+                db_nslcmop = None
                 nslcmop_operation_state = "COMPLETED"
                 db_nslcmop_update.clear()
                 self.db.del_list("vnfrs", {"nsr-id-ref": nsr_id})
@@ -1257,11 +1277,14 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
-            if db_nslcmop_update:
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-            if db_nsr:
-                db_nsr_update["_admin.nslcmop"] = None
-                self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            try:
+                if db_nslcmop and db_nslcmop_update:
+                    self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                if db_nsr:
+                    db_nsr_update["_admin.nslcmop"] = None
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "terminated", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
@@ -1395,11 +1418,14 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
-            if db_nslcmop_update:
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-            if db_nsr:
-                db_nsr_update["_admin.nslcmop"] = None
-                self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            try:
+                if db_nslcmop_update:
+                    self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                if db_nsr:
+                    db_nsr_update["_admin.nslcmop"] = None
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.logger.debug(logging_text + "Exit")
             if nslcmop_operation_state:
                 try:
@@ -1737,11 +1763,14 @@ class NsLcm(LcmBase):
                             db_nsr_update["operational-status"] = "failed"
                         db_nsr_update["detailed-status"] = "FAILED scaling nslcmop={} {}: {}".format(nslcmop_id, step,
                                                                                                      exc)
-            if db_nslcmop_update:
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-            if db_nsr:
-                db_nsr_update["_admin.nslcmop"] = None
-                self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            try:
+                if db_nslcmop and db_nslcmop_update:
+                    self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                if db_nsr:
+                    db_nsr_update["_admin.nslcmop"] = None
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "scaled", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
