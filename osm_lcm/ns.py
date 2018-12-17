@@ -345,6 +345,10 @@ class NsLcm(LcmBase):
                     populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
                                                  internal_vld_params["name"], "vim-network-name"),
                                   internal_vld_params["vim-network-name"])
+                if internal_vld_params.get("vim-network-id"):
+                    populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
+                                                 internal_vld_params["name"], "vim-network-id"),
+                                  internal_vld_params["vim-network-id"])
                 if internal_vld_params.get("ip-profile"):
                     populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
                                                  internal_vld_params["name"], "ip-profile"),
@@ -391,6 +395,18 @@ class NsLcm(LcmBase):
                         })
                 else:  # isinstance str
                     RO_vld_sites.append({"netmap-use": vld_params["vim-network-name"]})
+                if RO_vld_sites:
+                    populate_dict(RO_ns_params, ("networks", vld_params["name"], "sites"), RO_vld_sites)
+            if vld_params.get("vim-network-id"):
+                RO_vld_sites = []
+                if isinstance(vld_params["vim-network-id"], dict):
+                    for vim_account, vim_net in vld_params["vim-network-id"].items():
+                        RO_vld_sites.append({
+                            "netmap-use": vim_net,
+                            "datacenter": vim_account_2_RO(vim_account)
+                        })
+                else:  # isinstance str
+                    RO_vld_sites.append({"netmap-use": vld_params["vim-network-id"]})
                 if RO_vld_sites:
                     populate_dict(RO_ns_params, ("networks", vld_params["name"], "sites"), RO_vld_sites)
             if "vnfd-connection-point-ref" in vld_params:
