@@ -55,6 +55,7 @@ setup(
         'aiohttp==0.20.2',
         'osm-common',
         'n2vc',
+        'jinja2',
         # TODO this is version installed by 'apt python3-aiohttp' on Ubuntu Sserver 14.04
         # version installed by pip 3.3.2 is not compatible. Code should be migrated to this version and use pip3
     ],

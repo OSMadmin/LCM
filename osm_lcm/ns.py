@@ -22,6 +22,7 @@ import logging
 import logging.handlers
 import functools
 import traceback
+from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound, TemplateSyntaxError
 
 import ROclient
 from lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
@@ -99,11 +100,13 @@ class NsLcm(LcmBase):
             artifacts=None,
         )
 
-    def vnfd2RO(self, vnfd, new_id=None):
+    def vnfd2RO(self, vnfd, new_id=None, additionalParams=None, nsrId=None):
         """
         Converts creates a new vnfd descriptor for RO base on input OSM IM vnfd
         :param vnfd: input vnfd
         :param new_id: overrides vnf id if provided
+        :param additionalParamsForVnf: Instantiation params for VNFs provided
+        :param nsrId: Id of the NSR
         :return: copy of vnfd
         """
         ci_file = None
@@ -116,19 +119,29 @@ class NsLcm(LcmBase):
             for vdu in vnfd_RO.get("vdu", ()):
                 if "cloud-init-file" in vdu:
                     base_folder = vnfd["_admin"]["storage"]
-                    clout_init_file = "{}/{}/cloud_init/{}".format(
-                        base_folder["folder"],
-                        base_folder["pkg-dir"],
-                        vdu["cloud-init-file"]
-                    )
-                    ci_file = self.fs.file_open(clout_init_file, "r")
-                    # TODO: detect if binary or text. Propose to read as binary and try to decode to utf8. If fails
-                    #  convert to base 64 or similar
-                    clout_init_content = ci_file.read()
-                    ci_file.close()
-                    ci_file = None
+                    cloud_init_file = "{}/{}/cloud_init/{}".format(base_folder["folder"], base_folder["pkg-dir"],
+                                                                   vdu["cloud-init-file"])
+                    with self.fs.file_open(cloud_init_file, "r") as ci_file:
+                        cloud_init_content = ci_file.read()
                     vdu.pop("cloud-init-file", None)
-                    vdu["cloud-init"] = clout_init_content
+                elif "cloud-init" in vdu:
+                    cloud_init_content = vdu["cloud-init"]
+                try:
+                    env = Environment()
+                    ast = env.parse(cloud_init_content)
+                    mandatory_vars = meta.find_undeclared_variables(ast)
+                    if mandatory_vars:
+                        for var in mandatory_vars:
+                            if not additionalParams or var not in additionalParams.keys():
+                                raise LcmException("Variable '{}' defined in vnfd[id={}] vdu[id={}] cloud-init or "
+                                                   "cloud-init-file, must be provided in the instantiation parameters "
+                                                   "inside the 'additionalParamsForVnf' block".format(var, vnfd["id"],
+                                                                                                      vdu["id"]))
+                        template = Template(cloud_init_content)
+                        cloud_init_content = template.render(additionalParams)
+                except (TemplateError, TemplateNotFound, TemplateSyntaxError) as e:
+                    raise LcmException("Error in jinja2 template: {}".format(e))
+                vdu["cloud-init"] = cloud_init_content
             # remnove unused by RO configuration, monitoring, scaling
             vnfd_RO.pop("vnf-configuration", None)
             vnfd_RO.pop("monitoring-param", None)
@@ -589,7 +602,7 @@ class NsLcm(LcmBase):
         nslcmop_operation_state = None
         db_vnfrs = {}
         RO_descriptor_number = 0   # number of descriptors created at RO
-        descriptor_id_2_RO = {}    # map between vnfd/nsd id to the id used at RO
+        vnf_index_2_RO_id = {}    # map between vnfd/nsd id to the id used at RO
         n2vc_info = {}
         exc = None
         try:
@@ -648,12 +661,13 @@ class NsLcm(LcmBase):
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             # get vnfds, instantiate at RO
-            for vnfd_id, vnfd in db_vnfds.items():
+            for c_vnf in nsd.get("constituent-vnfd", ()):
+                member_vnf_index = c_vnf["member-vnf-index"]
                 vnfd_ref = vnfd["id"]
                 step = db_nsr_update["detailed-status"] = "Creating vnfd={} at RO".format(vnfd_ref)
                 # self.logger.debug(logging_text + step)
-                vnfd_id_RO = "{}.{}.{}".format(nsr_id, RO_descriptor_number, vnfd_ref[:23])
-                descriptor_id_2_RO[vnfd_ref] = vnfd_id_RO
+                vnfd_id_RO = "{}.{}.{}".format(nsr_id, RO_descriptor_number, member_vnf_index[:23])
+                vnf_index_2_RO_id[member_vnf_index] = vnfd_id_RO
                 RO_descriptor_number += 1
 
                 # look if present
@@ -663,7 +677,8 @@ class NsLcm(LcmBase):
                     self.logger.debug(logging_text + "vnfd={} exists at RO. Using RO_id={}".format(
                         vnfd_ref, vnfd_list[0]["uuid"]))
                 else:
-                    vnfd_RO = self.vnfd2RO(vnfd, vnfd_id_RO)
+                    vnfd_RO = self.vnfd2RO(vnfd, vnfd_id_RO, db_vnfrs[c_vnf["member-vnf-index"]].
+                                           get("additionalParamsForVnf"), nsr_id)
                     desc = await RO.create("vnfd", descriptor=vnfd_RO)
                     db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnfd_id)] = desc["uuid"]
                     self.logger.debug(logging_text + "vnfd={} created at RO. RO_id={}".format(
@@ -676,7 +691,6 @@ class NsLcm(LcmBase):
             # self.logger.debug(logging_text + step)
 
             RO_osm_nsd_id = "{}.{}.{}".format(nsr_id, RO_descriptor_number, nsd_ref[:23])
-            descriptor_id_2_RO[nsd_ref] = RO_osm_nsd_id
             RO_descriptor_number += 1
             nsd_list = await RO.get_list("nsd", filter_by={"osm_id": RO_osm_nsd_id})
             if nsd_list:
@@ -689,8 +703,13 @@ class NsLcm(LcmBase):
                 nsd_RO.pop("_id", None)
                 nsd_RO.pop("_admin", None)
                 for c_vnf in nsd_RO.get("constituent-vnfd", ()):
-                    vnfd_id = c_vnf["vnfd-id-ref"]
-                    c_vnf["vnfd-id-ref"] = descriptor_id_2_RO[vnfd_id]
+                    member_vnf_index = c_vnf["member-vnf-index"]
+                    c_vnf["vnfd-id-ref"] = vnf_index_2_RO_id[member_vnf_index]
+                for c_vld in nsd_RO.get("vld", ()):
+                    for cp in c_vld.get("vnfd-connection-point-ref", ()):
+                        member_vnf_index = cp["member-vnf-index-ref"]
+                        cp["vnfd-id-ref"] = vnf_index_2_RO_id[member_vnf_index]
+
                 desc = await RO.create("nsd", descriptor=nsd_RO)
                 db_nsr_update["_admin.nsState"] = "INSTANTIATED"
                 db_nsr_update["_admin.deployed.RO.nsd_id"] = RO_nsd_uuid = desc["uuid"]
