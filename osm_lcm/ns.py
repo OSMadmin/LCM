@@ -1269,7 +1269,7 @@ class NsLcm(LcmBase):
                 db_nslcmop_update.clear()
                 self.db.del_list("vnfrs", {"nsr-id-ref": nsr_id})
                 self.db.set_list("pdus", {"_admin.usage.nsr_id": nsr_id},
-                                 {"_admin.usageSate": "NOT_IN_USE", "_admin.usage": None})
+                                 {"_admin.usageState": "NOT_IN_USE", "_admin.usage": None})
                 self.logger.debug(logging_text + "Delete from database")
             else:
                 db_nsr_update["operational-status"] = "terminated"
