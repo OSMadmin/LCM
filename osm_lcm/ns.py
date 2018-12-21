@@ -105,53 +105,56 @@ class NsLcm(LcmBase):
         Converts creates a new vnfd descriptor for RO base on input OSM IM vnfd
         :param vnfd: input vnfd
         :param new_id: overrides vnf id if provided
-        :param additionalParamsForVnf: Instantiation params for VNFs provided
+        :param additionalParams: Instantiation params for VNFs provided
         :param nsrId: Id of the NSR
         :return: copy of vnfd
         """
-        ci_file = None
         try:
             vnfd_RO = deepcopy(vnfd)
+            # remove unused by RO configuration, monitoring, scaling and internal keys
             vnfd_RO.pop("_id", None)
             vnfd_RO.pop("_admin", None)
+            vnfd_RO.pop("vnf-configuration", None)
+            vnfd_RO.pop("monitoring-param", None)
+            vnfd_RO.pop("scaling-group-descriptor", None)
             if new_id:
                 vnfd_RO["id"] = new_id
-            for vdu in vnfd_RO.get("vdu", ()):
-                if "cloud-init-file" in vdu:
+
+            # parse cloud-init or cloud-init-file with the provided variables using Jinja2
+            for vdu in get_iterable(vnfd_RO, "vdu"):
+                cloud_init_file = None
+                if vdu.get("cloud-init-file"):
                     base_folder = vnfd["_admin"]["storage"]
                     cloud_init_file = "{}/{}/cloud_init/{}".format(base_folder["folder"], base_folder["pkg-dir"],
                                                                    vdu["cloud-init-file"])
                     with self.fs.file_open(cloud_init_file, "r") as ci_file:
                         cloud_init_content = ci_file.read()
                     vdu.pop("cloud-init-file", None)
-                elif "cloud-init" in vdu:
+                elif vdu.get("cloud-init"):
                     cloud_init_content = vdu["cloud-init"]
-                try:
-                    env = Environment()
-                    ast = env.parse(cloud_init_content)
-                    mandatory_vars = meta.find_undeclared_variables(ast)
-                    if mandatory_vars:
-                        for var in mandatory_vars:
-                            if not additionalParams or var not in additionalParams.keys():
-                                raise LcmException("Variable '{}' defined in vnfd[id={}] vdu[id={}] cloud-init or "
-                                                   "cloud-init-file, must be provided in the instantiation parameters "
-                                                   "inside the 'additionalParamsForVnf' block".format(var, vnfd["id"],
-                                                                                                      vdu["id"]))
-                        template = Template(cloud_init_content)
-                        cloud_init_content = template.render(additionalParams)
-                except (TemplateError, TemplateNotFound, TemplateSyntaxError) as e:
-                    raise LcmException("Error in jinja2 template: {}".format(e))
+                else:
+                    continue
+
+                env = Environment()
+                ast = env.parse(cloud_init_content)
+                mandatory_vars = meta.find_undeclared_variables(ast)
+                if mandatory_vars:
+                    for var in mandatory_vars:
+                        if not additionalParams or var not in additionalParams.keys():
+                            raise LcmException("Variable '{}' defined at vnfd[id={}]:vdu[id={}]:cloud-init/cloud-init-"
+                                               "file, must be provided in the instantiation parameters inside the "
+                                               "'additionalParamsForVnf' block".format(var, vnfd["id"], vdu["id"]))
+                template = Template(cloud_init_content)
+                cloud_init_content = template.render(additionalParams)
                 vdu["cloud-init"] = cloud_init_content
-            # remnove unused by RO configuration, monitoring, scaling
-            vnfd_RO.pop("vnf-configuration", None)
-            vnfd_RO.pop("monitoring-param", None)
-            vnfd_RO.pop("scaling-group-descriptor", None)
+
             return vnfd_RO
         except FsException as e:
-            raise LcmException("Error reading file at vnfd {}: {} ".format(vnfd["_id"], e))
-        finally:
-            if ci_file:
-                ci_file.close()
+            raise LcmException("Error reading vnfd[id={}]:vdu[id={}]:cloud-init-file={}: {}".
+                               format(vnfd["id"], vdu[id], cloud_init_file, e))
+        except (TemplateError, TemplateNotFound, TemplateSyntaxError) as e:
+            raise LcmException("Error parsing Jinja2 to cloud-init content at vnfd[id={}]:vdu[id={}]: {}".
+                               format(vnfd["id"], vdu["id"], e))
 
     def n2vc_callback(self, model_name, application_name, status, message, n2vc_info, task=None):
         """
@@ -810,12 +813,11 @@ class NsLcm(LcmBase):
             # The parameters we'll need to deploy a charm
             number_to_configure = 0
 
-            def deploy_charm(vnf_index, vdu_id, vdu_name, vdu_count_index, mgmt_ip_address, n2vc_info,
-                             config_primitive=None):
+            def deploy_charm(vnf_index, vdu_id, vdu_name, vdu_count_index, charm_params, n2vc_info):
                 """An inner function to deploy the charm from either vnf or vdu
                 vnf_index is mandatory. vdu_id can be None for a vnf configuration or the id for vdu configuration
                 """
-                if not mgmt_ip_address:
+                if not charm_params["rw_mgmt_ip"]:
                     raise LcmException("vnfd/vdu has not management ip address to configure it")
                 # Login to the VCA.
                 # if number_to_configure == 0:
@@ -836,11 +838,6 @@ class NsLcm(LcmBase):
                     base_folder["pkg-dir"],
                     proxy_charm
                 )
-
-                # Setup the runtime parameters for this VNF
-                params = {'rw_mgmt_ip': mgmt_ip_address}
-                if config_primitive:
-                    params["initial-config-primitive"] = config_primitive
 
                 # ns_name will be ignored in the current version of N2VC
                 # but will be implemented for the next point release.
@@ -886,10 +883,10 @@ class NsLcm(LcmBase):
                         application_name,    # The application name
                         vnfd,                # The vnf descriptor
                         charm_path,          # Path to charm
-                        params,              # Runtime params, like mgmt ip
+                        charm_params,        # Runtime params, like mgmt ip
                         {},                  # for native charms only
                         self.n2vc_callback,  # Callback for status changes
-                        n2vc_info,              # Callback parameter
+                        n2vc_info,           # Callback parameter
                         None,                # Callback parameter (task)
                     )
                 )
@@ -905,36 +902,41 @@ class NsLcm(LcmBase):
                 vnf_index = str(c_vnf["member-vnf-index"])
                 vnfd = db_vnfds_ref[vnfd_id]
 
+                # Get additional parameters
+                vnfr_params = {}
+                if db_vnfrs[vnf_index].get("additionalParamsForVnf"):
+                    vnfr_params = db_vnfrs[vnf_index]["additionalParamsForVnf"].copy()
+                for k, v in vnfr_params.items():
+                    if isinstance(v, str) and v.startswith("!!yaml "):
+                        vnfr_params[k] = yaml.safe_load(v[7:])
+
                 # Check if this VNF has a charm configuration
                 vnf_config = vnfd.get("vnf-configuration")
-
                 if vnf_config and vnf_config.get("juju"):
                     proxy_charm = vnf_config["juju"]["charm"]
-                    config_primitive = None
 
                     if proxy_charm:
-                        if 'initial-config-primitive' in vnf_config:
-                            config_primitive = vnf_config['initial-config-primitive']
+                        step = "connecting to N2VC to configure vnf {}".format(vnf_index)
+                        vnfr_params["rw_mgmt_ip"] = db_vnfrs[vnf_index]["ip-address"]
+                        charm_params = {
+                            "user_values": vnfr_params,
+                            "rw_mgmt_ip": db_vnfrs[vnf_index]["ip-address"],
+                            "initial-config-primitive": vnf_config.get('initial-config-primitive') or {}
+                        }
 
                         # Login to the VCA. If there are multiple calls to login(),
                         # subsequent calls will be a nop and return immediately.
-                        step = "connecting to N2VC to configure vnf {}".format(vnf_index)
                         await self.n2vc.login()
-                        deploy_charm(vnf_index, None, None, None, db_vnfrs[vnf_index]["ip-address"], n2vc_info,
-                                     config_primitive)
+                        deploy_charm(vnf_index, None, None, None, charm_params, n2vc_info)
                         number_to_configure += 1
 
                 # Deploy charms for each VDU that supports one.
                 for vdu_index, vdu in enumerate(get_iterable(vnfd, 'vdu')):
                     vdu_config = vdu.get('vdu-configuration')
                     proxy_charm = None
-                    config_primitive = None
 
                     if vdu_config and vdu_config.get("juju"):
                         proxy_charm = vdu_config["juju"]["charm"]
-
-                        if 'initial-config-primitive' in vdu_config:
-                            config_primitive = vdu_config['initial-config-primitive']
 
                         if proxy_charm:
                             step = "connecting to N2VC to configure vdu {} from vnf {}".format(vdu["id"], vnf_index)
@@ -944,8 +946,14 @@ class NsLcm(LcmBase):
                             if vdur["vdu-id-ref"] != vdu["id"]:
                                 raise LcmException("Mismatch vdur {}, vdu {} at index {} for vnf {}"
                                                    .format(vdur["vdu-id-ref"], vdu["id"], vdu_index, vnf_index))
+                            vnfr_params["rw_mgmt_ip"] = vdur["ip-address"]
+                            charm_params = {
+                                "user_values": vnfr_params,
+                                "rw_mgmt_ip": vdur["ip-address"],
+                                "initial-config-primitive": vdu_config.get('initial-config-primitive') or {}
+                            }
                             deploy_charm(vnf_index, vdu["id"], vdur.get("name"), vdur["count-index"],
-                                         vdur["ip-address"], n2vc_info, config_primitive)
+                                         charm_params, n2vc_info)
                             number_to_configure += 1
 
             db_nsr_update["operational-status"] = "running"
@@ -962,7 +970,7 @@ class NsLcm(LcmBase):
                         self.update_db_2("nsrs", nsr_id, db_nsr_update)
                     if db_nslcmop_update:
                         self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-                    # TODO add a fake tast that set n2vc_event after some time
+                    # TODO add a fake task that set n2vc_event after some time
                     await n2vc_info["n2vc_event"].wait()
                     n2vc_info["n2vc_event"].clear()
                     all_active = True
@@ -1060,7 +1068,8 @@ class NsLcm(LcmBase):
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "instantiated", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
-                                                                   "operationState": nslcmop_operation_state})
+                                                                   "operationState": nslcmop_operation_state},
+                                            loop=self.loop)
                 except Exception as e:
                     self.logger.error(logging_text + "kafka_write notification Exception {}".format(e))
 
@@ -1323,7 +1332,8 @@ class NsLcm(LcmBase):
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "terminated", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
-                                                                 "operationState": nslcmop_operation_state})
+                                                                 "operationState": nslcmop_operation_state},
+                                            loop=self.loop)
                 except Exception as e:
                     self.logger.error(logging_text + "kafka_write notification Exception {}".format(e))
             self.logger.debug(logging_text + "Exit")
@@ -1465,7 +1475,8 @@ class NsLcm(LcmBase):
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "actioned", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
-                                                               "operationState": nslcmop_operation_state})
+                                                               "operationState": nslcmop_operation_state},
+                                            loop=self.loop)
                 except Exception as e:
                     self.logger.error(logging_text + "kafka_write notification Exception {}".format(e))
             self.logger.debug(logging_text + "Exit")
@@ -1809,7 +1820,8 @@ class NsLcm(LcmBase):
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "scaled", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
-                                                             "operationState": nslcmop_operation_state})
+                                                             "operationState": nslcmop_operation_state},
+                                            loop=self.loop)
                     # if cooldown_time:
                     #     await asyncio.sleep(cooldown_time)
                     # await self.msg.aiowrite("ns","scaled-cooldown-time", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id})
