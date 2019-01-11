@@ -145,7 +145,7 @@ class NsLcm(LcmBase):
                                                "file, must be provided in the instantiation parameters inside the "
                                                "'additionalParamsForVnf' block".format(var, vnfd["id"], vdu["id"]))
                 template = Template(cloud_init_content)
-                cloud_init_content = template.render(additionalParams)
+                cloud_init_content = template.render(additionalParams or {})
                 vdu["cloud-init"] = cloud_init_content
 
             return vnfd_RO
