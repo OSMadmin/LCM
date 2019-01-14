@@ -29,7 +29,7 @@ from lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
 
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
-from n2vc.vnf import N2VC
+from n2vc.vnf import N2VC, N2VCPrimitiveExecutionFailed
 
 from copy import copy, deepcopy
 from http import HTTPStatus
@@ -71,6 +71,7 @@ class NsLcm(LcmBase):
     timeout_vca_on_error = 5 * 60   # Time for charm from first time at blocked,error status to mark as failed
     total_deploy_timeout = 2 * 3600   # global timeout for deployment
     timeout_charm_delete = 10 * 60
+    timeout_primitive = 10 * 60  # timeout for primitive execution
 
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
         """
@@ -151,7 +152,7 @@ class NsLcm(LcmBase):
             return vnfd_RO
         except FsException as e:
             raise LcmException("Error reading vnfd[id={}]:vdu[id={}]:cloud-init-file={}: {}".
-                               format(vnfd["id"], vdu[id], cloud_init_file, e))
+                               format(vnfd["id"], vdu["id"], cloud_init_file, e))
         except (TemplateError, TemplateNotFound, TemplateSyntaxError) as e:
             raise LcmException("Error parsing Jinja2 to cloud-init content at vnfd[id={}]:vdu[id={}]: {}".
                                format(vnfd["id"], vdu["id"], e))
@@ -1339,65 +1340,96 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + "Exit")
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_terminate")
 
-    async def _ns_execute_primitive(self, db_deployed, nsr_name, member_vnf_index, vdu_id, vdu_name, vdu_count_index,
-                                    primitive, primitive_params):
+    @staticmethod
+    def _map_primitive_params(primitive_desc, params, instantiation_params):
+        """
+        Generates the params to be provided to charm before executing primitive. If user does not provide a parameter,
+        The default-value is used. If it is between < > it look for a value at instantiation_params
+        :param primitive_desc: portion of VNFD/NSD that describes primitive
+        :param params: Params provided by user
+        :param instantiation_params: Instantiation params provided by user
+        :return: a dictionary with the calculated params
+        """
+        calculated_params = {}
+        for parameter in primitive_desc.get("parameter", ()):
+            param_name = parameter["name"]
+            if param_name in params:
+                calculated_params[param_name] = params[param_name]
+            elif "default-value" in parameter:
+                calculated_params[param_name] = parameter["default-value"]
+                if isinstance(parameter["default-value"], str) and parameter["default-value"].startswith("<") and \
+                        parameter["default-value"].endswith(">"):
+                    if parameter["default-value"][1:-1] in instantiation_params:
+                        calculated_params[param_name] = instantiation_params[parameter["default-value"][1:-1]]
+                    else:
+                        raise LcmException("Parameter {} needed to execute primitive {} not provided".
+                                           format(parameter["default-value"], primitive_desc["name"]))
+            else:
+                raise LcmException("Parameter {} needed to execute primitive {} not provided".
+                                   format(param_name, primitive_desc["name"]))
 
-        for vca_deployed in db_deployed["VCA"]:
-            if not vca_deployed:
-                continue
-            if member_vnf_index != vca_deployed["member-vnf-index"] or vdu_id != vca_deployed["vdu_id"]:
-                continue
-            if vdu_name and vdu_name != vca_deployed["vdu_name"]:
-                continue
-            if vdu_count_index and vdu_count_index != vca_deployed["vdu_count_index"]:
-                continue
-            break
-        else:
-            raise LcmException("charm for member_vnf_index={} vdu_id={} vdu_name={} vdu_count_index={} is not deployed"
-                               .format(member_vnf_index, vdu_id, vdu_name, vdu_count_index))
-        model_name = vca_deployed.get("model")
-        application_name = vca_deployed.get("application")
-        if not model_name or not application_name:
-            raise LcmException("charm for member_vnf_index={} vdu_id={} vdu_name={} vdu_count_index={} has not model "
-                               "or application name" .format(member_vnf_index, vdu_id, vdu_name, vdu_count_index))
-        if vca_deployed["operational-status"] != "active":
-            raise LcmException("charm for member_vnf_index={} vdu_id={} operational_status={} not 'active'".format(
-                member_vnf_index, vdu_id, vca_deployed["operational-status"]))
-        callback = None  # self.n2vc_callback
-        callback_args = ()  # [db_nsr, db_nslcmop, member_vnf_index, None]
-        await self.n2vc.login()
-        task = asyncio.ensure_future(
-            self.n2vc.ExecutePrimitive(
+            if isinstance(calculated_params[param_name], (dict, list, tuple)):
+                calculated_params[param_name] = yaml.safe_dump(calculated_params[param_name], default_flow_style=True,
+                                                               width=256)
+            elif isinstance(calculated_params[param_name], str) and calculated_params[param_name].startswith("!!yaml "):
+                calculated_params[param_name] = calculated_params[param_name][7:]
+        return calculated_params
+
+    async def _ns_execute_primitive(self, db_deployed, member_vnf_index, vdu_id, vdu_name, vdu_count_index,
+                                    primitive, primitive_params):
+        start_primitive_time = time()
+        try:
+            for vca_deployed in db_deployed["VCA"]:
+                if not vca_deployed:
+                    continue
+                if member_vnf_index != vca_deployed["member-vnf-index"] or vdu_id != vca_deployed["vdu_id"]:
+                    continue
+                if vdu_name and vdu_name != vca_deployed["vdu_name"]:
+                    continue
+                if vdu_count_index and vdu_count_index != vca_deployed["vdu_count_index"]:
+                    continue
+                break
+            else:
+                raise LcmException("charm for member_vnf_index={} vdu_id={} vdu_name={} vdu_count_index={} is not "
+                                   "deployed".format(member_vnf_index, vdu_id, vdu_name, vdu_count_index))
+            model_name = vca_deployed.get("model")
+            application_name = vca_deployed.get("application")
+            if not model_name or not application_name:
+                raise LcmException("charm for member_vnf_index={} vdu_id={} vdu_name={} vdu_count_index={} has not "
+                                   "model or application name" .format(member_vnf_index, vdu_id, vdu_name,
+                                                                       vdu_count_index))
+            if vca_deployed["operational-status"] != "active":
+                raise LcmException("charm for member_vnf_index={} vdu_id={} operational_status={} not 'active'".format(
+                    member_vnf_index, vdu_id, vca_deployed["operational-status"]))
+            callback = None  # self.n2vc_callback
+            callback_args = ()  # [db_nsr, db_nslcmop, member_vnf_index, None]
+            await self.n2vc.login()
+            primitive_id = await self.n2vc.ExecutePrimitive(
                 model_name,
                 application_name,
-                primitive, callback,
+                primitive,
+                callback,
                 *callback_args,
                 **primitive_params
             )
-        )
-        # task.add_done_callback(functools.partial(self.n2vc_callback, model_name, application_name, None,
-        #                                          db_nsr, db_nslcmop, member_vnf_index))
-        # self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "action:" + primitive, task)
-        # wait until completed with timeout
-        await asyncio.wait((task,), timeout=600)
-
-        result = "FAILED"  # by default
-        result_detail = ""
-        if task.cancelled():
-            result_detail = "Task has been cancelled"
-        elif task.done():
-            exc = task.exception()
-            if exc:
-                result_detail = str(exc)
+            while time() - start_primitive_time < self.timeout_primitive:
+                primitive_result_ = await self.n2vc.GetPrimitiveStatus(model_name, primitive_id)
+                if primitive_result_ == "running":
+                    pass
+                elif primitive_result_ in ("completed", "failed"):
+                    primitive_result = "COMPLETED" if primitive_result_ == "completed" else "FAILED"
+                    detailed_result = await self.n2vc.GetPrimitiveOutput(model_name, primitive_id)
+                    break
+                else:
+                    detailed_result = "Invalid N2VC.GetPrimitiveStatus = {} obtained".format(primitive_result_)
+                    primitive_result = "FAILED"
+                    break
+                await asyncio.sleep(5)
             else:
-                # TODO revise with Adam if action is finished and ok when task is done or callback is needed
-                result = "COMPLETED"
-                result_detail = "Done"
-        else:  # timeout
-            # TODO Should it be cancelled?!!
-            task.cancel()
-            result_detail = "timeout"
-        return result, result_detail
+                raise LcmException("timeout after {} seconds".format(self.timeout_primitive))
+            return primitive_result, detailed_result
+        except (N2VCPrimitiveExecutionFailed, LcmException) as e:
+            return "FAILED", str(e)
 
     async def action(self, nsr_id, nslcmop_id):
         logging_text = "Task ns={} action={} ".format(nsr_id, nslcmop_id)
@@ -1413,12 +1445,17 @@ class NsLcm(LcmBase):
             step = "Getting information from database"
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+
             nsr_deployed = db_nsr["_admin"].get("deployed")
-            nsr_name = db_nsr["name"]
             vnf_index = db_nslcmop["operationParams"]["member_vnf_index"]
             vdu_id = db_nslcmop["operationParams"].get("vdu_id")
             vdu_count_index = db_nslcmop["operationParams"].get("vdu_count_index")
             vdu_name = db_nslcmop["operationParams"].get("vdu_name")
+
+            step = "Getting vnfr from database"
+            db_vnfr = self.db.get_one("vnfrs", {"member-vnf-index-ref": vnf_index, "nsr-id-ref": nsr_id})
+            step = "Getting vnfd from database"
+            db_vnfd = self.db.get_one("vnfds", {"_id": db_vnfr["vnfd-id"]})
 
             # look if previous tasks in process
             task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
@@ -1437,12 +1474,34 @@ class NsLcm(LcmBase):
                 db_nsr_update["_admin.deployed.VCA"] = nsr_deployed["VCA"]
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
-            # TODO check if ns is in a proper status
             primitive = db_nslcmop["operationParams"]["primitive"]
             primitive_params = db_nslcmop["operationParams"]["primitive_params"]
-            result, result_detail = await self._ns_execute_primitive(nsr_deployed, nsr_name, vnf_index, vdu_id,
-                                                                     vdu_name, vdu_count_index, primitive,
-                                                                     primitive_params)
+
+            # look for primitive
+            config_primitive_desc = None
+            if vdu_id:
+                for vdu in get_iterable(db_vnfd, "vdu"):
+                    if vdu_id == vdu["id"]:
+                        for config_primitive in vdu.get("vdu-configuration", {}).get("config-primitive", ()):
+                            if config_primitive["name"] == primitive:
+                                config_primitive_desc = config_primitive
+                                break
+            for config_primitive in db_vnfd.get("vnf-configuration", {}).get("config-primitive", ()):
+                if config_primitive["name"] == primitive:
+                    config_primitive_desc = config_primitive
+                    break
+            if not config_primitive_desc:
+                raise LcmException("Primitive {} not found at vnf-configuration:config-primitive or vdu:"
+                                   "vdu-configuration:config-primitive".format(primitive))
+
+            vnfr_params = {}
+            if db_vnfr.get("additionalParamsForVnf"):
+                vnfr_params.update(db_vnfr["additionalParamsForVnf"])
+
+            # TODO check if ns is in a proper status
+            result, result_detail = await self._ns_execute_primitive(
+                nsr_deployed, vnf_index, vdu_id, vdu_name, vdu_count_index, primitive,
+                self._map_primitive_params(config_primitive_desc, primitive_params, vnfr_params))
             db_nslcmop_update["detailed-status"] = result_detail
             db_nslcmop_update["operationState"] = nslcmop_operation_state = result
             db_nslcmop_update["statusEnteredTime"] = time()
@@ -1502,7 +1561,7 @@ class NsLcm(LcmBase):
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr from database"
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
-            nsr_name = db_nsr["name"]
+
             old_operational_status = db_nsr["operational-status"]
             old_config_status = db_nsr["config-status"]
 
@@ -1625,27 +1684,26 @@ class NsLcm(LcmBase):
                         vnf_config_primitive = scaling_config_action["vnf-config-primitive-name-ref"]
                         step = db_nslcmop_update["detailed-status"] = \
                             "executing pre-scale scaling-config-action '{}'".format(vnf_config_primitive)
+
                         # look for primitive
-                        primitive_params = {}
                         for config_primitive in db_vnfd.get("vnf-configuration", {}).get("config-primitive", ()):
                             if config_primitive["name"] == vnf_config_primitive:
-                                for parameter in config_primitive.get("parameter", ()):
-                                    if 'default-value' in parameter and \
-                                            parameter['default-value'] == "<VDU_SCALE_INFO>":
-                                        primitive_params[parameter["name"]] = yaml.safe_dump(vdu_scaling_info,
-                                                                                             default_flow_style=True,
-                                                                                             width=256)
                                 break
                         else:
                             raise LcmException(
                                 "Invalid vnfd descriptor at scaling-group-descriptor[name='{}']:scaling-config-action"
-                                "[vnf-config-primitive-name-ref='{}'] does not match any vnf-cnfiguration:config-"
+                                "[vnf-config-primitive-name-ref='{}'] does not match any vnf-configuration:config-"
                                 "primitive".format(scaling_group, config_primitive))
+
+                        vnfr_params = {"<VDU_SCALE_INFO>": vdu_scaling_info}
+                        if db_vnfr.get("additionalParamsForVnf"):
+                            vnfr_params.update(db_vnfr["additionalParamsForVnf"])
+
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring pre-scaling"
-                        result, result_detail = await self._ns_execute_primitive(nsr_deployed, nsr_name, vnf_index,
-                                                                                 None, None, None, vnf_config_primitive,
-                                                                                 primitive_params)
+                        result, result_detail = await self._ns_execute_primitive(
+                            nsr_deployed, vnf_index, None, None, None, vnf_config_primitive,
+                            self._map_primitive_params(config_primitive, {}, vnfr_params))
                         self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                             vnf_config_primitive, result, result_detail))
                         if result == "FAILED":
@@ -1746,16 +1804,14 @@ class NsLcm(LcmBase):
                         vnf_config_primitive = scaling_config_action["vnf-config-primitive-name-ref"]
                         step = db_nslcmop_update["detailed-status"] = \
                             "executing post-scale scaling-config-action '{}'".format(vnf_config_primitive)
+
+                        vnfr_params = {"<VDU_SCALE_INFO>": vdu_scaling_info}
+                        if db_vnfr.get("additionalParamsForVnf"):
+                            vnfr_params.update(db_vnfr["additionalParamsForVnf"])
+
                         # look for primitive
-                        primitive_params = {}
                         for config_primitive in db_vnfd.get("vnf-configuration", {}).get("config-primitive", ()):
                             if config_primitive["name"] == vnf_config_primitive:
-                                for parameter in config_primitive.get("parameter", ()):
-                                    if 'default-value' in parameter and \
-                                            parameter['default-value'] == "<VDU_SCALE_INFO>":
-                                        primitive_params[parameter["name"]] = yaml.safe_dump(vdu_scaling_info,
-                                                                                             default_flow_style=True,
-                                                                                             width=256)
                                 break
                         else:
                             raise LcmException("Invalid vnfd descriptor at scaling-group-descriptor[name='{}']:"
@@ -1765,9 +1821,9 @@ class NsLcm(LcmBase):
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring post-scaling"
 
-                        result, result_detail = await self._ns_execute_primitive(nsr_deployed, nsr_name, vnf_index,
-                                                                                 None, None, None, vnf_config_primitive,
-                                                                                 primitive_params)
+                        result, result_detail = await self._ns_execute_primitive(
+                            nsr_deployed, vnf_index, None, None, None, vnf_config_primitive,
+                            self._map_primitive_params(config_primitive, {}, vnfr_params))
                         self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                             vnf_config_primitive, result, result_detail))
                         if result == "FAILED":
