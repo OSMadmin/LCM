@@ -40,12 +40,12 @@ from n2vc import version as n2vc_version
 
 
 __author__ = "Alfonso Tierno"
-min_RO_version = [0, 6, 0]
+min_RO_version = [0, 6, 3]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.11"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.31'
-lcm_version_date = '2019-01-16'
+lcm_version = '0.1.32'
+lcm_version_date = '2019-01-28'
 
 
 class Lcm:
@@ -64,6 +64,8 @@ class Lcm:
         self.msg = None
         self.fs = None
         self.pings_not_received = 1
+        self.consecutive_errors = 0
+        self.first_start = False
 
         # contains created tasks/futures to be able to cancel
         self.lcm_tasks = TaskRegistry()
@@ -145,15 +147,17 @@ class Lcm:
                 raise LcmException("Invalid configuration param '{}' at '[storage]':'driver'".format(
                     config["storage"]["driver"]))
 
-            if config["message"]["driver"] == "local":
+            config_message = config["message"].copy()
+            config_message["loop"] = self.loop
+            if config_message["driver"] == "local":
                 self.msg = msglocal.MsgLocal()
-                self.msg.connect(config["message"])
-            elif config["message"]["driver"] == "kafka":
+                self.msg.connect(config_message)
+            elif config_message["driver"] == "kafka":
                 self.msg = msgkafka.MsgKafka()
-                self.msg.connect(config["message"])
+                self.msg.connect(config_message)
             else:
                 raise LcmException("Invalid configuration param '{}' at '[message]':'driver'".format(
-                    config["storage"]["driver"]))
+                    config["message"]["driver"]))
         except (DbException, FsException, MsgException) as e:
             self.logger.critical(str(e), exc_info=True)
             raise LcmException(str(e))
@@ -273,6 +277,7 @@ class Lcm:
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_scale", task)
                 return
             elif command == "show":
+                nsr_id = params
                 try:
                     db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
                     print("nsr:\n    _id={}\n    operational-status: {}\n    config-status: {}"
@@ -307,6 +312,7 @@ class Lcm:
                 self.lcm_tasks.register("nsi", nsir_id, nsilcmop_id, "nsi_terminate", task)
                 return
             elif command == "show":
+                nsir_id = params
                 try:
                     db_nsir = self.db.get_one("nsirs", {"_id": nsir_id})
                     print("nsir:\n    _id={}\n    operational-status: {}\n    config-status: {}"

@@ -406,6 +406,7 @@ class NetsliceLcm(LcmBase):
         RO = ROclient.ROClient(self.loop, **self.ro_config)
         failed_detail = []   # annotates all failed error messages
         nsilcmop_operation_state = None
+        autoremove = False  # autoremove after terminated
         try:
             step = "Getting nsir={} from db".format(nsir_id)
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
@@ -543,9 +544,26 @@ class NetsliceLcm(LcmBase):
                     failed_detail.append("RO_ns_id={} delete error: {}".format(RO_nsir_id, e))
                     self.logger.error(logging_text + failed_detail[-1])
 
+            if failed_detail:
+                self.logger.error(logging_text + " ;".join(failed_detail))
+                db_nsir_update["operational-status"] = "failed"
+                db_nsir_update["detailed-status"] = "Deletion errors " + "; ".join(failed_detail)
+                db_nsilcmop_update["detailed-status"] = "; ".join(failed_detail)
+                db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "FAILED"
+                db_nsilcmop_update["statusEnteredTime"] = time()
+            else:
+                db_nsir_update["operational-status"] = "terminated"
+                db_nsir_update["detailed-status"] = "done"
+                db_nsir_update["config-status"] = "configured"
+                db_nsir_update["_admin.nsiState"] = "NOT_INSTANTIATED"
+                db_nsilcmop_update["detailed-status"] = "Done"
+                db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "COMPLETED"
+                db_nsilcmop_update["statusEnteredTime"] = time()
+                if db_nsilcmop["operationParams"].get("autoremove"):
+                    autoremove = True
+
             db_nsir_update["operational-status"] = "terminated"
-            db_nsir_update["config-status"] = "configured"            
-            db_nsir_update["detailed-status"] = "done" 
+            db_nsir_update["config-status"] = "configured"
             db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "COMPLETED"
             db_nsilcmop_update["statusEnteredTime"] = time()
             db_nsilcmop_update["detailed-status"] = "done"
@@ -573,7 +591,6 @@ class NetsliceLcm(LcmBase):
             try:
                 if db_nsir:
                     db_nsir_update["_admin.nsilcmop"] = None
-                    db_nsir_update["_admin.nsiState"] = "TERMINATED"
                     self.update_db_2("nsis", nsir_id, db_nsir_update)
                 if db_nsilcmop:
                     self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
@@ -583,7 +600,9 @@ class NetsliceLcm(LcmBase):
             if nsilcmop_operation_state:
                 try:
                     await self.msg.aiowrite("nsi", "terminated", {"nsir_id": nsir_id, "nsilcmop_id": nsilcmop_id,
-                                                                  "operationState": nsilcmop_operation_state})
+                                                                  "operationState": nsilcmop_operation_state,
+                                                                  "autoremove": autoremove},
+                                            loop=self.loop)
                 except Exception as e:
                     self.logger.error(logging_text + "kafka_write notification Exception {}".format(e))
             self.logger.debug(logging_text + "Exit")

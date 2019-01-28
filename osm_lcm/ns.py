@@ -1116,6 +1116,7 @@ class NsLcm(LcmBase):
         db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         db_nslcmop_update = {}
         nslcmop_operation_state = None
+        autoremove = False  # autoremove after terminated
         try:
             step = "Getting nslcmop={} from db".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
@@ -1288,18 +1289,6 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["detailed-status"] = "; ".join(failed_detail)
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
-            elif db_nslcmop["operationParams"].get("autoremove"):
-                self.db.del_one("nsrs", {"_id": nsr_id})
-                db_nsr = None
-                db_nsr_update.clear()
-                self.db.del_list("nslcmops", {"nsInstanceId": nsr_id})
-                db_nslcmop = None
-                nslcmop_operation_state = "COMPLETED"
-                db_nslcmop_update.clear()
-                self.db.del_list("vnfrs", {"nsr-id-ref": nsr_id})
-                self.db.set_list("pdus", {"_admin.usage.nsr_id": nsr_id},
-                                 {"_admin.usageState": "NOT_IN_USE", "_admin.usage": None})
-                self.logger.debug(logging_text + "Delete from database")
             else:
                 db_nsr_update["operational-status"] = "terminated"
                 db_nsr_update["detailed-status"] = "Done"
@@ -1307,6 +1296,8 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["detailed-status"] = "Done"
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
                 db_nslcmop_update["statusEnteredTime"] = time()
+                if db_nslcmop["operationParams"].get("autoremove"):
+                    autoremove = True
 
         except (ROclient.ROClientException, DbException) as e:
             self.logger.error(logging_text + "Exit Exception {}".format(e))
@@ -1333,7 +1324,8 @@ class NsLcm(LcmBase):
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "terminated", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
-                                                                 "operationState": nslcmop_operation_state},
+                                                                 "operationState": nslcmop_operation_state,
+                                                                 "autoremove": autoremove},
                                             loop=self.loop)
                 except Exception as e:
                     self.logger.error(logging_text + "kafka_write notification Exception {}".format(e))
