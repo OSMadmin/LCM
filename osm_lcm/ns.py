@@ -657,6 +657,10 @@ class NsLcm(LcmBase):
 
             db_nsr_update["detailed-status"] = "creating"
             db_nsr_update["operational-status"] = "init"
+            if not db_nsr["_admin"].get("deployed") or not db_nsr["_admin"]["deployed"].get("RO") or \
+                    not db_nsr["_admin"]["deployed"]["RO"].get("vnfd"):
+                populate_dict(db_nsr, ("_admin", "deployed", "RO", "vnfd"), [])
+                db_nsr_update["_admin.deployed.RO.vnfd"] = []
 
             RO = ROclient.ROClient(self.loop, **self.ro_config)
 
@@ -667,26 +671,39 @@ class NsLcm(LcmBase):
             # get vnfds, instantiate at RO
             for c_vnf in nsd.get("constituent-vnfd", ()):
                 member_vnf_index = c_vnf["member-vnf-index"]
+                vnfd = db_vnfds_ref[c_vnf['vnfd-id-ref']]
                 vnfd_ref = vnfd["id"]
-                step = db_nsr_update["detailed-status"] = "Creating vnfd={} at RO".format(vnfd_ref)
+                step = db_nsr_update["detailed-status"] = "Creating vnfd='{}' member-vnf-index='{}' at RO".format(
+                    vnfd_ref, member_vnf_index)
                 # self.logger.debug(logging_text + step)
                 vnfd_id_RO = "{}.{}.{}".format(nsr_id, RO_descriptor_number, member_vnf_index[:23])
                 vnf_index_2_RO_id[member_vnf_index] = vnfd_id_RO
                 RO_descriptor_number += 1
 
+                # look position at deployed.RO.vnfd if not present it will be appended at the end
+                for index, vnf_deployed in enumerate(db_nsr["_admin"]["deployed"]["RO"]["vnfd"]):
+                    if vnf_deployed["member-vnf-index"] == member_vnf_index:
+                        break
+                else:
+                    index = len(db_nsr["_admin"]["deployed"]["RO"]["vnfd"])
+                    db_nsr["_admin"]["deployed"]["RO"]["vnfd"].append(None)
+
                 # look if present
+                RO_update = {"member-vnf-index": member_vnf_index}
                 vnfd_list = await RO.get_list("vnfd", filter_by={"osm_id": vnfd_id_RO})
                 if vnfd_list:
-                    db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnfd_id)] = vnfd_list[0]["uuid"]
-                    self.logger.debug(logging_text + "vnfd={} exists at RO. Using RO_id={}".format(
-                        vnfd_ref, vnfd_list[0]["uuid"]))
+                    RO_update["id"] = vnfd_list[0]["uuid"]
+                    self.logger.debug(logging_text + "vnfd='{}'  member-vnf-index='{}' exists at RO. Using RO_id={}".
+                                      format(vnfd_ref, member_vnf_index, vnfd_list[0]["uuid"]))
                 else:
                     vnfd_RO = self.vnfd2RO(vnfd, vnfd_id_RO, db_vnfrs[c_vnf["member-vnf-index"]].
                                            get("additionalParamsForVnf"), nsr_id)
                     desc = await RO.create("vnfd", descriptor=vnfd_RO)
-                    db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnfd_id)] = desc["uuid"]
-                    self.logger.debug(logging_text + "vnfd={} created at RO. RO_id={}".format(
-                        vnfd_ref, desc["uuid"]))
+                    RO_update["id"] = desc["uuid"]
+                    self.logger.debug(logging_text + "vnfd='{}' member-vnf-index='{}' created at RO. RO_id={}".format(
+                        vnfd_ref, member_vnf_index, desc["uuid"]))
+                db_nsr_update["_admin.deployed.RO.vnfd.{}".format(index)] = RO_update
+                db_nsr["_admin"]["deployed"]["RO"]["vnfd"][index] = RO_update
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             # create nsd at RO
@@ -1243,19 +1260,21 @@ class NsLcm(LcmBase):
                         self.logger.error(logging_text + failed_detail[-1])
                         RO_fail = True
 
-            if not RO_fail and nsr_deployed and nsr_deployed.get("RO") and nsr_deployed["RO"].get("vnfd_id"):
-                for vnf_id, RO_vnfd_id in nsr_deployed["RO"]["vnfd_id"].items():
-                    if not RO_vnfd_id:
+            if not RO_fail and nsr_deployed and nsr_deployed.get("RO") and nsr_deployed["RO"].get("vnfd"):
+                for index, vnf_deployed in enumerate(nsr_deployed["RO"]["vnfd"]):
+                    if not vnf_deployed or not vnf_deployed["id"]:
                         continue
                     try:
+                        RO_vnfd_id = vnf_deployed["id"]
                         step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] =\
-                            "Deleting vnfd={} at RO".format(vnf_id)
+                            "Deleting member-vnf-index={} RO_vnfd_id={} from RO".format(
+                                vnf_deployed["member-vnf-index"], RO_vnfd_id)
                         await RO.delete("vnfd", RO_vnfd_id)
                         self.logger.debug(logging_text + "RO_vnfd_id={} deleted".format(RO_vnfd_id))
-                        db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnf_id)] = None
+                        db_nsr_update["_admin.deployed.RO.vnfd.{}.id".format(index)] = None
                     except ROclient.ROClientException as e:
                         if e.http_code == 404:  # not found
-                            db_nsr_update["_admin.deployed.RO.vnfd_id.{}".format(vnf_id)] = None
+                            db_nsr_update["_admin.deployed.RO.vnfd.{}.id".format(index)] = None
                             self.logger.debug(logging_text + "RO_vnfd_id={} already deleted ".format(RO_vnfd_id))
                         elif e.http_code == 409:   # conflict
                             failed_detail.append("RO_vnfd_id={} delete conflict: {}".format(RO_vnfd_id, e))
