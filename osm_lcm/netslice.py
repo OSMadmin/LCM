@@ -10,7 +10,6 @@ import ROclient
 from lcm_utils import LcmException, LcmBase
 from osm_common.dbbase import DbException
 from time import time
-from http import HTTPStatus
 from copy import deepcopy
 
 
@@ -75,7 +74,6 @@ class NetsliceLcm(LcmBase):
         self.logger.debug(logging_text + "Enter")
         # get all needed from database
         exc = None
-        RO_nsir_id = None
         db_nsir = None
         db_nsilcmop = None
         db_nsir_update = {"_admin.nsilcmop": nsilcmop_id}
@@ -83,7 +81,23 @@ class NetsliceLcm(LcmBase):
         nsilcmop_operation_state = None
         vim_2_RO = {}
         RO = ROclient.ROClient(self.loop, **self.ro_config)
-        start_deploy = time()
+
+        def ip_profile_2_RO(ip_profile):
+            RO_ip_profile = deepcopy((ip_profile))
+            if "dns-server" in RO_ip_profile:
+                if isinstance(RO_ip_profile["dns-server"], list):
+                    RO_ip_profile["dns-address"] = []
+                    for ds in RO_ip_profile.pop("dns-server"):
+                        RO_ip_profile["dns-address"].append(ds['address'])
+                else:
+                    RO_ip_profile["dns-address"] = RO_ip_profile.pop("dns-server")
+            if RO_ip_profile.get("ip-version") == "ipv4":
+                RO_ip_profile["ip-version"] = "IPv4"
+            if RO_ip_profile.get("ip-version") == "ipv6":
+                RO_ip_profile["ip-version"] = "IPv6"
+            if "dhcp-params" in RO_ip_profile:
+                RO_ip_profile["dhcp"] = RO_ip_profile.pop("dhcp-params")
+            return RO_ip_profile
 
         def vim_account_2_RO(vim_account):
             """
@@ -102,12 +116,156 @@ class NetsliceLcm(LcmBase):
             vim_2_RO[vim_account] = RO_vim_id
             return RO_vim_id
 
+        async def netslice_scenario_create(self, vld_item, nsir_id, db_nsir, db_nsir_admin, db_nsir_update):
+            """
+            Create a network slice VLD through RO Scenario
+            :param vld_id The VLD id inside nsir to be created
+            :param nsir_id The nsir id
+            """
+            ip_vld = None
+            mgmt_network = False
+            RO_vld_sites = []
+            vld_id = vld_item["id"]
+            netslice_vld = vld_item
+            # logging_text = "Task netslice={} instantiate_vld={} ".format(nsir_id, vld_id)
+            # self.logger.debug(logging_text + "Enter")
+
+            vld_shared = None
+            for shared_nsrs_item in get_iterable(vld_item, "shared-nsrs-list"):
+                _filter = {"_id.ne": nsir_id, "_admin.nsrs-detailed-list.ANYINDEX.nsrId": shared_nsrs_item}
+                shared_nsi = self.db.get_one("nsis", _filter, fail_on_empty=False, fail_on_more=False)
+                if shared_nsi:
+                    for vlds in get_iterable(shared_nsi["_admin"]["deployed"], "RO"):
+                        if vld_id == vlds["vld_id"]:
+                            vld_shared = {"instance_scenario_id": vlds["netslice_scenario_id"], "osm_id": vld_id}
+                            break
+                    break
+
+            # Creating netslice-vld at RO
+            RO_nsir = db_nsir["_admin"].get("deployed", {}).get("RO", [])
+
+            if vld_id in RO_nsir:
+                db_nsir_update["_admin.deployed.RO"] = RO_nsir
+
+            # If netslice-vld doesn't exists then create it
+            else:
+                # TODO: Check VDU type in all descriptors finding SRIOV / PT
+                # Updating network names and datacenters from instantiation parameters for each VLD
+                RO_ns_params = {}
+                RO_ns_params["name"] = netslice_vld["name"]
+                RO_ns_params["datacenter"] = vim_account_2_RO(db_nsir["instantiation_parameters"]["vimAccountId"])
+                for instantiation_params_vld in get_iterable(db_nsir["instantiation_parameters"], "netslice-vld"):
+                    if instantiation_params_vld.get("name") == netslice_vld["name"]:
+                        ip_vld = deepcopy(instantiation_params_vld)
+
+                if netslice_vld.get("mgmt-network"):
+                    mgmt_network = True
+
+                # Creating scenario if vim-network-name / vim-network-id are present as instantiation parameter
+                # Use vim-network-id instantiation parameter
+                vim_network_option = None
+                if ip_vld:
+                    if ip_vld.get("vim-network-id"):
+                        vim_network_option = "vim-network-id"
+                    elif ip_vld.get("vim-network-name"):
+                        vim_network_option = "vim-network-name"
+                    if ip_vld.get("ip-profile"):
+                        populate_dict(RO_ns_params, ("networks", netslice_vld["name"], "ip-profile"),
+                                      ip_profile_2_RO(ip_vld["ip-profile"]))
+
+                if vim_network_option:
+                    if ip_vld.get(vim_network_option):
+                        if isinstance(ip_vld.get(vim_network_option), list):
+                            for vim_net_id in ip_vld.get(vim_network_option):
+                                for vim_account, vim_net in vim_net_id.items():
+                                    RO_vld_sites.append({
+                                        "netmap-use": vim_net,
+                                        "datacenter": vim_account_2_RO(vim_account)
+                                    })
+                        elif isinstance(ip_vld.get(vim_network_option), dict):
+                            for vim_account, vim_net in ip_vld.get(vim_network_option).items():
+                                RO_vld_sites.append({
+                                    "netmap-use": vim_net,
+                                    "datacenter": vim_account_2_RO(vim_account)
+                                })
+                        else:
+                            RO_vld_sites.append({
+                                "netmap-use": ip_vld[vim_network_option],
+                                "datacenter": vim_account_2_RO(netslice_vld["vimAccountId"])})
+                        
+                # Use default netslice vim-network-name from template
+                else:
+                    for nss_conn_point_ref in get_iterable(netslice_vld, "nss-connection-point-ref"):
+                        if nss_conn_point_ref.get("vimAccountId"):
+                            if nss_conn_point_ref["vimAccountId"] != netslice_vld["vimAccountId"]:
+                                RO_vld_sites.append({
+                                    "netmap-create": None,
+                                    "datacenter": vim_account_2_RO(nss_conn_point_ref["vimAccountId"])})
+
+                if vld_shared:
+                    populate_dict(RO_ns_params, ("networks", netslice_vld["name"], "use-network"), vld_shared)
+
+                if RO_vld_sites:
+                    populate_dict(RO_ns_params, ("networks", netslice_vld["name"], "sites"), RO_vld_sites)
+
+                RO_ns_params["scenario"] = {"nets": [{"name": netslice_vld["name"],
+                                            "external": mgmt_network, "type": "bridge"}]}
+
+                # self.logger.debug(logging_text + step)
+                db_nsir_update["detailed-status"] = "Creating netslice-vld at RO"
+                desc = await RO.create("ns", descriptor=RO_ns_params)
+                db_nsir_update_RO = {}
+                db_nsir_update_RO["netslice_scenario_id"] = desc["uuid"]
+                db_nsir_update_RO["vld_id"] = RO_ns_params["name"]
+                db_nsir_update["_admin.deployed.RO"].append(db_nsir_update_RO)
+        
+        def overwrite_nsd_params(self, db_nsir, nslcmop):
+            RO_list = []
+            vld_op_list = []
+            vld = None
+            nsr_id = nslcmop.get("nsInstanceId")
+            # Overwrite instantiation parameters in netslice runtime
+            if db_nsir.get("_admin"):
+                if db_nsir["_admin"].get("deployed"):
+                    db_admin_deployed_nsir = db_nsir["_admin"].get("deployed")
+                    if db_admin_deployed_nsir.get("RO"):
+                        RO_list = db_admin_deployed_nsir["RO"]
+
+            for RO_item in RO_list:
+                for netslice_vld in get_iterable(db_nsir["_admin"], "netslice-vld"):
+                    # if is equal vld of _admin with vld of netslice-vld then go for the CPs
+                    if RO_item.get("vld_id") == netslice_vld.get("id"):
+                        # Search the cp of netslice-vld that match with nst:netslice-subnet
+                        for nss_cp_item in get_iterable(netslice_vld, "nss-connection-point-ref"):
+                            # Search the netslice-subnet of nst that match
+                            for nss in get_iterable(db_nsir["_admin"], "netslice-subnet"):
+                                # Compare nss-ref equal nss from nst
+                                if nss_cp_item["nss-ref"] == nss["nss-id"]:
+                                    db_nsds = self.db.get_one("nsds", {"_id": nss["nsdId"]})
+                                    # Go for nsd, and search the CP that match with nst:CP to get vld-id-ref
+                                    for cp_nsd in db_nsds["connection-point"]:
+                                        if cp_nsd["name"] == nss_cp_item["nsd-connection-point-ref"]:
+                                            if nslcmop.get("operationParams"):
+                                                if nslcmop["operationParams"].get("nsName") == nss["nsName"]:
+                                                    vld_id = RO_item["vld_id"]
+                                                    netslice_scenario_id = RO_item["netslice_scenario_id"]
+                                                    nslcmop_vld = {}
+                                                    nslcmop_vld["ns-net"] = {vld_id: netslice_scenario_id}
+                                                    nslcmop_vld["name"] = cp_nsd["vld-id-ref"]
+                                                    for vld in get_iterable(nslcmop["operationParams"], "vld"):
+                                                        if vld["name"] == cp_nsd["vld-id-ref"]:
+                                                            nslcmop_vld.update(vld)
+                                                    vld_op_list.append(nslcmop_vld)
+            nslcmop["operationParams"]["vld"] = vld_op_list
+            self.update_db_2("nslcmops", nslcmop["_id"], nslcmop)
+            return nsr_id, nslcmop
+
         try:
             step = "Getting nsir={} from db".format(nsir_id)
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
             step = "Getting nsilcmop={} from db".format(nsilcmop_id)
             db_nsilcmop = self.db.get_one("nsilcmops", {"_id": nsilcmop_id})
-            
+
             # look if previous tasks is in process
             task_name, task_dependency = self.lcm_tasks.lookfor_related("nsi", nsir_id, nsilcmop_id)
             if task_dependency:
@@ -120,194 +278,48 @@ class NetsliceLcm(LcmBase):
                     raise LcmException("Timeout waiting related tasks to be completed")
 
             # Empty list to keep track of network service records status in the netslice
-            nsir_admin = db_nsir["_admin"]
-            nsir_admin["nsrs-detailed-list"] = []
+            nsir_admin = db_nsir_admin = db_nsir.get("_admin")
 
             # Slice status Creating
             db_nsir_update["detailed-status"] = "creating"
             db_nsir_update["operational-status"] = "init"
-            self.update_db_2("nsis", nsir_id, db_nsir_update)            
-
-            # TODO: Check Multiple VIMs networks: datacenters
-
+            self.update_db_2("nsis", nsir_id, db_nsir_update)     
+            
             # Creating netslice VLDs networking before NS instantiation
-            for netslice_subnet in get_iterable(nsir_admin, "netslice-subnet"):
-                db_nsd = self.db.get_one("nsds", {"_id": netslice_subnet["nsdId"]})
+            db_nsir_update["_admin.deployed.RO"] = db_nsir_admin["deployed"]["RO"]
+            for vld_item in get_iterable(nsir_admin, "netslice-vld"):
+                await netslice_scenario_create(self, vld_item, nsir_id, db_nsir, db_nsir_admin, db_nsir_update)
+            self.update_db_2("nsis", nsir_id, db_nsir_update)
+            
+            db_nsir_update["detailed-status"] = "Creating netslice subnets at RO"
+            self.update_db_2("nsis", nsir_id, db_nsir_update)  
 
-                # Fist operate with VLDs inside netslice_subnet
-                for vld_item in get_iterable(netslice_subnet, "vld"):
-                    RO_ns_params = {}
-                    RO_ns_params["name"] = vld_item["name"]
-                    RO_ns_params["datacenter"] = vim_account_2_RO(db_nsir["datacenter"])
+            db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
 
-                    # TODO: Enable in the ns fake scenario the ip-profile
-                    # if "ip-profile" in netslice-subnet:
-                    #     populate_dict(RO_ns_params, ("networks", vld_params["name"], "ip-profile"),
-                    #                 ip_profile_2_RO(vld_params["ip-profile"]))
-                    # TODO: Check VDU type in all descriptors finding SRIOV / PT
-                    # Updating network names and datacenters from instantiation parameters for each VLD
-                    mgmt_network = False
-                    for nsd_vld in get_iterable(db_nsd, "vld"):
-                        if nsd_vld["name"] == vld_item["name"]:
-                            if nsd_vld.get("mgmt-network"):
-                                mgmt_network = True
-                                break
-
-                    # Creating scenario if vim-network-name / vim-network-id are present as instantiation parameter
-                    # Use vim-network-id instantiation parameter
-                    vim_network_option = None
-                    if vld_item.get("vim-network-id"):
-                        vim_network_option = "vim-network-id"
-                    elif vld_item.get("vim-network-name"):   
-                        vim_network_option = "vim-network-name"
-
-                    if vim_network_option:
-                        RO_vld_sites = []
-                        if vld_item.get(vim_network_option):
-                            if isinstance(vld_item[vim_network_option], dict):
-                                for vim_account, vim_net in vld_item[vim_network_option].items():
-                                    RO_vld_sites.append({
-                                        "netmap-use": vim_net,
-                                        "datacenter": vim_account_2_RO(vim_account)
-                                    })
-                            else:
-                                RO_vld_sites.append({"netmap-use": vld_item[vim_network_option],
-                                                    "datacenter": vim_account_2_RO(netslice_subnet["vimAccountId"])})
-                        if RO_vld_sites:
-                            populate_dict(RO_ns_params, ("networks", vld_item["name"], "sites"), RO_vld_sites)
-
-                        if mgmt_network:
-                            RO_ns_params["scenario"] = {"nets": [{"name": vld_item["name"],
-                                                        "external": True, "type": "bridge"}]}
-                        else:
-                            RO_ns_params["scenario"] = {"nets": [{"name": vld_item["name"],
-                                                        "external": False, "type": "bridge"}]}
-
-                    # Use default netslice vim-network-name from template
-                    else:
-                        if mgmt_network:
-                            RO_ns_params["scenario"] = {"nets": [{"name": vld_item["name"],
-                                                        "external": True, "type": "bridge"}]}
-                        else:
-                            RO_ns_params["scenario"] = {"nets": [{"name": vld_item["name"],
-                                                        "external": False, "type": "bridge"}]}
-
-                    # Creating netslice-vld at RO
-                    RO_nsir_id = db_nsir["_admin"].get("deployed", {}).get("RO", {}).get("nsir_id")
-
-                    # if RO vlds are present use it unless in error status
-                    if RO_nsir_id:
-                        try:
-                            step = db_nsir_update["detailed-status"] = "Looking for existing ns at RO"
-                            self.logger.debug(logging_text + step + " RO_ns_id={}".format(RO_nsir_id))
-                            desc = await RO.show("ns", RO_nsir_id)
-                        except ROclient.ROClientException as e:
-                            if e.http_code != HTTPStatus.NOT_FOUND:
-                                raise
-                            RO_nsir_id = db_nsir_update["_admin.deployed.RO.nsir_id"] = None
-                        if RO_nsir_id:
-                            ns_status, ns_status_info = RO.check_ns_status(desc)
-                            db_nsir_update["_admin.deployed.RO.nsir_status"] = ns_status
-                            if ns_status == "ERROR":
-                                step = db_nsir_update["detailed-status"] = "Deleting ns at RO. RO_ns_id={}"\
-                                                                           .format(RO_nsir_id)
-                                self.logger.debug(logging_text + step)
-                                await RO.delete("ns", RO_nsir_id)
-                                RO_nsir_id = db_nsir_update["_admin.deployed.RO.nsir_id"] = None
-
-                    # If network doesn't exists then create it
-                    else:
-                        step = db_nsir_update["detailed-status"] = "Checking dependencies"
-                        self.logger.debug(logging_text + step)
-                        # check if VIM is creating and wait  look if previous tasks in process
-                        # TODO: Check the case for multiple datacenters specified in instantiation parameter
-                        for vimAccountId_unit in RO_ns_params["datacenter"]:
-                            task_name, task_dependency = self.lcm_tasks.lookfor_related("vim_account",
-                                                                                        vimAccountId_unit)
-                            if task_dependency:
-                                step = "Waiting for related tasks to be completed: {}".format(task_name)
-                                self.logger.debug(logging_text + step)
-                                await asyncio.wait(task_dependency, timeout=3600)
-
-                        step = db_nsir_update["detailed-status"] = "Creating netslice-vld at RO"
-                        desc = await RO.create("ns", descriptor=RO_ns_params)
-                        RO_nsir_id = db_nsir_update["_admin.deployed.RO.nsir_id"] = desc["uuid"]
-                        db_nsir_update["_admin.nsState"] = "INSTANTIATED"
-                        db_nsir_update["_admin.deployed.RO.nsir_status"] = "BUILD"
-                        self.logger.debug(logging_text + "netslice-vld created at RO. RO_id={}".format(desc["uuid"]))
-                        self.update_db_2("nsis", nsir_id, db_nsir_update)
-
-                if RO_nsir_id:
-                    # wait until NS scenario for netslice-vld is ready
-                    step = ns_status_detailed = detailed_status = "Waiting netslice-vld ready at RO. RO_id={}"\
-                                                                  .format(RO_nsir_id)
-                    detailed_status_old = None
-                    self.logger.debug(logging_text + step)
-
-                    while time() <= start_deploy + self.total_deploy_timeout:
-                        desc = await RO.show("ns", RO_nsir_id)
-                        ns_status, ns_status_info = RO.check_ns_status(desc)
-                        db_nsir_update["admin.deployed.RO.nsir_status"] = ns_status
-                        db_nsir_update["admin.deployed.RO.netslice_scenario_id"] = desc.get("uuid")
-                        netROinfo_list = []
-                        name = desc.get("name")
-                        if ns_status == "ERROR":
-                            raise ROclient.ROClientException(ns_status_info)
-                        elif ns_status == "BUILD":
-                            detailed_status = ns_status_detailed + "; {}".format(ns_status_info)
-                        elif ns_status == "ACTIVE":
-                            for nets in get_iterable(desc, "nets"):
-                                netROinfo = {"name": name, "vim_net_id": nets.get("vim_net_id"),
-                                             "datacenter_id": nets.get("datacenter_id"),
-                                             "vim_name": nets.get("vim_name")}
-                                netROinfo_list.append(netROinfo)
-                            db_nsir_update["admin.deployed.RO.vim_network_info"] = netROinfo_list
-                            self.update_db_2("nsis", nsir_id, db_nsir_update)
-                            break
-                        else:
-                            assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
-                        if detailed_status != detailed_status_old:
-                            detailed_status_old = db_nsir_update["detailed-status"] = detailed_status
-                            self.update_db_2("nsis", nsir_id, db_nsir_update)
-                        await asyncio.sleep(5, loop=self.loop)
-                    else:   # total_deploy_timeout
-                        raise ROclient.ROClientException("Timeout waiting netslice-vld to be ready")
-
-                    step = "Updating NSIR"
-                    db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
-                    self.nsi_update_nsir(db_nsir_update, db_nsir, desc)
+            # Check status of the VLDs and wait for creation
+            # netslice_scenarios = db_nsir["_admin"]["deployed"]["RO"]
+            # db_nsir_update_RO = deepcopy(netslice_scenarios)
+            # for netslice_scenario in netslice_scenarios:
+            #    await netslice_scenario_check(self, netslice_scenario["netslice_scenario_id"], 
+            #                                  nsir_id, db_nsir_update_RO)
+            
+            # db_nsir_update["_admin.deployed.RO"] = db_nsir_update_RO
+            # self.update_db_2("nsis", nsir_id, db_nsir_update)
 
             # Iterate over the network services operation ids to instantiate NSs
-            # TODO: (future improvement) look another way check the tasks instead of keep asking 
+            # TODO: (future improvement) look another way check the tasks instead of keep asking
             # -> https://docs.python.org/3/library/asyncio-task.html#waiting-primitives
             # steps: declare ns_tasks, add task when terminate is called, await asyncio.wait(vca_task_list, timeout=300)
-            # ns_tasks = []
-
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
             nslcmop_ids = db_nsilcmop["operationParams"].get("nslcmops_ids")
             for nslcmop_id in nslcmop_ids:
                 nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
-                nsr_id = nslcmop.get("nsInstanceId")
-                # Overwrite instantiation parameters in netslice runtime
-                if db_nsir.get("admin"):
-                    if db_nsir["admin"].get("deployed"):
-                        db_admin_deployed_nsir = db_nsir["admin"].get("deployed")
-                        if db_admin_deployed_nsir.get("RO"):
-                            RO_item = db_admin_deployed_nsir["RO"]
-                            if RO_item.get("vim_network_info"):
-                                for vim_network_info_item in RO_item["vim_network_info"]:
-                                    if nslcmop.get("operationParams"):
-                                        if nslcmop["operationParams"].get("vld"):
-                                            for vld in nslcmop["operationParams"]["vld"]:
-                                                if vld["name"] == vim_network_info_item.get("name"):
-                                                    vld["vim-network-id"] = vim_network_info_item.get("vim_net_id")
-                                                    if vld.get("vim-network-name"):
-                                                        del vld["vim-network-name"]
-                                            self.update_db_2("nslcmops", nslcmop_id, nslcmop)
-                step = "Launching ns={} instantiate={} task".format(nsr_id, nslcmop)
+                # Overwriting netslice-vld vim-net-id to ns
+                nsr_id, nslcmop = overwrite_nsd_params(self, db_nsir, nslcmop)
+                step = "Launching ns={} instantiate={} task".format(nsr_id, nslcmop_id)
                 task = asyncio.ensure_future(self.ns.instantiate(nsr_id, nslcmop_id))
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
-
+            
             # Wait until Network Slice is ready
             step = nsir_status_detailed = " Waiting nsi ready. nsi_id={}".format(nsir_id)
             nsrs_detailed_list_old = None
@@ -318,21 +330,27 @@ class NetsliceLcm(LcmBase):
             while deployment_timeout > 0:
                 # Check ns instantiation status
                 nsi_ready = True
-                nsrs_detailed_list = []
+                nsir = self.db.get_one("nsis", {"_id": nsir_id})
+                nsir_admin = nsir["_admin"]
+                nsrs_detailed_list = nsir["_admin"]["nsrs-detailed-list"]
+                nsrs_detailed_list_new = []
                 for nslcmop_item in nslcmop_ids:
                     nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_item})
                     status = nslcmop.get("operationState")
                     # TODO: (future improvement) other possible status: ROLLING_BACK,ROLLED_BACK
-                    nsrs_detailed_list.append({"nsrId": nslcmop["nsInstanceId"], "status": nslcmop["operationState"],
-                                               "detailed-status": 
-                                               nsir_status_detailed + "; {}".format(nslcmop.get("detailed-status"))})
+                    for nss in nsrs_detailed_list:
+                        if nss["nsrId"] == nslcmop["nsInstanceId"]:
+                            nss.update({"nsrId": nslcmop["nsInstanceId"], "status": nslcmop["operationState"],
+                                        "detailed-status":
+                                        nsir_status_detailed + "; {}".format(nslcmop.get("detailed-status")),
+                                        "instantiated": True})
+                            nsrs_detailed_list_new.append(nss)
                     if status not in ["COMPLETED", "PARTIALLY_COMPLETED", "FAILED", "FAILED_TEMP"]:  
                         nsi_ready = False
 
-                # TODO: Check admin and _admin
-                if nsrs_detailed_list != nsrs_detailed_list_old:
-                    nsir_admin["nsrs-detailed-list"] = nsrs_detailed_list
-                    nsrs_detailed_list_old = nsrs_detailed_list
+                if nsrs_detailed_list_new != nsrs_detailed_list_old:
+                    nsir_admin["nsrs-detailed-list"] = nsrs_detailed_list_new
+                    nsrs_detailed_list_old = nsrs_detailed_list_new
                     db_nsir_update["_admin"] = nsir_admin
                     self.update_db_2("nsis", nsir_id, db_nsir_update)
 
@@ -404,13 +422,14 @@ class NetsliceLcm(LcmBase):
         db_nsir_update = {"_admin.nsilcmop": nsilcmop_id}
         db_nsilcmop_update = {}
         RO = ROclient.ROClient(self.loop, **self.ro_config)
+        nsir_deployed = None
         failed_detail = []   # annotates all failed error messages
         nsilcmop_operation_state = None
         autoremove = False  # autoremove after terminated
         try:
             step = "Getting nsir={} from db".format(nsir_id)
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
-            nsir_deployed = deepcopy(db_nsir["admin"].get("deployed"))
+            nsir_deployed = deepcopy(db_nsir["_admin"].get("deployed"))
             step = "Getting nsilcmop={} from db".format(nsilcmop_id)
             db_nsilcmop = self.db.get_one("nsilcmops", {"_id": nsilcmop_id})
             
@@ -422,6 +441,7 @@ class NetsliceLcm(LcmBase):
             # Slice status Terminating
             db_nsir_update["operational-status"] = "terminating"
             db_nsir_update["config-status"] = "terminating"
+            db_nsir_update["detailed-status"] = "Terminating Netslice subnets"
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
             # look if previous tasks is in process
@@ -440,16 +460,30 @@ class NetsliceLcm(LcmBase):
             nsrs_detailed_list = []       
 
             # Iterate over the network services operation ids to terminate NSs
-            # TODO: (future improvement) look another way check the tasks instead of keep asking 
+            # TODO: (future improvement) look another way check the tasks instead of keep asking  
             # -> https://docs.python.org/3/library/asyncio-task.html#waiting-primitives
             # steps: declare ns_tasks, add task when terminate is called, await asyncio.wait(vca_task_list, timeout=300)
-            # ns_tasks = []
             nslcmop_ids = db_nsilcmop["operationParams"].get("nslcmops_ids")
+            nslcmop_new = []
             for nslcmop_id in nslcmop_ids:
                 nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
                 nsr_id = nslcmop["operationParams"].get("nsInstanceId")
-                task = asyncio.ensure_future(self.ns.terminate(nsr_id, nslcmop_id))
-                self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
+                nss_in_use = self.db.get_list("nsis", {"_admin.netslice-vld.ANYINDEX.shared-nsrs-list": nsr_id,
+                                                       "operational-status": {"$nin": ["terminated", "failed"]}})
+                if len(nss_in_use) < 2:
+                    task = asyncio.ensure_future(self.ns.terminate(nsr_id, nslcmop_id))
+                    self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
+                    nslcmop_new.append(nslcmop_id)
+                else:
+                    # Update shared nslcmop shared with active nsi
+                    netsliceInstanceId = db_nsir["_id"]
+                    for nsis_item in nss_in_use:
+                        if db_nsir["_id"] != nsis_item["_id"]:
+                            netsliceInstanceId = nsis_item["_id"]
+                            break
+                    self.db.set_one("nslcmops", {"_id": nslcmop_id},
+                                    {"operationParams.netsliceInstanceId": netsliceInstanceId})
+            self.db.set_one("nsilcmops", {"_id": nsilcmop_id}, {"operationParams.nslcmops_ids": nslcmop_new})
 
             # Wait until Network Slice is terminated
             step = nsir_status_detailed = " Waiting nsi terminated. nsi_id={}".format(nsir_id)
@@ -460,24 +494,44 @@ class NetsliceLcm(LcmBase):
             while termination_timeout > 0:
                 # Check ns termination status
                 nsi_ready = True
-                nsrs_detailed_list = []
+                db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
+                nsir_admin = db_nsir["_admin"]
+                nsrs_detailed_list = db_nsir["_admin"].get("nsrs-detailed-list")
+                nsrs_detailed_list_new = []
                 for nslcmop_item in nslcmop_ids:
                     nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_item})
                     status = nslcmop["operationState"]
                     # TODO: (future improvement) other possible status: ROLLING_BACK,ROLLED_BACK 
-                    nsrs_detailed_list.append({"nsrId": nslcmop["nsInstanceId"], "status": nslcmop["operationState"],
-                                               "detailed-status": 
-                                               nsir_status_detailed + "; {}".format(nslcmop.get("detailed-status"))})
+                    for nss in nsrs_detailed_list:
+                        if nss["nsrId"] == nslcmop["nsInstanceId"]:
+                            nss.update({"nsrId": nslcmop["nsInstanceId"], "status": nslcmop["operationState"],
+                                        "detailed-status":
+                                        nsir_status_detailed + "; {}".format(nslcmop.get("detailed-status"))})
+                            nsrs_detailed_list_new.append(nss)
                     if status not in ["COMPLETED", "PARTIALLY_COMPLETED", "FAILED", "FAILED_TEMP"]:
                         nsi_ready = False
 
-                if nsrs_detailed_list != nsrs_detailed_list_old:
-                    nsir_admin["nsrs-detailed-list"] = nsrs_detailed_list
-                    nsrs_detailed_list_old = nsrs_detailed_list
+                if nsrs_detailed_list_new != nsrs_detailed_list_old:
+                    nsir_admin["nsrs-detailed-list"] = nsrs_detailed_list_new
+                    nsrs_detailed_list_old = nsrs_detailed_list_new
                     db_nsir_update["_admin"] = nsir_admin
                     self.update_db_2("nsis", nsir_id, db_nsir_update)
                     
                 if nsi_ready:
+                    # Check if it is the last used nss and mark isinstantiate: False
+                    db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
+                    nsir_admin = db_nsir["_admin"]
+                    nsrs_detailed_list = db_nsir["_admin"].get("nsrs-detailed-list")
+                    for nss in nsrs_detailed_list:
+                        _filter = {"_admin.nsrs-detailed-list.ANYINDEX.nsrId": nss["nsrId"],
+                                   "operational-status.ne": "terminated",
+                                   "_id.ne": nsir_id}
+                        nsis_list = self.db.get_one("nsis", _filter, fail_on_empty=False, fail_on_more=False)
+                        if not nsis_list:
+                            nss.update({"instantiated": False})
+                    db_nsir_update["_admin"] = nsir_admin
+                    self.update_db_2("nsis", nsir_id, db_nsir_update)
+
                     step = "Network Slice Instance is terminated. nsi_id={}".format(nsir_id)
                     for items in nsrs_detailed_list:
                         if "FAILED" in items.values():
@@ -490,81 +544,55 @@ class NetsliceLcm(LcmBase):
             if termination_timeout <= 0:
                 raise LcmException("Timeout waiting nsi to be terminated. nsi_id={}".format(nsir_id))
 
-            # Delete ns
+            # Delete netslice-vlds
             RO_nsir_id = RO_delete_action = None
-            if nsir_deployed and nsir_deployed.get("RO"):
-                RO_nsir_id = nsir_deployed["RO"].get("nsr_id")
-                RO_delete_action = nsir_deployed["RO"].get("nsr_delete_action_id")
-            try:
-                if RO_nsir_id:
-                    step = db_nsir_update["detailed-status"] = "Deleting ns at RO"
-                    db_nsilcmop_update["detailed-status"] = "Deleting ns at RO"
+            for nsir_deployed_RO in get_iterable(nsir_deployed, "RO"):
+                RO_nsir_id = nsir_deployed_RO.get("netslice_scenario_id")
+                try:
+                    step = db_nsir_update["detailed-status"] = "Deleting netslice-vld at RO"
+                    db_nsilcmop_update["detailed-status"] = "Deleting netslice-vld at RO"
                     self.logger.debug(logging_text + step)
                     desc = await RO.delete("ns", RO_nsir_id)
                     RO_delete_action = desc["action_id"]
-                    db_nsir_update["_admin.deployed.RO.nsr_delete_action_id"] = RO_delete_action
-                    db_nsir_update["_admin.deployed.RO.nsr_id"] = None
-                    db_nsir_update["_admin.deployed.RO.nsr_status"] = "DELETED"
-                if RO_delete_action:
-                    # wait until NS is deleted from VIM
-                    step = detailed_status = "Waiting ns deleted from VIM. RO_id={}".format(RO_nsir_id)
-                    detailed_status_old = None
-                    self.logger.debug(logging_text + step)
+                    nsir_deployed_RO["vld_delete_action_id"] = RO_delete_action
+                    nsir_deployed_RO["vld_status"] = "DELETING"
+                    db_nsir_update["_admin.deployed"] = nsir_deployed
+                    self.update_db_2("nsis", nsir_id, db_nsir_update)
+                    if RO_delete_action:
+                        # wait until NS is deleted from VIM
+                        step = "Waiting ns deleted from VIM. RO_id={}".format(RO_nsir_id)
+                        self.logger.debug(logging_text + step)
+                except ROclient.ROClientException as e:
+                    if e.http_code == 404:  # not found
+                        nsir_deployed_RO["vld_id"] = None
+                        nsir_deployed_RO["vld_status"] = "DELETED"
+                        self.logger.debug(logging_text + "RO_ns_id={} already deleted".format(RO_nsir_id))
+                    elif e.http_code == 409:   # conflict
+                        failed_detail.append("RO_ns_id={} delete conflict: {}".format(RO_nsir_id, e))
+                        self.logger.debug(logging_text + failed_detail[-1])
+                    else:
+                        failed_detail.append("RO_ns_id={} delete error: {}".format(RO_nsir_id, e))
+                        self.logger.error(logging_text + failed_detail[-1])
 
-                    delete_timeout = 20 * 60   # 20 minutes
-                    while delete_timeout > 0:
-                        desc = await RO.show("ns", item_id_name=RO_nsir_id, extra_item="action",
-                                             extra_item_id=RO_delete_action)
-                        ns_status, ns_status_info = RO.check_action_status(desc)
-                        if ns_status == "ERROR":
-                            raise ROclient.ROClientException(ns_status_info)
-                        elif ns_status == "BUILD":
-                            detailed_status = step + "; {}".format(ns_status_info)
-                        elif ns_status == "ACTIVE":
-                            break
-                        else:
-                            assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
-                        await asyncio.sleep(5, loop=self.loop)
-                        delete_timeout -= 5
-                        if detailed_status != detailed_status_old:
-                            detailed_status_old = db_nsilcmop_update["detailed-status"] = detailed_status
-                            self.update_db_2("nslcmops", nslcmop_id, db_nsilcmop_update)
-                    else:  # delete_timeout <= 0:
-                        raise ROclient.ROClientException("Timeout waiting ns deleted from VIM")
-
-            except ROclient.ROClientException as e:
-                if e.http_code == 404:  # not found
-                    db_nsir_update["_admin.deployed.RO.nsr_id"] = None
-                    db_nsir_update["_admin.deployed.RO.nsr_status"] = "DELETED"
-                    self.logger.debug(logging_text + "RO_ns_id={} already deleted".format(RO_nsir_id))
-                elif e.http_code == 409:   # conflict
-                    failed_detail.append("RO_ns_id={} delete conflict: {}".format(RO_nsir_id, e))
-                    self.logger.debug(logging_text + failed_detail[-1])
+                if failed_detail:
+                    self.logger.error(logging_text + " ;".join(failed_detail))
+                    db_nsir_update["operational-status"] = "failed"
+                    db_nsir_update["detailed-status"] = "Deletion errors " + "; ".join(failed_detail)
+                    db_nsilcmop_update["detailed-status"] = "; ".join(failed_detail)
+                    db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "FAILED"
+                    db_nsilcmop_update["statusEnteredTime"] = time()
                 else:
-                    failed_detail.append("RO_ns_id={} delete error: {}".format(RO_nsir_id, e))
-                    self.logger.error(logging_text + failed_detail[-1])
+                    db_nsir_update["operational-status"] = "terminating"
+                    db_nsir_update["config-status"] = "terminating"
+                    db_nsir_update["_admin.nsiState"] = "NOT_INSTANTIATED"
+                    db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "COMPLETED"
+                    db_nsilcmop_update["statusEnteredTime"] = time()
+                    if db_nsilcmop["operationParams"].get("autoremove"):
+                        autoremove = True
 
-            if failed_detail:
-                self.logger.error(logging_text + " ;".join(failed_detail))
-                db_nsir_update["operational-status"] = "failed"
-                db_nsir_update["detailed-status"] = "Deletion errors " + "; ".join(failed_detail)
-                db_nsilcmop_update["detailed-status"] = "; ".join(failed_detail)
-                db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "FAILED"
-                db_nsilcmop_update["statusEnteredTime"] = time()
-            else:
-                db_nsir_update["operational-status"] = "terminated"
-                db_nsir_update["detailed-status"] = "done"
-                db_nsir_update["config-status"] = "configured"
-                db_nsir_update["_admin.nsiState"] = "NOT_INSTANTIATED"
-                db_nsilcmop_update["detailed-status"] = "Done"
-                db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "COMPLETED"
-                db_nsilcmop_update["statusEnteredTime"] = time()
-                if db_nsilcmop["operationParams"].get("autoremove"):
-                    autoremove = True
-
+            db_nsir_update["detailed-status"] = "done"
             db_nsir_update["operational-status"] = "terminated"
-            db_nsir_update["config-status"] = "configured"
-            db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "COMPLETED"
+            db_nsir_update["config-status"] = "terminated"
             db_nsilcmop_update["statusEnteredTime"] = time()
             db_nsilcmop_update["detailed-status"] = "done"
             return
@@ -582,6 +610,7 @@ class NetsliceLcm(LcmBase):
         finally:
             if exc:
                 if db_nsir:
+                    db_nsir_update["_admin.deployed"] = nsir_deployed
                     db_nsir_update["detailed-status"] = "ERROR {}: {}".format(step, exc)
                     db_nsir_update["operational-status"] = "failed"
                 if db_nsilcmop:
@@ -590,6 +619,7 @@ class NetsliceLcm(LcmBase):
                     db_nsilcmop_update["statusEnteredTime"] = time()
             try:
                 if db_nsir:
+                    db_nsir_update["_admin.deployed"] = nsir_deployed
                     db_nsir_update["_admin.nsilcmop"] = None
                     self.update_db_2("nsis", nsir_id, db_nsir_update)
                 if db_nsilcmop:

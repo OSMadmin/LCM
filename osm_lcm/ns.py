@@ -447,6 +447,12 @@ class NsLcm(LcmBase):
                     RO_vld_sites.append({"netmap-use": vld_params["vim-network-id"]})
                 if RO_vld_sites:
                     populate_dict(RO_ns_params, ("networks", vld_params["name"], "sites"), RO_vld_sites)
+            if vld_params.get("ns-net"):
+                if isinstance(vld_params["ns-net"], dict):
+                    for vld_id, instance_scenario_id in vld_params["ns-net"].items():
+                        RO_vld_ns_net = {"instance_scenario_id": instance_scenario_id, "osm_id": vld_id}
+                if RO_vld_ns_net:
+                    populate_dict(RO_ns_params, ("networks", vld_params["name"], "use-network"), RO_vld_ns_net)            
             if "vnfd-connection-point-ref" in vld_params:
                 for cp_params in vld_params["vnfd-connection-point-ref"]:
                     # look for interface
