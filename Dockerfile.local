@@ -84,5 +84,5 @@ ADD . /app/LCM
 # Run app.py when the container launches
 CMD ["python3", "lcm.py"]
 
-# HEALTHCHECK --interval=30 --timeout=140 --retries=1 \
+# HEALTHCHECK --interval=120s --timeout=15s --retries=1 \
 #     CMD python3 lcm.py --health-check || exit 1
