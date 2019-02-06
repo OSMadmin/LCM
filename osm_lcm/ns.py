@@ -29,7 +29,7 @@ from lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
 
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
-from n2vc.vnf import N2VC, N2VCPrimitiveExecutionFailed
+from n2vc.vnf import N2VC, N2VCPrimitiveExecutionFailed, NetworkServiceDoesNotExist
 
 from copy import copy, deepcopy
 from http import HTTPStatus
@@ -99,6 +99,8 @@ class NsLcm(LcmBase):
             # it unset and pass it via DeployCharms
             # artifacts=vca_config[''],
             artifacts=None,
+            juju_public_key=vca_config.get('pubkey'),
+            ca_cert=vca_config.get('cacert'),
         )
 
     def vnfd2RO(self, vnfd, new_id=None, additionalParams=None, nsrId=None):
@@ -197,7 +199,8 @@ class NsLcm(LcmBase):
                 if model_name == vca_deployed["model"] and application_name == vca_deployed["application"]:
                     break
             else:
-                self.logger.error(logging_text + " Not present at nsr._admin.deployed.VCA")
+                self.logger.error(logging_text + " Not present at nsr._admin.deployed.VCA. Received model_name={}".
+                                  format(model_name))
                 return
             if task:
                 if task.cancelled():
@@ -675,8 +678,10 @@ class NsLcm(LcmBase):
 
             # Get or generates the _admin.deployed,VCA list
             vca_deployed_list = None
+            vca_model_name = None
             if db_nsr["_admin"].get("deployed"):
                 vca_deployed_list = db_nsr["_admin"]["deployed"].get("VCA")
+                vca_model_name = db_nsr["_admin"]["deployed"].get("VCA-model-name")
             if vca_deployed_list is None:
                 vca_deployed_list = []
                 db_nsr_update["_admin.deployed.VCA"] = vca_deployed_list
@@ -889,7 +894,7 @@ class NsLcm(LcmBase):
 
                 # ns_name will be ignored in the current version of N2VC
                 # but will be implemented for the next point release.
-                model_name = "default"    # TODO bug 585  nsr_id
+                model_name = nsr_id
                 if vdu_id:
                     vdu_id_text = vdu_id + "-"
                 else:
@@ -964,6 +969,13 @@ class NsLcm(LcmBase):
                     proxy_charm = vnf_config["juju"]["charm"]
 
                     if proxy_charm:
+                        if not vca_model_name:
+                            step = "creating VCA model name '{}'".format(nsr_id)
+                            self.logger.debug(logging_text + step)
+                            await self.n2vc.CreateNetworkService(nsr_id)
+                            vca_model_name = nsr_id
+                            db_nsr_update["_admin.deployed.VCA-model-name"] = nsr_id
+                            self.update_db_2("nsrs", nsr_id, db_nsr_update)
                         step = "connecting to N2VC to configure vnf {}".format(vnf_index)
                         vnfr_params["rw_mgmt_ip"] = db_vnfrs[vnf_index]["ip-address"]
                         charm_params = {
@@ -975,6 +987,7 @@ class NsLcm(LcmBase):
                         # Login to the VCA. If there are multiple calls to login(),
                         # subsequent calls will be a nop and return immediately.
                         await self.n2vc.login()
+
                         deploy_charm(vnf_index, None, None, None, charm_params, n2vc_info)
                         number_to_configure += 1
 
@@ -987,6 +1000,12 @@ class NsLcm(LcmBase):
                         proxy_charm = vdu_config["juju"]["charm"]
 
                         if proxy_charm:
+                            if not vca_model_name:
+                                step = "creating VCA model name"
+                                await self.n2vc.CreateNetworkService(nsr_id)
+                                vca_model_name = nsr_id
+                                db_nsr_update["_admin.deployed.VCA-model-name"] = nsr_id
+                                self.update_db_2("nsrs", nsr_id, db_nsr_update)
                             step = "connecting to N2VC to configure vdu {} from vnf {}".format(vdu["id"], vnf_index)
                             await self.n2vc.login()
                             vdur = db_vnfrs[vnf_index]["vdur"][vdu_index]
@@ -1179,7 +1198,21 @@ class NsLcm(LcmBase):
             db_nsr_update["operational-status"] = "terminating"
             db_nsr_update["config-status"] = "terminating"
 
-            if nsr_deployed and nsr_deployed.get("VCA"):
+            if nsr_deployed and nsr_deployed.get("VCA-model-name"):
+                vca_model_name = nsr_deployed["VCA-model-name"]
+                step = "deleting VCA model name '{}' and all charms".format(vca_model_name)
+                self.logger.debug(logging_text + step)
+                try:
+                    await self.n2vc.DestroyNetworkService(vca_model_name)
+                except NetworkServiceDoesNotExist:
+                    pass
+                db_nsr_update["_admin.deployed.VCA-model-name"] = None
+                if nsr_deployed.get("VCA"):
+                    for vca_index in range(0, len(nsr_deployed["VCA"])):
+                        db_nsr_update["_admin.deployed.VCA.{}".format(vca_index)] = None
+                self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            # for backward compatibility if charm have been created with "default"  model name delete one by one
+            elif nsr_deployed and nsr_deployed.get("VCA"):
                 try:
                     step = "Scheduling configuration charms removing"
                     db_nsr_update["detailed-status"] = "Deleting charms"
