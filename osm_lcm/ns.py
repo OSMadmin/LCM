@@ -867,11 +867,13 @@ class NsLcm(LcmBase):
             number_to_configure = 0
 
             def deploy_charm(vnf_index, vdu_id, vdu_name, vdu_count_index, charm_params, n2vc_info):
-                """An inner function to deploy the charm from either vnf or vdu
-                vnf_index is mandatory. vdu_id can be None for a vnf configuration or the id for vdu configuration
+                """An inner function to deploy the charm from either ns, vnf or vdu
+                For ns both vnf_index and vdu_id are None.
+                For vnf only vdu_id is None
+                For vdu both vnf_index and vdu_id contain a value
                 """
-                if not charm_params["rw_mgmt_ip"]:
-                    raise LcmException("vnfd/vdu has not management ip address to configure it")
+                if not charm_params.get("rw_mgmt_ip") and vnf_index:  # if NS skip mgmt_ip checking
+                    raise LcmException("ns/vnfd/vdu has not management ip address to configure it")
                 # Login to the VCA.
                 # if number_to_configure == 0:
                 #     self.logger.debug("Logging into N2VC...")
@@ -883,7 +885,8 @@ class NsLcm(LcmBase):
 
                 # Note: The charm needs to exist on disk at the location
                 # specified by charm_path.
-                base_folder = vnfd["_admin"]["storage"]
+                descriptor = vnfd if vnf_index else nsd
+                base_folder = descriptor["_admin"]["storage"]
                 storage_params = self.fs.get_params()
                 charm_path = "{}{}/{}/charms/{}".format(
                     storage_params["path"],
@@ -895,11 +898,9 @@ class NsLcm(LcmBase):
                 # ns_name will be ignored in the current version of N2VC
                 # but will be implemented for the next point release.
                 model_name = nsr_id
-                if vdu_id:
-                    vdu_id_text = vdu_id + "-"
-                else:
-                    vdu_id_text = "-"
-                application_name = self.n2vc.FormatApplicationName(nsr_name, vnf_index, vdu_id_text)
+                vdu_id_text = (str(vdu_id) if vdu_id else "") + "-"
+                vnf_index_text = (str(vnf_index) if vnf_index else "") + "-"
+                application_name = self.n2vc.FormatApplicationName(nsr_name, vnf_index_text, vdu_id_text)
 
                 vca_index = len(vca_deployed_list)
                 # trunk name and add two char index at the end to ensure that it is unique. It is assumed no more than
@@ -934,7 +935,7 @@ class NsLcm(LcmBase):
                     self.n2vc.DeployCharms(
                         model_name,          # The network service name
                         application_name,    # The application name
-                        vnfd,                # The vnf descriptor
+                        descriptor,          # The vnf/nsd descriptor
                         charm_path,          # Path to charm
                         charm_params,        # Runtime params, like mgmt ip
                         {},                  # for native charms only
@@ -1022,6 +1023,37 @@ class NsLcm(LcmBase):
                             deploy_charm(vnf_index, vdu["id"], vdur.get("name"), vdur["count-index"],
                                          charm_params, n2vc_info)
                             number_to_configure += 1
+
+            # Check if this NS has a charm configuration
+
+            ns_config = nsd.get("ns-configuration")
+            if ns_config and ns_config.get("juju"):
+                proxy_charm = ns_config["juju"]["charm"]
+
+                if proxy_charm:
+                    step = "connecting to N2VC to configure ns"
+                    # TODO is NS magmt IP address needed?
+
+                    # Get additional parameters
+                    additional_params = {}
+                    if db_nsr.get("additionalParamsForNs"):
+                        additional_params = db_nsr["additionalParamsForNs"].copy()
+                    for k, v in additional_params.items():
+                        if isinstance(v, str) and v.startswith("!!yaml "):
+                            additional_params[k] = yaml.safe_load(v[7:])
+
+                    # additional_params["rw_mgmt_ip"] = db_nsr["ip-address"]
+                    charm_params = {
+                        "user_values": additional_params,
+                        # "rw_mgmt_ip": db_nsr["ip-address"],
+                        "initial-config-primitive": ns_config.get('initial-config-primitive') or {}
+                    }
+
+                    # Login to the VCA. If there are multiple calls to login(),
+                    # subsequent calls will be a nop and return immediately.
+                    await self.n2vc.login()
+                    deploy_charm(None, None, None, None, charm_params, n2vc_info)
+                    number_to_configure += 1
 
             db_nsr_update["operational-status"] = "running"
             configuration_failed = False
@@ -1521,15 +1553,22 @@ class NsLcm(LcmBase):
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
 
             nsr_deployed = db_nsr["_admin"].get("deployed")
-            vnf_index = db_nslcmop["operationParams"]["member_vnf_index"]
+            vnf_index = db_nslcmop["operationParams"].get("member_vnf_index")
             vdu_id = db_nslcmop["operationParams"].get("vdu_id")
             vdu_count_index = db_nslcmop["operationParams"].get("vdu_count_index")
             vdu_name = db_nslcmop["operationParams"].get("vdu_name")
 
-            step = "Getting vnfr from database"
-            db_vnfr = self.db.get_one("vnfrs", {"member-vnf-index-ref": vnf_index, "nsr-id-ref": nsr_id})
-            step = "Getting vnfd from database"
-            db_vnfd = self.db.get_one("vnfds", {"_id": db_vnfr["vnfd-id"]})
+            if vnf_index:
+                step = "Getting vnfr from database"
+                db_vnfr = self.db.get_one("vnfrs", {"member-vnf-index-ref": vnf_index, "nsr-id-ref": nsr_id})
+                step = "Getting vnfd from database"
+                db_vnfd = self.db.get_one("vnfds", {"_id": db_vnfr["vnfd-id"]})
+            else:
+                if db_nsr.get("nsd"):
+                    db_nsd = db_nsr.get("nsd")    # TODO this will be removed
+                else:
+                    step = "Getting nsd from database"
+                    db_nsd = self.db.get_one("nsds", {"_id": db_nsr["nsd-id"]})
 
             # look if previous tasks in process
             task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
@@ -1560,22 +1599,33 @@ class NsLcm(LcmBase):
                             if config_primitive["name"] == primitive:
                                 config_primitive_desc = config_primitive
                                 break
-            for config_primitive in db_vnfd.get("vnf-configuration", {}).get("config-primitive", ()):
-                if config_primitive["name"] == primitive:
-                    config_primitive_desc = config_primitive
-                    break
-            if not config_primitive_desc:
-                raise LcmException("Primitive {} not found at vnf-configuration:config-primitive or vdu:"
-                                   "vdu-configuration:config-primitive".format(primitive))
+            elif vnf_index:
+                for config_primitive in db_vnfd.get("vnf-configuration", {}).get("config-primitive", ()):
+                    if config_primitive["name"] == primitive:
+                        config_primitive_desc = config_primitive
+                        break
+            else:
+                for config_primitive in db_nsd.get("ns-configuration", {}).get("config-primitive", ()):
+                    if config_primitive["name"] == primitive:
+                        config_primitive_desc = config_primitive
+                        break
 
-            vnfr_params = {}
-            if db_vnfr.get("additionalParamsForVnf"):
-                vnfr_params.update(db_vnfr["additionalParamsForVnf"])
+            if not config_primitive_desc:
+                raise LcmException("Primitive {} not found at [ns|vnf|vdu]-configuration:config-primitive ".
+                                   format(primitive))
+
+            desc_params = {}
+            if vnf_index:
+                if db_vnfr.get("additionalParamsForVnf"):
+                    desc_params.update(db_vnfr["additionalParamsForVnf"])
+            else:
+                if db_nsr.get("additionalParamsForVnf"):
+                    desc_params.update(db_nsr["additionalParamsForNs"])
 
             # TODO check if ns is in a proper status
             result, result_detail = await self._ns_execute_primitive(
                 nsr_deployed, vnf_index, vdu_id, vdu_name, vdu_count_index, primitive,
-                self._map_primitive_params(config_primitive_desc, primitive_params, vnfr_params))
+                self._map_primitive_params(config_primitive_desc, primitive_params, desc_params))
             db_nslcmop_update["detailed-status"] = result_detail
             db_nslcmop_update["operationState"] = nslcmop_operation_state = result
             db_nslcmop_update["statusEnteredTime"] = time()
