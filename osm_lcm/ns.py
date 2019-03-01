@@ -801,7 +801,7 @@ class NsLcm(LcmBase):
             while time() <= start_deploy + self.total_deploy_timeout:
                 desc = await RO.show("ns", RO_nsr_id)
                 ns_status, ns_status_info = RO.check_ns_status(desc)
-                db_nsr_update["admin.deployed.RO.nsr_status"] = ns_status
+                db_nsr_update["_admin.deployed.RO.nsr_status"] = ns_status
                 if ns_status == "ERROR":
                     raise ROclient.ROClientException(ns_status_info)
                 elif ns_status == "BUILD":
