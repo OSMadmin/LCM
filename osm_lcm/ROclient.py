@@ -319,7 +319,7 @@ class ROClient:
         other_done = 0
 
         for vim_action_set in action_descriptor["actions"]:
-            for vim_action in vim_action_set["vim_actions"]:
+            for vim_action in vim_action_set["vim_wim_actions"]:
                 if vim_action["item"] == "instance_vms":
                     vm_total += 1
                 elif vim_action["item"] == "instance_nets":
@@ -328,7 +328,7 @@ class ROClient:
                     other_total += 1
                 if vim_action["status"] == "FAILED":
                     return "ERROR", vim_action["error_msg"]
-                elif vim_action["status"] in ("DONE", "SUPERSEDED"):
+                elif vim_action["status"] in ("DONE", "SUPERSEDED", "FINISHED"):
                     if vim_action["item"] == "instance_vms":
                         vm_done += 1
                     elif vim_action["item"] == "instance_nets":
