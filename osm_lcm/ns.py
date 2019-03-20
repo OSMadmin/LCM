@@ -242,6 +242,7 @@ class NsLcm(LcmBase):
         :return: The RO ns descriptor
         """
         vim_2_RO = {}
+        wim_2_RO = {}
         # TODO feature 1417: Check that no instantiation is set over PDU
         # check if PDU forces a concrete vim-network-id and add it
         # check if PDU contains a SDN-assist info (dpid, switch, port) and pass it to RO
@@ -257,6 +258,21 @@ class NsLcm(LcmBase):
             RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
             vim_2_RO[vim_account] = RO_vim_id
             return RO_vim_id
+
+        def wim_account_2_RO(wim_account):
+            if isinstance(wim_account, str):
+                if wim_account in wim_2_RO:
+                    return wim_2_RO[wim_account]
+
+                db_wim = self.db.get_one("wim_accounts", {"_id": wim_account})
+                if db_wim["_admin"]["operationalState"] != "ENABLED":
+                    raise LcmException("WIM={} is not available. operationalState={}".format(
+                        wim_account, db_wim["_admin"]["operationalState"]))
+                RO_wim_id = db_wim["_admin"]["deployed"]["RO-account"]
+                wim_2_RO[wim_account] = RO_wim_id
+                return RO_wim_id
+            else:
+                return wim_account
 
         def ip_profile_2_RO(ip_profile):
             RO_ip_profile = deepcopy((ip_profile))
@@ -281,6 +297,7 @@ class NsLcm(LcmBase):
             # "name": ns_params["nsName"],
             # "description": ns_params.get("nsDescription"),
             "datacenter": vim_account_2_RO(ns_params["vimAccountId"]),
+            "wim_account": wim_account_2_RO(ns_params.get("wimAccountId")),
             # "scenario": ns_params["nsdId"],
         }
         if n2vc_key_list:
@@ -402,6 +419,10 @@ class NsLcm(LcmBase):
             if "ip-profile" in vld_params:
                 populate_dict(RO_ns_params, ("networks", vld_params["name"], "ip-profile"),
                               ip_profile_2_RO(vld_params["ip-profile"]))
+
+            if "wimAccountId" in vld_params and vld_params["wimAccountId"] is not None:
+                populate_dict(RO_ns_params, ("networks", vld_params["name"], "wim_account"),
+                              wim_account_2_RO(vld_params["wimAccountId"])),
             if vld_params.get("vim-network-name"):
                 RO_vld_sites = []
                 if isinstance(vld_params["vim-network-name"], dict):
