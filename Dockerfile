@@ -22,11 +22,11 @@ FROM ubuntu:16.04
 
 RUN apt-get update && \ 
     DEBIAN_FRONTEND=noninteractive apt-get --yes install git tox make debhelper wget \
-    python-all python3 python3-pip python3-all && \
+    python-all python3 python3-pip python3-all apt-utils && \
     DEBIAN_FRONTEND=noninteractive pip3 install -U setuptools setuptools-version-command stdeb
 
 # TODO delete if not needed:
-#   libcurl4-gnutls-dev libgnutls-dev python-dev python3-dev  python-setuptools   apt-utils 
+#   libcurl4-gnutls-dev libgnutls-dev python-dev python3-dev  python-setuptools
 
 
 # Uncomment this block to generate automatically a debian package and show info
