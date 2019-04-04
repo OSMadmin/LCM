@@ -577,6 +577,8 @@ class NsLcm(LcmBase):
                         vdur["vim-id"] = vdur_RO.get("vim_vm_id")
                         if vdur_RO.get("ip_address"):
                             vdur["ip-address"] = vdur_RO["ip_address"].split(";")[0]
+                        else:
+                            vdur["ip-address"] = None
                         vdur["vdu-id-ref"] = vdur_RO.get("vdu_osm_id")
                         vdur["name"] = vdur_RO.get("vim_name")
                         vdur["status"] = vdur_RO.get("status")
@@ -1447,7 +1449,7 @@ class NsLcm(LcmBase):
             )
             while time() - start_primitive_time < self.timeout_primitive:
                 primitive_result_ = await self.n2vc.GetPrimitiveStatus(model_name, primitive_id)
-                if primitive_result_ == "running":
+                if primitive_result_ in ("running", "pending"):
                     pass
                 elif primitive_result_ in ("completed", "failed"):
                     primitive_result = "COMPLETED" if primitive_result_ == "completed" else "FAILED"
