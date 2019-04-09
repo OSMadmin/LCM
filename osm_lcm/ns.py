@@ -560,7 +560,7 @@ class NsLcm(LcmBase):
                     continue
                 vnfr_update = {}
                 if vnf_RO.get("ip_address"):
-                    db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO["ip_address"]
+                    db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO["ip_address"].split(";")[0]
                 elif not db_vnfr.get("ip-address"):
                     raise LcmExceptionNoMgmtIP("ns member_vnf_index '{}' has no IP address".format(vnf_index))
 
@@ -575,7 +575,8 @@ class NsLcm(LcmBase):
                             vdur_RO_count_index += 1
                             continue
                         vdur["vim-id"] = vdur_RO.get("vim_vm_id")
-                        vdur["ip-address"] = vdur_RO.get("ip_address")
+                        if vdur_RO.get("ip_address"):
+                            vdur["ip-address"] = vdur_RO["ip_address"].split(";")[0]
                         vdur["vdu-id-ref"] = vdur_RO.get("vdu_osm_id")
                         vdur["name"] = vdur_RO.get("vim_name")
                         vdur["status"] = vdur_RO.get("status")
