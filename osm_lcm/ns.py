@@ -69,9 +69,9 @@ def populate_dict(target_dict, key_list, value):
 
 class NsLcm(LcmBase):
     timeout_vca_on_error = 5 * 60   # Time for charm from first time at blocked,error status to mark as failed
-    total_deploy_timeout = 30 * 60   # global timeout for deployment
-    timeout_charm_delete = 5 * 60
-    timeout_primitive = 5 * 60  # timeout for primitive execution
+    total_deploy_timeout = 2 * 3600   # global timeout for deployment
+    timeout_charm_delete = 10 * 60
+    timeout_primitive = 10 * 60  # timeout for primitive execution
 
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
         """
