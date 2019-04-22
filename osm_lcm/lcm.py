@@ -37,16 +37,17 @@ from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
 from osm_common.msgbase import MsgException
 from os import environ, path
+from random import choice as random_choice
 from n2vc import version as n2vc_version
 
 
 __author__ = "Alfonso Tierno"
 min_RO_version = [0, 6, 3]
 min_n2vc_version = "0.0.2"
-min_common_version = "0.1.11"
+min_common_version = "0.1.19"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.35'
-lcm_version_date = '2019-01-31'
+lcm_version = '0.1.36'
+lcm_version_date = '2019-04-22'
 health_check_file = path.expanduser("~") + "/time_last_ping"   # TODO find better location for this file
 
 
@@ -64,6 +65,7 @@ class Lcm:
 
         self.db = None
         self.msg = None
+        self.msg_admin = None
         self.fs = None
         self.pings_not_received = 1
         self.consecutive_errors = 0
@@ -73,6 +75,8 @@ class Lcm:
         self.lcm_tasks = TaskRegistry()
         # logging
         self.logger = logging.getLogger('lcm')
+        # get id
+        self.worker_id = self.get_process_id()
         # load configuration
         config = self.read_config_file(config_file)
         self.config = config
@@ -154,9 +158,15 @@ class Lcm:
             if config_message["driver"] == "local":
                 self.msg = msglocal.MsgLocal()
                 self.msg.connect(config_message)
+                self.msg_admin = msglocal.MsgLocal()
+                config_message.pop("group_id", None)
+                self.msg_admin.connect(config_message)
             elif config_message["driver"] == "kafka":
                 self.msg = msgkafka.MsgKafka()
                 self.msg.connect(config_message)
+                self.msg_admin = msgkafka.MsgKafka()
+                config_message.pop("group_id", None)
+                self.msg_admin.connect(config_message)
             else:
                 raise LcmException("Invalid configuration param '{}' at '[message]':'driver'".format(
                     config["message"]["driver"]))
@@ -195,7 +205,10 @@ class Lcm:
         self.pings_not_received = 1
         while True:
             try:
-                await self.msg.aiowrite("admin", "ping", {"from": "lcm", "to": "lcm"}, self.loop)
+                await self.msg_admin.aiowrite(
+                    "admin", "ping",
+                    {"from": "lcm", "to": "lcm", "worker_id": self.worker_id, "version": lcm_version},
+                    self.loop)
                 # time between pings are low when it is not received and at starting
                 wait_time = self.ping_interval_boot if not kafka_has_received else self.ping_interval_pace
                 if not self.pings_not_received:
@@ -216,7 +229,7 @@ class Lcm:
                     raise
                 consecutive_errors += 1
                 self.logger.error("Task kafka_read retrying after Exception {}".format(e))
-                wait_time = 1 if not first_start else 5
+                wait_time = 2 if not first_start else 5
                 await asyncio.sleep(wait_time, loop=self.loop)
 
     def kafka_read_callback(self, topic, command, params):
@@ -242,6 +255,8 @@ class Lcm:
 
         if topic == "admin":
             if command == "ping" and params["to"] == "lcm" and params["from"] == "lcm":
+                if params.get("worker_id") != self.worker_id:
+                    return
                 self.pings_not_received = 0
                 try:
                     with open(health_check_file, "w") as f:
@@ -391,14 +406,18 @@ class Lcm:
         self.logger.critical("unknown topic {} and command '{}'".format(topic, command))
 
     async def kafka_read(self):
-        self.logger.debug("Task kafka_read Enter")
+        self.logger.debug("Task kafka_read Enter with worker_id={}".format(self.worker_id))
         # future = asyncio.Future()
         self.consecutive_errors = 0
         self.first_start = True
         while self.consecutive_errors < 10:
             try:
-                topics = ("admin", "ns", "vim_account", "wim_account", "sdn", "nsi")
-                await self.msg.aioread(topics, self.loop, self.kafka_read_callback)
+                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi")
+                topics_admin = ("admin", )
+                await asyncio.gather(
+                    self.msg.aioread(topics, self.loop, self.kafka_read_callback),
+                    self.msg_admin.aioread(topics_admin, self.loop, self.kafka_read_callback, group_id=False)
+                )
 
             except LcmExceptionExit:
                 self.logger.debug("Bye!")
@@ -442,6 +461,8 @@ class Lcm:
             self.db.db_disconnect()
         if self.msg:
             self.msg.disconnect()
+        if self.msg_admin:
+            self.msg_admin.disconnect()
         if self.fs:
             self.fs.fs_disconnect()
 
@@ -476,6 +497,26 @@ class Lcm:
         except Exception as e:
             self.logger.critical("At config file '{}': {}".format(config_file, e))
             exit(1)
+
+    @staticmethod
+    def get_process_id():
+        """
+        Obtain a unique ID for this process. If running from inside docker, it will get docker ID. If not it
+        will provide a random one
+        :return: Obtained ID
+        """
+        # Try getting docker id. If fails, get pid
+        try:
+            with open("/proc/self/cgroup", "r") as f:
+                text_id_ = f.readline()
+                _, _, text_id = text_id_.rpartition("/")
+                text_id = text_id.replace('\n', '')[:12]
+                if text_id:
+                    return text_id
+        except Exception:
+            pass
+        # Return a random id
+        return ''.join(random_choice("0123456789abcdef") for _ in range(12))
 
 
 def usage():
