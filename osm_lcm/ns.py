@@ -1203,6 +1203,112 @@ class NsLcm(LcmBase):
             await asyncio.sleep(10)
             timeout -= 10
 
+    # Check if this VNFD has a configured terminate action
+    def _has_terminate_config_primitive(self, vnfd):
+        vnf_config = vnfd.get("vnf-configuration")
+        if vnf_config and vnf_config.get("terminate-config-primitive"):
+            return True
+        else:
+            return False
+
+    # Get a numerically sorted list of the sequences for this VNFD's terminate action
+    def _get_terminate_config_primitive_seq_list(self, vnfd):
+        # No need to check for existing primitive twice, already done before
+        vnf_config = vnfd.get("vnf-configuration")
+        seq_list = vnf_config.get("terminate-config-primitive")
+        # Get all 'seq' tags in seq_list, order sequences numerically, ascending.
+        seq_list_sorted = sorted(seq_list, key=lambda x: int(x['seq']))
+        return seq_list_sorted
+
+    @staticmethod
+    def _create_nslcmop(nsr_id, operation, params):
+        """
+        Creates a ns-lcm-opp content to be stored at database.
+        :param nsr_id: internal id of the instance
+        :param operation: instantiate, terminate, scale, action, ...
+        :param params: user parameters for the operation
+        :return: dictionary following SOL005 format
+        """
+        # Raise exception if invalid arguments
+        if not (nsr_id and operation and params):
+            raise LcmException(
+                "Parameters 'nsr_id', 'operation' and 'params' needed to create primitive not provided")
+        now = time()
+        _id = str(uuid4())
+        nslcmop = {
+            "id": _id,
+            "_id": _id,
+            # COMPLETED,PARTIALLY_COMPLETED,FAILED_TEMP,FAILED,ROLLING_BACK,ROLLED_BACK
+            "operationState": "PROCESSING",
+            "statusEnteredTime": now,
+            "nsInstanceId": nsr_id,
+            "lcmOperationType": operation,
+            "startTime": now,
+            "isAutomaticInvocation": False,
+            "operationParams": params,
+            "isCancelPending": False,
+            "links": {
+                "self": "/osm/nslcm/v1/ns_lcm_op_occs/" + _id,
+                "nsInstance": "/osm/nslcm/v1/ns_instances/" + nsr_id,
+            }
+        }
+        return nslcmop
+
+    # Create a primitive with params from VNFD
+    # - Called from terminate() before deleting instance
+    # - Calls action() to execute the primitive
+    async def _terminate_action(self, db_nslcmop, nslcmop_id, nsr_id):
+        logging_text = "Task ns={} _terminate_action={} ".format(nsr_id, nslcmop_id)
+        db_vnfds = {}
+        db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
+        # Loop over VNFRs
+        for vnfr in db_vnfrs_list:
+            vnfd_id = vnfr["vnfd-id"]
+            vnf_index = vnfr["member-vnf-index-ref"]
+            if vnfd_id not in db_vnfds:
+                step = "Getting vnfd={} id='{}' from db".format(vnfd_id, vnfd_id)
+                vnfd = self.db.get_one("vnfds", {"_id": vnfd_id})
+                db_vnfds[vnfd_id] = vnfd
+            vnfd = db_vnfds[vnfd_id]
+            if not self._has_terminate_config_primitive(vnfd):
+                continue
+            # Get the primitive's sorted sequence list
+            seq_list = self._get_terminate_config_primitive_seq_list(vnfd)
+            for seq in seq_list:
+                # For each sequence in list, call terminate action
+                step = "Calling terminate action for vnf_member_index={} primitive={}".format(
+                    vnf_index, seq.get("name"))
+                self.logger.debug(logging_text + step)
+                # Create the primitive for each sequence
+                operation = "action"
+                # primitive, i.e. "primitive": "touch"
+                primitive = seq.get('name')
+                primitive_params = {}
+                params = {
+                    "member_vnf_index": vnf_index,
+                    "primitive": primitive,
+                    "primitive_params": primitive_params,
+                }
+                nslcmop_primitive = self._create_nslcmop(nsr_id, operation, params)
+                # Get a copy of db_nslcmop 'admin' part
+                db_nslcmop_action = {"_admin": deepcopy(db_nslcmop["_admin"])}
+                # Update db_nslcmop with the primitive data
+                db_nslcmop_action.update(nslcmop_primitive)
+                # Create a new db entry for the created primitive, returns the new ID.
+                # (The ID is normally obtained from Kafka.)
+                nslcmop_terminate_action_id = self.db.create(
+                    "nslcmops", db_nslcmop_action)
+                # Execute the primitive
+                nslcmop_operation_state, nslcmop_operation_state_detail = await self.action(
+                    nsr_id, nslcmop_terminate_action_id)
+                # Launch Exception if action() returns other than ['COMPLETED', 'PARTIALLY_COMPLETED']
+                nslcmop_operation_states_ok = ['COMPLETED', 'PARTIALLY_COMPLETED']
+                if (nslcmop_operation_state not in nslcmop_operation_states_ok):
+                    raise LcmException(
+                        "terminate_primitive_action for vnf_member_index={}",
+                        " primitive={} fails with error {}".format(
+                            vnf_index, seq.get("name"), nslcmop_operation_state_detail))
+
     async def terminate(self, nsr_id, nslcmop_id):
         logging_text = "Task ns={} terminate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
@@ -1226,6 +1332,8 @@ class NsLcm(LcmBase):
                 return
             # #TODO check if VIM is creating and wait
             # RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
+            # Call internal terminate action
+            await self._terminate_action(db_nslcmop, nslcmop_id, nsr_id)
 
             db_nsr_update["operational-status"] = "terminating"
             db_nsr_update["config-status"] = "terminating"
@@ -1413,7 +1521,7 @@ class NsLcm(LcmBase):
                 if db_nslcmop["operationParams"].get("autoremove"):
                     autoremove = True
 
-        except (ROclient.ROClientException, DbException) as e:
+        except (ROclient.ROClientException, DbException, LcmException) as e:
             self.logger.error(logging_text + "Exit Exception {}".format(e))
             exc = e
         except asyncio.CancelledError:
@@ -1546,6 +1654,7 @@ class NsLcm(LcmBase):
         db_nsr_update = {"_admin.nslcmop": nslcmop_id}
         db_nslcmop_update = {}
         nslcmop_operation_state = None
+        nslcmop_operation_state_detail = None
         exc = None
         try:
             step = "Getting information from database"
@@ -1626,7 +1735,7 @@ class NsLcm(LcmBase):
             result, result_detail = await self._ns_execute_primitive(
                 nsr_deployed, vnf_index, vdu_id, vdu_name, vdu_count_index, primitive,
                 self._map_primitive_params(config_primitive_desc, primitive_params, desc_params))
-            db_nslcmop_update["detailed-status"] = result_detail
+            db_nslcmop_update["detailed-status"] = nslcmop_operation_state_detail = result_detail
             db_nslcmop_update["operationState"] = nslcmop_operation_state = result
             db_nslcmop_update["statusEnteredTime"] = time()
             self.logger.debug(logging_text + " task Done with result {} {}".format(result, result_detail))
@@ -1643,7 +1752,8 @@ class NsLcm(LcmBase):
             self.logger.critical(logging_text + "Exit Exception {} {}".format(type(e).__name__, e), exc_info=True)
         finally:
             if exc and db_nslcmop:
-                db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
+                db_nslcmop_update["detailed-status"] = nslcmop_operation_state_detail = \
+                    "FAILED {}: {}".format(step, exc)
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
             try:
@@ -1664,6 +1774,7 @@ class NsLcm(LcmBase):
                     self.logger.error(logging_text + "kafka_write notification Exception {}".format(e))
             self.logger.debug(logging_text + "Exit")
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_action")
+            return nslcmop_operation_state, nslcmop_operation_state_detail
 
     async def scale(self, nsr_id, nslcmop_id):
         logging_text = "Task ns={} scale={} ".format(nsr_id, nslcmop_id)
