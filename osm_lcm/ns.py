@@ -1930,7 +1930,7 @@ class NsLcm(LcmBase):
                                 "[vnf-config-primitive-name-ref='{}'] does not match any vnf-configuration:config-"
                                 "primitive".format(scaling_group, config_primitive))
 
-                        vnfr_params = {"<VDU_SCALE_INFO>": vdu_scaling_info}
+                        vnfr_params = {"VDU_SCALE_INFO": vdu_scaling_info}
                         if db_vnfr.get("additionalParamsForVnf"):
                             vnfr_params.update(db_vnfr["additionalParamsForVnf"])
 
