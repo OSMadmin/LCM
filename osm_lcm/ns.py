@@ -2130,14 +2130,6 @@ class NsLcm(LcmBase):
         old_config_status = ""
         vnfr_scaled = False
         try:
-            step = "Getting nslcmop from database"
-            db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
-            step = "Getting nsr from database"
-            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
-
-            old_operational_status = db_nsr["operational-status"]
-            old_config_status = db_nsr["config-status"]
-
             # look if previous tasks in process
             task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
             if task_dependency:
@@ -2149,7 +2141,17 @@ class NsLcm(LcmBase):
                 if pending:
                     raise LcmException("Timeout waiting related tasks to be completed")
 
+            step = "Getting nslcmop from database"
+            scale_process = "RO"
+            self.logger.debug(step + " after having waited for previous tasks to be completed")
+            db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
+            step = "Getting nsr from database"
+            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+
+            old_operational_status = db_nsr["operational-status"]
+            old_config_status = db_nsr["config-status"]
             step = "Parsing scaling parameters"
+            self.logger.debug(step)
             db_nsr_update["operational-status"] = "scaling"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
             nsr_deployed = db_nsr["_admin"].get("deployed")
@@ -2169,6 +2171,7 @@ class NsLcm(LcmBase):
             db_vnfr = self.db.get_one("vnfrs", {"member-vnf-index-ref": vnf_index, "nsr-id-ref": nsr_id})
             step = "Getting vnfd from database"
             db_vnfd = self.db.get_one("vnfds", {"_id": db_vnfr["vnfd-id"]})
+
             step = "Getting scaling-group-descriptor"
             for scaling_descriptor in db_vnfd["scaling-group-descriptor"]:
                 if scaling_descriptor["name"] == scaling_group:
@@ -2176,6 +2179,7 @@ class NsLcm(LcmBase):
             else:
                 raise LcmException("input parameter 'scaleByStepData':'scaling-group-descriptor':'{}' is not present "
                                    "at vnfd:scaling-group-descriptor".format(scaling_group))
+
             # cooldown_time = 0
             # for scaling_policy_descriptor in scaling_descriptor.get("scaling-policy", ()):
             #     cooldown_time = scaling_policy_descriptor.get("cooldown-time", 0)
@@ -2202,25 +2206,31 @@ class NsLcm(LcmBase):
                 # count if max-instance-count is reached
                 if "max-instance-count" in scaling_descriptor and scaling_descriptor["max-instance-count"] is not None:
                     max_instance_count = int(scaling_descriptor["max-instance-count"])
+
+                    self.logger.debug("MAX_INSTANCE_COUNT is {}".format(scaling_descriptor["max-instance-count"]))
                     if nb_scale_op >= max_instance_count:
-                        raise LcmException("reached the limit of {} (max-instance-count) scaling-out operations for the"
-                                           " scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
-                nb_scale_op = nb_scale_op + 1
+                        raise LcmException("reached the limit of {} (max-instance-count) "
+                                           "scaling-out operations for the "
+                                           "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
+                        
+                # TODO: if we have more than one vdus # then it must be fixed.to get the correct # vdu_count
+                nb_scale_op += 1
                 vdu_scaling_info["scaling_direction"] = "OUT"
                 vdu_scaling_info["vdu-create"] = {}
                 for vdu_scale_info in scaling_descriptor["vdu"]:
                     RO_scaling_info.append({"osm_vdu_id": vdu_scale_info["vdu-id-ref"], "member-vnf-index": vnf_index,
                                             "type": "create", "count": vdu_scale_info.get("count", 1)})
                     vdu_scaling_info["vdu-create"][vdu_scale_info["vdu-id-ref"]] = vdu_scale_info.get("count", 1)
+
             elif scaling_type == "SCALE_IN":
                 # count if min-instance-count is reached
                 min_instance_count = 0
                 if "min-instance-count" in scaling_descriptor and scaling_descriptor["min-instance-count"] is not None:
                     min_instance_count = int(scaling_descriptor["min-instance-count"])
-                if nb_scale_op <= min_instance_count:
-                    raise LcmException("reached the limit of {} (min-instance-count) scaling-in operations for the "
-                                       "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
-                nb_scale_op = nb_scale_op - 1
+                    if nb_scale_op <= min_instance_count:
+                        raise LcmException("reached the limit of {} (min-instance-count) scaling-in operations for the "
+                                           "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
+                nb_scale_op -= 1
                 vdu_scaling_info["scaling_direction"] = "IN"
                 vdu_scaling_info["vdu-delete"] = {}
                 for vdu_scale_info in scaling_descriptor["vdu"]:
@@ -2408,7 +2418,8 @@ class NsLcm(LcmBase):
             db_nslcmop_update["statusEnteredTime"] = time()
             db_nslcmop_update["detailed-status"] = "done"
             db_nsr_update["detailed-status"] = ""  # "scaled {} {}".format(scaling_group, scaling_type)
-            db_nsr_update["operational-status"] = old_operational_status
+            db_nsr_update["operational-status"] = "running" if old_operational_status == "failed" \
+                else old_operational_status
             db_nsr_update["config-status"] = old_config_status
             return
         except (ROclient.ROClientException, DbException, LcmException) as e:
