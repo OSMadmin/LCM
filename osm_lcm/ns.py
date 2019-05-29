@@ -866,7 +866,7 @@ class NsLcm(LcmBase):
             # The parameters we'll need to deploy a charm
             number_to_configure = 0
 
-            def deploy_charm(vnf_index, vdu_id, vdu_name, vdu_count_index, charm_params, n2vc_info):
+            def deploy_charm(vnf_index, vdu_id, vdu_name, vdu_count_index, charm_params, n2vc_info, native_charm):
                 """An inner function to deploy the charm from either ns, vnf or vdu
                 For ns both vnf_index and vdu_id are None.
                 For vnf only vdu_id is None
@@ -874,6 +874,12 @@ class NsLcm(LcmBase):
                 """
                 if not charm_params.get("rw_mgmt_ip") and vnf_index:  # if NS skip mgmt_ip checking
                     raise LcmException("ns/vnfd/vdu has not management ip address to configure it")
+
+                machine_spec = {}
+                if native_charm:
+                    machine_spec["username"] = charm_params.get("username"),
+                    machine_spec["username"] = charm_params.get("rw_mgmt_ip")
+
                 # Login to the VCA.
                 # if number_to_configure == 0:
                 #     self.logger.debug("Logging into N2VC...")
@@ -938,7 +944,7 @@ class NsLcm(LcmBase):
                         descriptor,          # The vnf/nsd descriptor
                         charm_path,          # Path to charm
                         charm_params,        # Runtime params, like mgmt ip
-                        {},                  # for native charms only
+                        machine_spec,        # for native charms only
                         self.n2vc_callback,  # Callback for status changes
                         n2vc_info,           # Callback parameter
                         None,                # Callback parameter (task)
@@ -968,8 +974,9 @@ class NsLcm(LcmBase):
                 vnf_config = vnfd.get("vnf-configuration")
                 if vnf_config and vnf_config.get("juju"):
                     proxy_charm = vnf_config["juju"]["charm"]
+                    native_charm = vnf_config["juju"].get("proxy") is False
 
-                    if proxy_charm:
+                    if proxy_charm or native_charm:
                         if not vca_model_name:
                             step = "creating VCA model name '{}'".format(nsr_id)
                             self.logger.debug(logging_text + step)
@@ -982,25 +989,38 @@ class NsLcm(LcmBase):
                         charm_params = {
                             "user_values": vnfr_params,
                             "rw_mgmt_ip": db_vnfrs[vnf_index]["ip-address"],
-                            "initial-config-primitive": vnf_config.get('initial-config-primitive') or {}
+                            "initial-config-primitive": vnf_config.get('initial-config-primitive') or {},
                         }
+
+                        # get username
+                        # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
+                        #  merged. Meanwhile let's get username from initial-config-primitive
+                        if vnf_config.get("initial-config-primitive"):
+                            for param in vnf_config["initial-config-primitive"][0].get("parameter", ()):
+                                if param["name"] == "ssh-username":
+                                    charm_params["username"] = param["value"]
+                        if vnf_config.get("config-access") and vnf_config["config-access"].get("ssh-access"):
+                            if vnf_config["config-access"]["ssh-access"].get("required"):
+                                charm_params["username"] = vnf_config["config-access"]["ssh-access"].get("default-user")
 
                         # Login to the VCA. If there are multiple calls to login(),
                         # subsequent calls will be a nop and return immediately.
                         await self.n2vc.login()
 
-                        deploy_charm(vnf_index, None, None, None, charm_params, n2vc_info)
+                        deploy_charm(vnf_index, None, None, None, charm_params, n2vc_info, native_charm)
                         number_to_configure += 1
 
                 # Deploy charms for each VDU that supports one.
                 for vdu_index, vdu in enumerate(get_iterable(vnfd, 'vdu')):
                     vdu_config = vdu.get('vdu-configuration')
                     proxy_charm = None
+                    native_charm = None
 
                     if vdu_config and vdu_config.get("juju"):
                         proxy_charm = vdu_config["juju"]["charm"]
+                        native_charm = vdu_config["juju"].get("proxy") is False
 
-                        if proxy_charm:
+                        if proxy_charm or native_charm:
                             if not vca_model_name:
                                 step = "creating VCA model name"
                                 await self.n2vc.CreateNetworkService(nsr_id)
@@ -1020,8 +1040,21 @@ class NsLcm(LcmBase):
                                 "rw_mgmt_ip": vdur["ip-address"],
                                 "initial-config-primitive": vdu_config.get('initial-config-primitive') or {}
                             }
+
+                            # get username
+                            # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
+                            #  merged. Meanwhile let's get username from initial-config-primitive
+                            if vdu_config.get("initial-config-primitive"):
+                                for param in vdu_config["initial-config-primitive"][0].get("parameter", ()):
+                                    if param["name"] == "ssh-username":
+                                        charm_params["username"] = param["value"]
+                            if vdu_config.get("config-access") and vdu_config["config-access"].get("ssh-access"):
+                                if vdu_config["config-access"]["ssh-access"].get("required"):
+                                    charm_params["username"] = vdu_config["config-access"]["ssh-access"].get(
+                                        "default-user")
+
                             deploy_charm(vnf_index, vdu["id"], vdur.get("name"), vdur["count-index"],
-                                         charm_params, n2vc_info)
+                                         charm_params, n2vc_info, native_charm)
                             number_to_configure += 1
 
             # Check if this NS has a charm configuration
@@ -1029,8 +1062,9 @@ class NsLcm(LcmBase):
             ns_config = nsd.get("ns-configuration")
             if ns_config and ns_config.get("juju"):
                 proxy_charm = ns_config["juju"]["charm"]
+                native_charm = ns_config["juju"].get("proxy") is False
 
-                if proxy_charm:
+                if proxy_charm or native_charm:
                     step = "connecting to N2VC to configure ns"
                     # TODO is NS magmt IP address needed?
 
@@ -1045,14 +1079,25 @@ class NsLcm(LcmBase):
                     # additional_params["rw_mgmt_ip"] = db_nsr["ip-address"]
                     charm_params = {
                         "user_values": additional_params,
-                        # "rw_mgmt_ip": db_nsr["ip-address"],
+                        "rw_mgmt_ip": db_nsr.get("ip-address"),
                         "initial-config-primitive": ns_config.get('initial-config-primitive') or {}
                     }
+
+                    # get username
+                    # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
+                    #  merged. Meanwhile let's get username from initial-config-primitive
+                    if ns_config.get("initial-config-primitive"):
+                        for param in ns_config["initial-config-primitive"][0].get("parameter", ()):
+                            if param["name"] == "ssh-username":
+                                charm_params["username"] = param["value"]
+                    if ns_config.get("config-access") and ns_config["config-access"].get("ssh-access"):
+                        if ns_config["config-access"]["ssh-access"].get("required"):
+                            charm_params["username"] = ns_config["config-access"]["ssh-access"].get("default-user")
 
                     # Login to the VCA. If there are multiple calls to login(),
                     # subsequent calls will be a nop and return immediately.
                     await self.n2vc.login()
-                    deploy_charm(None, None, None, None, charm_params, n2vc_info)
+                    deploy_charm(None, None, None, None, charm_params, n2vc_info, native_charm)
                     number_to_configure += 1
 
             db_nsr_update["operational-status"] = "running"
