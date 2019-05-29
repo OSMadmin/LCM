@@ -2040,7 +2040,7 @@ class NsLcm(LcmBase):
                         step = db_nslcmop_update["detailed-status"] = \
                             "executing post-scale scaling-config-action '{}'".format(vnf_config_primitive)
 
-                        vnfr_params = {"<VDU_SCALE_INFO>": vdu_scaling_info}
+                        vnfr_params = {"VDU_SCALE_INFO": vdu_scaling_info}
                         if db_vnfr.get("additionalParamsForVnf"):
                             vnfr_params.update(db_vnfr["additionalParamsForVnf"])
 
