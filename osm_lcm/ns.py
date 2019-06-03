@@ -722,7 +722,7 @@ class NsLcm(LcmBase):
                 machine_spec = {}
                 if native_charm:
                     machine_spec["username"] = charm_params.get("username"),
-                    machine_spec["username"] = charm_params.get("rw_mgmt_ip")
+                    machine_spec["hostname"] = charm_params.get("rw_mgmt_ip")
 
                 # Note: The charm needs to exist on disk at the location
                 # specified by charm_path.
@@ -845,7 +845,7 @@ class NsLcm(LcmBase):
 
                     if vdu_config and vdu_config.get("juju"):
                         proxy_charm = vdu_config["juju"]["charm"]
-                        if vnf_config["juju"].get("proxy") is False:
+                        if vdu_config["juju"].get("proxy") is False:
                             # native_charm, will be deployed after VM. Skip
                             proxy_charm = None
 
@@ -879,7 +879,7 @@ class NsLcm(LcmBase):
             ns_config = nsd.get("ns-configuration")
             if ns_config and ns_config.get("juju"):
                 proxy_charm = ns_config["juju"]["charm"]
-                if vnf_config["juju"].get("proxy") is False:
+                if ns_config["juju"].get("proxy") is False:
                     # native_charm, will be deployed after VM. Skip
                     proxy_charm = None
 
@@ -963,7 +963,7 @@ class NsLcm(LcmBase):
                                         ssh_public_key
                                     n2vc_key_list.append(ssh_public_key)
                                     step = "charm ssh-public-key for  member_vnf_index={} vdu_id={} is '{}'".format(
-                                        vca_deployed["member_vnf_index"], vca_deployed["vdu_id"], ssh_public_key)
+                                        vca_deployed["member-vnf-index"], vca_deployed["vdu_id"], ssh_public_key)
                                     self.logger.debug(logging_text + step)
                                 else:  # primitive_status == "failed":
                                     if vca_deployed["step"] == "get-ssh-public-key":
