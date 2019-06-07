@@ -2142,7 +2142,6 @@ class NsLcm(LcmBase):
                     raise LcmException("Timeout waiting related tasks to be completed")
 
             step = "Getting nslcmop from database"
-            scale_process = "RO"
             self.logger.debug(step + " after having waited for previous tasks to be completed")
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr from database"
@@ -2151,7 +2150,7 @@ class NsLcm(LcmBase):
             old_operational_status = db_nsr["operational-status"]
             old_config_status = db_nsr["config-status"]
             step = "Parsing scaling parameters"
-            self.logger.debug(step)
+            # self.logger.debug(step)
             db_nsr_update["operational-status"] = "scaling"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
             nsr_deployed = db_nsr["_admin"].get("deployed")
@@ -2207,13 +2206,12 @@ class NsLcm(LcmBase):
                 if "max-instance-count" in scaling_descriptor and scaling_descriptor["max-instance-count"] is not None:
                     max_instance_count = int(scaling_descriptor["max-instance-count"])
 
-                    self.logger.debug("MAX_INSTANCE_COUNT is {}".format(scaling_descriptor["max-instance-count"]))
+                    # self.logger.debug("MAX_INSTANCE_COUNT is {}".format(scaling_descriptor["max-instance-count"]))
                     if nb_scale_op >= max_instance_count:
                         raise LcmException("reached the limit of {} (max-instance-count) "
                                            "scaling-out operations for the "
                                            "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
                         
-                # TODO: if we have more than one vdus # then it must be fixed.to get the correct # vdu_count
                 nb_scale_op += 1
                 vdu_scaling_info["scaling_direction"] = "OUT"
                 vdu_scaling_info["vdu-create"] = {}
@@ -2227,9 +2225,9 @@ class NsLcm(LcmBase):
                 min_instance_count = 0
                 if "min-instance-count" in scaling_descriptor and scaling_descriptor["min-instance-count"] is not None:
                     min_instance_count = int(scaling_descriptor["min-instance-count"])
-                    if nb_scale_op <= min_instance_count:
-                        raise LcmException("reached the limit of {} (min-instance-count) scaling-in operations for the "
-                                           "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
+                if nb_scale_op <= min_instance_count:
+                    raise LcmException("reached the limit of {} (min-instance-count) scaling-in operations for the "
+                                       "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
                 nb_scale_op -= 1
                 vdu_scaling_info["scaling_direction"] = "IN"
                 vdu_scaling_info["vdu-delete"] = {}
