@@ -1232,13 +1232,15 @@ class NsLcm(LcmBase):
                 # add primitive verify-ssh-credentials to the list after config only when is a vnf or vdu charm
                 initial_config_primitive_list = initial_config_primitive_list.copy()
                 if initial_config_primitive_list and vnf_index:
-                    initial_config_primitive_list.insert(1, {"name": "verify-ssh-credentials", "paramter": []})
+                    initial_config_primitive_list.insert(1, {"name": "verify-ssh-credentials", "parameter": []})
 
                 for initial_config_primitive in initial_config_primitive_list:
                     primitive_result, primitive_detail = await self._ns_execute_primitive(
                         db_nsr["_admin"]["deployed"], vnf_index, vdu_id, vdu_name, vdu_count_index,
                         initial_config_primitive["name"],
-                        self._map_primitive_params(initial_config_primitive, {}, add_params))
+                        self._map_primitive_params(initial_config_primitive, {}, add_params),
+                        retries=10 if initial_config_primitive["name"] == "verify-ssh-credentials" else 0,
+                        retries_interval=30)
                     if primitive_result != "COMPLETED":
                         raise LcmException("charm error executing primitive {} for  member_vnf_index={} vdu_id={}: '{}'"
                                            .format(initial_config_primitive["name"], vca_deployed["member-vnf-index"],
@@ -1926,7 +1928,7 @@ class NsLcm(LcmBase):
         return calculated_params
 
     async def _ns_execute_primitive(self, db_deployed, member_vnf_index, vdu_id, vdu_name, vdu_count_index,
-                                    primitive, primitive_params):
+                                    primitive, primitive_params, retries=0, retries_interval=30):
         start_primitive_time = time()
         try:
             for vca_deployed in db_deployed["VCA"]:
@@ -1956,29 +1958,36 @@ class NsLcm(LcmBase):
             await self.n2vc.login()
             if primitive == "config":
                 primitive_params = {"params": primitive_params}
-            primitive_id = await self.n2vc.ExecutePrimitive(
-                model_name,
-                application_name,
-                primitive,
-                callback,
-                *callback_args,
-                **primitive_params
-            )
-            while time() - start_primitive_time < self.timeout_primitive:
-                primitive_result_ = await self.n2vc.GetPrimitiveStatus(model_name, primitive_id)
-                if primitive_result_ in ("completed", "failed"):
-                    primitive_result = "COMPLETED" if primitive_result_ == "completed" else "FAILED"
-                    detailed_result = await self.n2vc.GetPrimitiveOutput(model_name, primitive_id)
+            while retries >= 0:
+                primitive_id = await self.n2vc.ExecutePrimitive(
+                    model_name,
+                    application_name,
+                    primitive,
+                    callback,
+                    *callback_args,
+                    **primitive_params
+                )
+                while time() - start_primitive_time < self.timeout_primitive:
+                    primitive_result_ = await self.n2vc.GetPrimitiveStatus(model_name, primitive_id)
+                    if primitive_result_ in ("completed", "failed"):
+                        primitive_result = "COMPLETED" if primitive_result_ == "completed" else "FAILED"
+                        detailed_result = await self.n2vc.GetPrimitiveOutput(model_name, primitive_id)
+                        break
+                    elif primitive_result_ is None and primitive == "config":
+                        primitive_result = "COMPLETED"
+                        detailed_result = None
+                        break
+                    else:  # ("running", "pending", None):
+                        pass
+                    await asyncio.sleep(5)
+                else:
+                    raise LcmException("timeout after {} seconds".format(self.timeout_primitive))
+                if primitive_result == "COMPLETED":
                     break
-                elif primitive_result_ is None and primitive == "config":
-                    primitive_result = "COMPLETED"
-                    detailed_result = None
-                    break
-                else:  # ("running", "pending", None):
-                    pass
-                await asyncio.sleep(5)
-            else:
-                raise LcmException("timeout after {} seconds".format(self.timeout_primitive))
+                retries -= 1
+                if retries >= 0:
+                    await asyncio.sleep(retries_interval)
+
             return primitive_result, detailed_result
         except (N2VCPrimitiveExecutionFailed, LcmException) as e:
             return "FAILED", str(e)
