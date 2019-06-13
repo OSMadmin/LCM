@@ -46,8 +46,8 @@ min_RO_version = [0, 6, 3]
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.19"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.37'
-lcm_version_date = '2019-04-30'
+lcm_version = '0.1.40'
+lcm_version_date = '2019-06-13'
 health_check_file = path.expanduser("~") + "/time_last_ping"   # TODO find better location for this file
 
 

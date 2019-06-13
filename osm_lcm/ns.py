@@ -1208,8 +1208,8 @@ class NsLcm(LcmBase):
                         for vdu_index, vdu in enumerate(get_iterable(vnfd, 'vdu')):
                             if vdu["id"] == vdu_id:
                                 initial_config_primitive_list = vdu['vdu-configuration'].get(
-                                    'initial-config-primitive', ())
-                            break
+                                    'initial-config-primitive', [])
+                                break
                         else:
                             raise LcmException("Not found vdu_id={} at vnfd:vdu".format(vdu_id))
                         vdur = db_vnfrs[vnf_index]["vdur"][vdu_index]
@@ -1220,7 +1220,7 @@ class NsLcm(LcmBase):
                         add_params["rw_mgmt_ip"] = vdur["ip-address"]
                     else:
                         add_params["rw_mgmt_ip"] = db_vnfrs[vnf_index]["ip-address"]
-                        initial_config_primitive_list = vnfd["vnf-configuration"].get('initial-config-primitive', ())
+                        initial_config_primitive_list = vnfd["vnf-configuration"].get('initial-config-primitive', [])
                 else:
                     if db_nsr.get("additionalParamsForNs"):
                         add_params = db_nsr["additionalParamsForNs"].copy()
@@ -1235,14 +1235,17 @@ class NsLcm(LcmBase):
                     initial_config_primitive_list.insert(1, {"name": "verify-ssh-credentials", "parameter": []})
 
                 for initial_config_primitive in initial_config_primitive_list:
+                    primitive_params_ = self._map_primitive_params(initial_config_primitive, {}, add_params)
+                    self.logger.debug(logging_text + step + " primitive '{}' params '{}'"
+                                      .format(initial_config_primitive["name"], primitive_params_))
                     primitive_result, primitive_detail = await self._ns_execute_primitive(
                         db_nsr["_admin"]["deployed"], vnf_index, vdu_id, vdu_name, vdu_count_index,
                         initial_config_primitive["name"],
-                        self._map_primitive_params(initial_config_primitive, {}, add_params),
+                        primitive_params_,
                         retries=10 if initial_config_primitive["name"] == "verify-ssh-credentials" else 0,
                         retries_interval=30)
                     if primitive_result != "COMPLETED":
-                        raise LcmException("charm error executing primitive {} for  member_vnf_index={} vdu_id={}: '{}'"
+                        raise LcmException("charm error executing primitive {} for member_vnf_index={} vdu_id={}: '{}'"
                                            .format(initial_config_primitive["name"], vca_deployed["member-vnf-index"],
                                                    vca_deployed["vdu_id"], primitive_detail))
 
