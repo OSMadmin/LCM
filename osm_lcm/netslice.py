@@ -70,6 +70,12 @@ class NetsliceLcm(LcmBase):
                 raise LcmException("ns_update_nsir: Not found vld={} at RO info".format(vld["id"]))
 
     async def instantiate(self, nsir_id, nsilcmop_id):
+
+        # Try to lock HA task here
+        task_is_locked_by_me = self.lcm_tasks.lock_HA('nsi', 'nsilcmops', nsilcmop_id)
+        if not task_is_locked_by_me:
+            return
+
         logging_text = "Task netslice={} instantiate={} ".format(nsir_id, nsilcmop_id)
         self.logger.debug(logging_text + "Enter")
         # get all needed from database
@@ -218,7 +224,7 @@ class NetsliceLcm(LcmBase):
                 db_nsir_update_RO["netslice_scenario_id"] = desc["uuid"]
                 db_nsir_update_RO["vld_id"] = RO_ns_params["name"]
                 db_nsir_update["_admin.deployed.RO"].append(db_nsir_update_RO)
-        
+
         def overwrite_nsd_params(self, db_nsir, nslcmop):
             RO_list = []
             vld_op_list = []
@@ -261,21 +267,13 @@ class NetsliceLcm(LcmBase):
             return nsr_id, nslcmop
 
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('nsi', 'nsilcmops', nsilcmop_id)
+
             step = "Getting nsir={} from db".format(nsir_id)
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
             step = "Getting nsilcmop={} from db".format(nsilcmop_id)
             db_nsilcmop = self.db.get_one("nsilcmops", {"_id": nsilcmop_id})
-
-            # look if previous tasks is in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("nsi", nsir_id, nsilcmop_id)
-            if task_dependency:
-                step = db_nsilcmop_update["detailed-status"] = \
-                    "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
 
             # Empty list to keep track of network service records status in the netslice
             nsir_admin = db_nsir_admin = db_nsir.get("_admin")
@@ -283,16 +281,16 @@ class NetsliceLcm(LcmBase):
             # Slice status Creating
             db_nsir_update["detailed-status"] = "creating"
             db_nsir_update["operational-status"] = "init"
-            self.update_db_2("nsis", nsir_id, db_nsir_update)     
-            
+            self.update_db_2("nsis", nsir_id, db_nsir_update)
+
             # Creating netslice VLDs networking before NS instantiation
             db_nsir_update["_admin.deployed.RO"] = db_nsir_admin["deployed"]["RO"]
             for vld_item in get_iterable(nsir_admin, "netslice-vld"):
                 await netslice_scenario_create(self, vld_item, nsir_id, db_nsir, db_nsir_admin, db_nsir_update)
             self.update_db_2("nsis", nsir_id, db_nsir_update)
-            
+
             db_nsir_update["detailed-status"] = "Creating netslice subnets at RO"
-            self.update_db_2("nsis", nsir_id, db_nsir_update)  
+            self.update_db_2("nsis", nsir_id, db_nsir_update)
 
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
 
@@ -300,9 +298,9 @@ class NetsliceLcm(LcmBase):
             # netslice_scenarios = db_nsir["_admin"]["deployed"]["RO"]
             # db_nsir_update_RO = deepcopy(netslice_scenarios)
             # for netslice_scenario in netslice_scenarios:
-            #    await netslice_scenario_check(self, netslice_scenario["netslice_scenario_id"], 
+            #    await netslice_scenario_check(self, netslice_scenario["netslice_scenario_id"],
             #                                  nsir_id, db_nsir_update_RO)
-            
+
             # db_nsir_update["_admin.deployed.RO"] = db_nsir_update_RO
             # self.update_db_2("nsis", nsir_id, db_nsir_update)
 
@@ -319,12 +317,12 @@ class NetsliceLcm(LcmBase):
                 step = "Launching ns={} instantiate={} task".format(nsr_id, nslcmop_id)
                 task = asyncio.ensure_future(self.ns.instantiate(nsr_id, nslcmop_id))
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
-            
+
             # Wait until Network Slice is ready
             step = nsir_status_detailed = " Waiting nsi ready. nsi_id={}".format(nsir_id)
             nsrs_detailed_list_old = None
             self.logger.debug(logging_text + step)
-            
+
             # TODO: substitute while for await (all task to be done or not)
             deployment_timeout = 2 * 3600   # Two hours
             while deployment_timeout > 0:
@@ -414,9 +412,15 @@ class NetsliceLcm(LcmBase):
             self.lcm_tasks.remove("nsi", nsir_id, nsilcmop_id, "nsi_instantiate")
 
     async def terminate(self, nsir_id, nsilcmop_id):
+
+        # Try to lock HA task here
+        task_is_locked_by_me = self.lcm_tasks.lock_HA('nsi', 'nsilcmops', nsilcmop_id)
+        if not task_is_locked_by_me:
+            return
+
         logging_text = "Task nsi={} terminate={} ".format(nsir_id, nsilcmop_id)
         self.logger.debug(logging_text + "Enter")
-        exc = None 
+        exc = None
         db_nsir = None
         db_nsilcmop = None
         db_nsir_update = {"_admin.nsilcmop": nsilcmop_id}
@@ -427,12 +431,15 @@ class NetsliceLcm(LcmBase):
         nsilcmop_operation_state = None
         autoremove = False  # autoremove after terminated
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('nsi', 'nsilcmops', nsilcmop_id)
+
             step = "Getting nsir={} from db".format(nsir_id)
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
             nsir_deployed = deepcopy(db_nsir["_admin"].get("deployed"))
             step = "Getting nsilcmop={} from db".format(nsilcmop_id)
             db_nsilcmop = self.db.get_one("nsilcmops", {"_id": nsilcmop_id})
-            
+
             # TODO: Check if makes sense check the nsiState=NOT_INSTANTIATED when terminate
             # CASE: Instance was terminated but there is a second request to terminate the instance
             if db_nsir["_admin"]["nsiState"] == "NOT_INSTANTIATED":
@@ -444,23 +451,12 @@ class NetsliceLcm(LcmBase):
             db_nsir_update["detailed-status"] = "Terminating Netslice subnets"
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
-            # look if previous tasks is in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("nsi", nsir_id, nsilcmop_id)
-            if task_dependency:
-                step = db_nsilcmop_update["detailed-status"] = \
-                    "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                self.update_db_2("nsilcmops", nsilcmop_id, db_nsilcmop_update)
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
-                       
             # Gets the list to keep track of network service records status in the netslice
             nsir_admin = db_nsir["_admin"]
-            nsrs_detailed_list = []       
+            nsrs_detailed_list = []
 
             # Iterate over the network services operation ids to terminate NSs
-            # TODO: (future improvement) look another way check the tasks instead of keep asking  
+            # TODO: (future improvement) look another way check the tasks instead of keep asking
             # -> https://docs.python.org/3/library/asyncio-task.html#waiting-primitives
             # steps: declare ns_tasks, add task when terminate is called, await asyncio.wait(vca_task_list, timeout=300)
             nslcmop_ids = db_nsilcmop["operationParams"].get("nslcmops_ids")
@@ -489,7 +485,7 @@ class NetsliceLcm(LcmBase):
             step = nsir_status_detailed = " Waiting nsi terminated. nsi_id={}".format(nsir_id)
             nsrs_detailed_list_old = None
             self.logger.debug(logging_text + step)
-            
+
             termination_timeout = 2 * 3600   # Two hours
             while termination_timeout > 0:
                 # Check ns termination status

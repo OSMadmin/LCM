@@ -628,6 +628,12 @@ class NsLcm(LcmBase):
                 raise LcmException("ns_update_vnfr: Not found member_vnf_index={} at RO info".format(vnf_index))
 
     async def instantiate(self, nsr_id, nslcmop_id):
+
+        # Try to lock HA task here
+        task_is_locked_by_me = self.lcm_tasks.lock_HA('ns', 'nslcmops', nslcmop_id)
+        if not task_is_locked_by_me:
+            return
+
         logging_text = "Task ns={} instantiate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
         # get all needed from database
@@ -644,6 +650,9 @@ class NsLcm(LcmBase):
         n2vc_key_list = []  # list of public keys to be injected as authorized to VMs
         exc = None
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
+
             step = "Getting nslcmop={} from db".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr={} from db".format(nsr_id)
@@ -651,17 +660,6 @@ class NsLcm(LcmBase):
             ns_params = db_nslcmop.get("operationParams")
             nsd = db_nsr["nsd"]
             nsr_name = db_nsr["name"]   # TODO short-name??
-
-            # look if previous tasks in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
-            if task_dependency:
-                step = db_nslcmop_update["detailed-status"] = \
-                    "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
 
             step = "Getting vnfrs from db"
             db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
@@ -1650,6 +1648,12 @@ class NsLcm(LcmBase):
                             vnf_index, seq.get("name"), nslcmop_operation_state_detail))
 
     async def terminate(self, nsr_id, nslcmop_id):
+
+        # Try to lock HA task here
+        task_is_locked_by_me = self.lcm_tasks.lock_HA('ns', 'nslcmops', nslcmop_id)
+        if not task_is_locked_by_me:
+            return
+
         logging_text = "Task ns={} terminate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
         db_nsr = None
@@ -1662,6 +1666,9 @@ class NsLcm(LcmBase):
         nslcmop_operation_state = None
         autoremove = False  # autoremove after terminated
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA("ns", 'nslcmops', nslcmop_id)
+
             step = "Getting nslcmop={} from db".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr={} from db".format(nsr_id)
@@ -1998,6 +2005,12 @@ class NsLcm(LcmBase):
             return "FAILED", str(e)
 
     async def action(self, nsr_id, nslcmop_id):
+
+        # Try to lock HA task here
+        task_is_locked_by_me = self.lcm_tasks.lock_HA('ns', 'nslcmops', nslcmop_id)
+        if not task_is_locked_by_me:
+            return
+
         logging_text = "Task ns={} action={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
         # get all needed from database
@@ -2009,6 +2022,9 @@ class NsLcm(LcmBase):
         nslcmop_operation_state_detail = None
         exc = None
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
+
             step = "Getting information from database"
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
@@ -2030,17 +2046,6 @@ class NsLcm(LcmBase):
                 else:
                     step = "Getting nsd from database"
                     db_nsd = self.db.get_one("nsds", {"_id": db_nsr["nsd-id"]})
-
-            # look if previous tasks in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
-            if task_dependency:
-                step = db_nslcmop_update["detailed-status"] = \
-                    "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
 
             # for backward compatibility
             if nsr_deployed and isinstance(nsr_deployed.get("VCA"), dict):
@@ -2129,6 +2134,12 @@ class NsLcm(LcmBase):
             return nslcmop_operation_state, nslcmop_operation_state_detail
 
     async def scale(self, nsr_id, nslcmop_id):
+
+        # Try to lock HA task here
+        task_is_locked_by_me = self.lcm_tasks.lock_HA('ns', 'nslcmops', nslcmop_id)
+        if not task_is_locked_by_me:
+            return
+
         logging_text = "Task ns={} scale={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
         # get all needed from database
@@ -2144,16 +2155,8 @@ class NsLcm(LcmBase):
         old_config_status = ""
         vnfr_scaled = False
         try:
-            # look if previous tasks in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("ns", nsr_id, nslcmop_id)
-            if task_dependency:
-                step = db_nslcmop_update["detailed-status"] = \
-                    "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
             step = "Getting nslcmop from database"
             self.logger.debug(step + " after having waited for previous tasks to be completed")

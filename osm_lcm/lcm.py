@@ -71,8 +71,6 @@ class Lcm:
         self.consecutive_errors = 0
         self.first_start = False
 
-        # contains created tasks/futures to be able to cancel
-        self.lcm_tasks = TaskRegistry()
         # logging
         self.logger = logging.getLogger('lcm')
         # get id
@@ -173,6 +171,9 @@ class Lcm:
         except (DbException, FsException, MsgException) as e:
             self.logger.critical(str(e), exc_info=True)
             raise LcmException(str(e))
+
+        # contains created tasks/futures to be able to cancel
+        self.lcm_tasks = TaskRegistry(self.worker_id, self.db, self.logger)
 
         self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.vca_config, self.loop)
         self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, 
