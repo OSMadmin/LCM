@@ -1228,6 +1228,7 @@ class NsLcm(LcmBase):
                         if isinstance(v, str) and v.startswith("!!yaml "):
                             add_params[k] = yaml.safe_load(v[7:])
                     add_params["rw_mgmt_ip"] = None
+                    initial_config_primitive_list = nsd["ns-configuration"].get('initial-config-primitive', [])
 
                 # add primitive verify-ssh-credentials to the list after config only when is a vnf or vdu charm
                 initial_config_primitive_list = initial_config_primitive_list.copy()
@@ -1396,6 +1397,7 @@ class NsLcm(LcmBase):
             # waiting all charms are ok
             configuration_failed = False
             if number_to_configure:
+                step = "Waiting all charms are active"
                 old_status = "configuring: init: {}".format(number_to_configure)
                 db_nsr_update["config-status"] = old_status
                 db_nsr_update["detailed-status"] = old_status
