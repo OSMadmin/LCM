@@ -38,7 +38,7 @@ from time import time, sleep
 from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
 from osm_lcm import version as lcm_version, version_date as lcm_version_date
 
-from osm_common import dbmemory, dbmongo, fslocal, msglocal, msgkafka
+from osm_common import dbmemory, dbmongo, fslocal, fsmongo, msglocal, msgkafka
 from osm_common import version as common_version
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
@@ -157,6 +157,9 @@ class Lcm:
 
             if config["storage"]["driver"] == "local":
                 self.fs = fslocal.FsLocal()
+                self.fs.fs_connect(config["storage"])
+            elif config["storage"]["driver"] == "mongo":
+                self.fs = fsmongo.FsMongo()
                 self.fs.fs_connect(config["storage"])
             else:
                 raise LcmException("Invalid configuration param '{}' at '[storage]':'driver'".format(
