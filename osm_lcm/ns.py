@@ -29,7 +29,7 @@ from lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
 
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
-from n2vc.vnf import N2VC, N2VCPrimitiveExecutionFailed, NetworkServiceDoesNotExist
+from n2vc.vnf import N2VC, N2VCPrimitiveExecutionFailed, NetworkServiceDoesNotExist, PrimitiveDoesNotExist
 
 from copy import copy, deepcopy
 from http import HTTPStatus
@@ -933,17 +933,28 @@ class NsLcm(LcmBase):
                                        .format(vca_deployed["member-vnf-index"],
                                                vca_deployed["vdu_id"])
                                 self.logger.debug(logging_text + step)
-                                primitive_id = await self.n2vc.ExecutePrimitive(
-                                    vca_deployed["model"],
-                                    vca_deployed["application"],
-                                    "get-ssh-public-key",
-                                    None,
-                                )
-                                vca_deployed["step"] = db_nsr_update[database_entry + "step"] = "get-ssh-public-key"
-                                vca_deployed["primitive_id"] = db_nsr_update[database_entry + "primitive_id"] =\
-                                    primitive_id
-                                db_nsr_update[database_entry + "operational-status"] =\
-                                    vca_deployed["operational-status"]
+                                try:
+                                    primitive_id = await self.n2vc.ExecutePrimitive(
+                                        vca_deployed["model"],
+                                        vca_deployed["application"],
+                                        "get-ssh-public-key",
+                                        None,
+                                    )
+                                    vca_deployed["step"] = db_nsr_update[database_entry + "step"] = "get-ssh-public-key"
+                                    vca_deployed["primitive_id"] = db_nsr_update[database_entry + "primitive_id"] =\
+                                        primitive_id
+                                    db_nsr_update[database_entry + "operational-status"] =\
+                                        vca_deployed["operational-status"]
+                                except PrimitiveDoesNotExist:
+                                    ssh_public_key = None
+                                    vca_deployed["step"] = db_nsr_update[database_entry + "step"] =\
+                                        "ssh-public-key-obtained"
+                                    vca_deployed["ssh-public-key"] = db_nsr_update[database_entry + "ssh-public-key"] =\
+                                        ssh_public_key
+                                    step = "charm ssh-public-key for  member_vnf_index={} vdu_id={} not needed".format(
+                                        vca_deployed["member-vnf-index"], vca_deployed["vdu_id"])
+                                    self.logger.debug(logging_text + step)
+
                         elif vca_deployed["step"] in ("get-ssh-public-key", "retry-get-ssh-public-key"):
                             primitive_id = vca_deployed["primitive_id"]
                             primitive_status = await self.n2vc.GetPrimitiveStatus(vca_deployed["model"],
@@ -1230,7 +1241,7 @@ class NsLcm(LcmBase):
 
                 # add primitive verify-ssh-credentials to the list after config only when is a vnf or vdu charm
                 initial_config_primitive_list = initial_config_primitive_list.copy()
-                if initial_config_primitive_list and vnf_index:
+                if initial_config_primitive_list and vnf_index and vca_deployed.get("ssh-public-key"):
                     initial_config_primitive_list.insert(1, {"name": "verify-ssh-credentials", "parameter": []})
 
                 for initial_config_primitive in initial_config_primitive_list:
