@@ -47,6 +47,7 @@ class VimLcm(LcmBase):
 
     async def create(self, vim_content, order_id):
         vim_id = vim_content["_id"]
+        vim_content.pop("op_id", None)
         logging_text = "Task vim_create={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
         db_vim = None
@@ -139,6 +140,7 @@ class VimLcm(LcmBase):
 
     async def edit(self, vim_content, order_id):
         vim_id = vim_content["_id"]
+        vim_content.pop("op_id", None)
         logging_text = "Task vim_edit={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
         db_vim = None
@@ -331,6 +333,7 @@ class WimLcm(LcmBase):
 
     async def create(self, wim_content, order_id):
         wim_id = wim_content["_id"]
+        wim_content.pop("op_id", None)
         logging_text = "Task wim_create={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
         db_wim = None
@@ -408,6 +411,7 @@ class WimLcm(LcmBase):
 
     async def edit(self, wim_content, order_id):
         wim_id = wim_content["_id"]
+        wim_content.pop("op_id", None)
         logging_text = "Task wim_edit={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
         db_wim = None
@@ -572,6 +576,7 @@ class SdnLcm(LcmBase):
 
     async def create(self, sdn_content, order_id):
         sdn_id = sdn_content["_id"]
+        sdn_content.pop("op_id", None)
         logging_text = "Task sdn_create={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
         db_sdn = None
@@ -623,6 +628,7 @@ class SdnLcm(LcmBase):
 
     async def edit(self, sdn_content, order_id):
         sdn_id = sdn_content["_id"]
+        sdn_content.pop("op_id", None)
         logging_text = "Task sdn_edit={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
         db_sdn = None
