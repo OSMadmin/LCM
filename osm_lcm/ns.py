@@ -1560,8 +1560,9 @@ class NsLcm(LcmBase):
         else:
             return False
 
-    # Get a numerically sorted list of the sequences for this VNFD's terminate action
-    def _get_terminate_config_primitive_seq_list(self, vnfd):
+    @staticmethod
+    def _get_terminate_config_primitive_seq_list(vnfd):
+        """ Get a numerically sorted list of the sequences for this VNFD's terminate action """
         # No need to check for existing primitive twice, already done before
         vnf_config = vnfd.get("vnf-configuration")
         seq_list = vnf_config.get("terminate-config-primitive")
@@ -1603,10 +1604,10 @@ class NsLcm(LcmBase):
         }
         return nslcmop
 
-    # Create a primitive with params from VNFD
-    # - Called from terminate() before deleting instance
-    # - Calls action() to execute the primitive
     async def _terminate_action(self, db_nslcmop, nslcmop_id, nsr_id):
+        """ Create a primitive with params from VNFD
+            Called from terminate() before deleting instance
+            Calls action() to execute the primitive """
         logging_text = "Task ns={} _terminate_action={} ".format(nsr_id, nslcmop_id)
         db_vnfds = {}
         db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
