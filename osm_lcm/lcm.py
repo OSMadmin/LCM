@@ -359,7 +359,7 @@ class Lcm:
                 return
             elif command == "delete":
                 self.lcm_tasks.cancel(topic, vim_id)
-                task = asyncio.ensure_future(self.vim.delete(vim_id, order_id))
+                task = asyncio.ensure_future(self.vim.delete(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_delete", task)
                 return
             elif command == "show":
@@ -378,7 +378,7 @@ class Lcm:
                 return
             elif command == "delete":
                 self.lcm_tasks.cancel(topic, wim_id)
-                task = asyncio.ensure_future(self.wim.delete(wim_id, order_id))
+                task = asyncio.ensure_future(self.wim.delete(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_delete", task)
                 return
             elif command == "show":
@@ -397,7 +397,7 @@ class Lcm:
                 return
             elif command == "delete":
                 self.lcm_tasks.cancel(topic, _sdn_id)
-                task = asyncio.ensure_future(self.sdn.delete(_sdn_id, order_id))
+                task = asyncio.ensure_future(self.sdn.delete(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_delete", task)
                 return
             elif command == "edit":

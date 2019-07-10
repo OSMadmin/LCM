@@ -16,7 +16,6 @@
 # under the License.
 ##
 
-import asyncio
 import logging
 import logging.handlers
 import ROclient
@@ -47,20 +46,37 @@ class VimLcm(LcmBase):
         super().__init__(db, msg, fs, self.logger)
 
     async def create(self, vim_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'create' task here for related future HA operations
+        op_id = vim_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('vim', 'create', op_id):
+            return
+
         vim_id = vim_content["_id"]
         vim_content.pop("op_id", None)
         logging_text = "Task vim_create={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
+
         db_vim = None
         db_vim_update = {}
         exc = None
         RO_sdn_id = None
+        operationState_HA = ''
+        detailed_status_HA = ''
         try:
             step = "Getting vim-id='{}' from db".format(vim_id)
             db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
             if vim_content.get("config") and vim_content["config"].get("sdn-controller"):
                 step = "Getting sdn-controller-id='{}' from db".format(vim_content["config"]["sdn-controller"])
                 db_sdn = self.db.get_one("sdns", {"_id": vim_content["config"]["sdn-controller"]})
+
+                # If the VIM account has an associated SDN account, also
+                # wait for any previous tasks in process for the SDN
+                await self.lcm_tasks.waitfor_related_HA('sdn', 'ANY', db_sdn["_id"])
+
                 if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
                     RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
                 else:
@@ -118,6 +134,9 @@ class VimLcm(LcmBase):
             db_vim_update["_admin.deployed.RO-account"] = desc["uuid"]
             db_vim_update["_admin.operationalState"] = "ENABLED"
             db_vim_update["_admin.detailed-status"] = "Done"
+            # Mark the VIM 'create' HA task as successful
+            operationState_HA = 'COMPLETED'
+            detailed_status_HA = 'Done'
 
             # await asyncio.sleep(15)   # TODO remove. This is for test
             self.logger.debug(logging_text + "Exit Ok VIM account created at RO_vim_account_id={}".format(desc["uuid"]))
@@ -133,52 +152,58 @@ class VimLcm(LcmBase):
             if exc and db_vim:
                 db_vim_update["_admin.operationalState"] = "ERROR"
                 db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the VIM 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_vim_update:
                     self.update_db_2("vim_accounts", vim_id, db_vim_update)
+                # Register the VIM 'create' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('vim', 'create', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
 
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
 
     async def edit(self, vim_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, and the HA check always returns True
+        op_id = vim_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('vim', 'edit', op_id):
+            return
+
         vim_id = vim_content["_id"]
         vim_content.pop("op_id", None)
         logging_text = "Task vim_edit={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
+
         db_vim = None
         exc = None
         RO_sdn_id = None
         RO_vim_id = None
         db_vim_update = {}
+        operationState_HA = ''
+        detailed_status_HA = ''
         step = "Getting vim-id='{}' from db".format(vim_id)
         try:
-            db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('vim', 'edit', op_id)
 
-            # look if previous tasks in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("vim_account", vim_id, order_id)
-            if task_dependency:
-                step = "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                # TODO write this to database
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
+            db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
 
             if db_vim.get("_admin") and db_vim["_admin"].get("deployed") and db_vim["_admin"]["deployed"].get("RO"):
                 if vim_content.get("config") and vim_content["config"].get("sdn-controller"):
                     step = "Getting sdn-controller-id='{}' from db".format(vim_content["config"]["sdn-controller"])
                     db_sdn = self.db.get_one("sdns", {"_id": vim_content["config"]["sdn-controller"]})
 
-                    # look if previous tasks in process
-                    task_name, task_dependency = self.lcm_tasks.lookfor_related("sdn", db_sdn["_id"])
-                    if task_dependency:
-                        step = "Waiting for related tasks to be completed: {}".format(task_name)
-                        self.logger.debug(logging_text + step)
-                        # TODO write this to database
-                        _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                        if pending:
-                            raise LcmException("Timeout waiting related tasks to be completed")
+                    # If the VIM account has an associated SDN account, also
+                    # wait for any previous tasks in process for the SDN
+                    await self.lcm_tasks.waitfor_related_HA('sdn', 'ANY', db_sdn["_id"])
 
                     if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get(
                             "RO"):
@@ -240,6 +265,9 @@ class VimLcm(LcmBase):
                 # vim_thread. RO will remove and relaunch a new thread for this vim_account
                 await RO.edit("vim_account", RO_vim_id, descriptor=vim_account_RO)
                 db_vim_update["_admin.operationalState"] = "ENABLED"
+                # Mark the VIM 'edit' HA task as successful
+                operationState_HA = 'COMPLETED'
+                detailed_status_HA = 'Done'
 
             self.logger.debug(logging_text + "Exit Ok RO_vim_id={}".format(RO_vim_id))
             return
@@ -254,22 +282,45 @@ class VimLcm(LcmBase):
             if exc and db_vim:
                 db_vim_update["_admin.operationalState"] = "ERROR"
                 db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the VIM 'edit' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_vim_update:
                     self.update_db_2("vim_accounts", vim_id, db_vim_update)
+                # Register the VIM 'edit' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('vim', 'edit', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
 
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
 
-    async def delete(self, vim_id, order_id):
+    async def delete(self, vim_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, and the HA check always returns True
+        op_id = vim_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('vim', 'delete', op_id):
+            return
+
+        vim_id = vim_content["_id"]
         logging_text = "Task vim_delete={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
+
         db_vim = None
         db_vim_update = {}
         exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
         step = "Getting vim from db"
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('vim', 'delete', op_id)
+
             db_vim = self.db.get_one("vim_accounts", {"_id": vim_id})
             if db_vim.get("_admin") and db_vim["_admin"].get("deployed") and db_vim["_admin"]["deployed"].get("RO"):
                 RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
@@ -293,7 +344,7 @@ class VimLcm(LcmBase):
                         raise
             else:
                 # nothing to delete
-                self.logger.error(logging_text + "Nohing to remove at RO")
+                self.logger.error(logging_text + "Nothing to remove at RO")
             self.db.del_one("vim_accounts", {"_id": vim_id})
             db_vim = None
             self.logger.debug(logging_text + "Exit Ok")
@@ -310,9 +361,17 @@ class VimLcm(LcmBase):
             if exc and db_vim:
                 db_vim_update["_admin.operationalState"] = "ERROR"
                 db_vim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the VIM 'delete' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+                self.lcm_tasks.register_HA('vim', 'delete', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             try:
                 if db_vim and db_vim_update:
                     self.update_db_2("vim_accounts", vim_id, db_vim_update)
+                # If the VIM 'delete' HA task was succesful, the DB entry has been deleted,
+                # which means that there is nowhere to register this task, so do nothing here.
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("vim_account", vim_id, order_id)
@@ -337,13 +396,24 @@ class WimLcm(LcmBase):
         super().__init__(db, msg, fs, self.logger)
 
     async def create(self, wim_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'wim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'create' task here for related future HA operations
+        op_id = wim_content.pop('op_id', None)
+        self.lcm_tasks.lock_HA('wim', 'create', op_id)
+
         wim_id = wim_content["_id"]
         wim_content.pop("op_id", None)
         logging_text = "Task wim_create={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
+
         db_wim = None
         db_wim_update = {}
         exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
         try:
             step = "Getting wim-id='{}' from db".format(wim_id)
             db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
@@ -393,6 +463,9 @@ class WimLcm(LcmBase):
             db_wim_update["_admin.deployed.RO-account"] = desc["uuid"]
             db_wim_update["_admin.operationalState"] = "ENABLED"
             db_wim_update["_admin.detailed-status"] = "Done"
+            # Mark the WIM 'create' HA task as successful
+            operationState_HA = 'COMPLETED'
+            detailed_status_HA = 'Done'
 
             self.logger.debug(logging_text + "Exit Ok WIM account created at RO_wim_account_id={}".format(desc["uuid"]))
             return
@@ -407,35 +480,47 @@ class WimLcm(LcmBase):
             if exc and db_wim:
                 db_wim_update["_admin.operationalState"] = "ERROR"
                 db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the WIM 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_wim_update:
                     self.update_db_2("wim_accounts", wim_id, db_wim_update)
+                # Register the WIM 'create' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('wim', 'create', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("wim_account", wim_id, order_id)
 
     async def edit(self, wim_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'wim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, and the HA check always returns True
+        op_id = wim_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('wim', 'edit', op_id):
+            return
+
         wim_id = wim_content["_id"]
         wim_content.pop("op_id", None)
         logging_text = "Task wim_edit={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
+
         db_wim = None
         exc = None
         RO_wim_id = None
         db_wim_update = {}
         step = "Getting wim-id='{}' from db".format(wim_id)
+        operationState_HA = ''
+        detailed_status_HA = ''
         try:
-            db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('wim', 'edit', op_id)
 
-            # look if previous tasks in process
-            task_name, task_dependency = self.lcm_tasks.lookfor_related("wim_account", wim_id, order_id)
-            if task_dependency:
-                step = "Waiting for related tasks to be completed: {}".format(task_name)
-                self.logger.debug(logging_text + step)
-                # TODO write this to database
-                _, pending = await asyncio.wait(task_dependency, timeout=3600)
-                if pending:
-                    raise LcmException("Timeout waiting related tasks to be completed")
+            db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
 
             if db_wim.get("_admin") and db_wim["_admin"].get("deployed") and db_wim["_admin"]["deployed"].get("RO"):
 
@@ -486,6 +571,9 @@ class WimLcm(LcmBase):
                 # wim_thread. RO will remove and relaunch a new thread for this wim_account
                 await RO.edit("wim_account", RO_wim_id, descriptor=wim_account_RO)
                 db_wim_update["_admin.operationalState"] = "ENABLED"
+                # Mark the WIM 'edit' HA task as successful
+                operationState_HA = 'COMPLETED'
+                detailed_status_HA = 'Done'
 
             self.logger.debug(logging_text + "Exit Ok RO_wim_id={}".format(RO_wim_id))
             return
@@ -500,21 +588,44 @@ class WimLcm(LcmBase):
             if exc and db_wim:
                 db_wim_update["_admin.operationalState"] = "ERROR"
                 db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the WIM 'edit' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_wim_update:
                     self.update_db_2("wim_accounts", wim_id, db_wim_update)
+                # Register the WIM 'edit' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('wim', 'edit', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("wim_account", wim_id, order_id)
 
-    async def delete(self, wim_id, order_id):
+    async def delete(self, wim_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, and the HA check always returns True
+        op_id = wim_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('wim', 'delete', op_id):
+            return
+
+        wim_id = wim_content["_id"]
         logging_text = "Task wim_delete={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
+
         db_wim = None
         db_wim_update = {}
         exc = None
         step = "Getting wim from db"
+        operationState_HA = ''
+        detailed_status_HA = ''
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('wim', 'delete', op_id)
+
             db_wim = self.db.get_one("wim_accounts", {"_id": wim_id})
             if db_wim.get("_admin") and db_wim["_admin"].get("deployed") and db_wim["_admin"]["deployed"].get("RO"):
                 RO_wim_id = db_wim["_admin"]["deployed"]["RO"]
@@ -555,9 +666,17 @@ class WimLcm(LcmBase):
             if exc and db_wim:
                 db_wim_update["_admin.operationalState"] = "ERROR"
                 db_wim_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the WIM 'delete' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+                self.lcm_tasks.register_HA('wim', 'delete', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             try:
                 if db_wim and db_wim_update:
                     self.update_db_2("wim_accounts", wim_id, db_wim_update)
+                # If the WIM 'delete' HA task was succesful, the DB entry has been deleted,
+                # which means that there is nowhere to register this task, so do nothing here.
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("wim_account", wim_id, order_id)
@@ -580,14 +699,25 @@ class SdnLcm(LcmBase):
         super().__init__(db, msg, fs, self.logger)
 
     async def create(self, sdn_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'sdn_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'create' task here for related future HA operations
+        op_id = sdn_content.pop('op_id', None)
+        self.lcm_tasks.lock_HA('sdn', 'create', op_id)
+
         sdn_id = sdn_content["_id"]
         sdn_content.pop("op_id", None)
         logging_text = "Task sdn_create={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
+
         db_sdn = None
         db_sdn_update = {}
         RO_sdn_id = None
         exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
         try:
             step = "Getting sdn from db"
             db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
@@ -612,6 +742,9 @@ class SdnLcm(LcmBase):
             db_sdn_update["_admin.deployed.RO"] = RO_sdn_id
             db_sdn_update["_admin.operationalState"] = "ENABLED"
             self.logger.debug(logging_text + "Exit Ok RO_sdn_id={}".format(RO_sdn_id))
+            # Mark the SDN 'create' HA task as successful
+            operationState_HA = 'COMPLETED'
+            detailed_status_HA = 'Done'
             return
 
         except (ROclient.ROClientException, DbException) as e:
@@ -624,23 +757,45 @@ class SdnLcm(LcmBase):
             if exc and db_sdn:
                 db_sdn_update["_admin.operationalState"] = "ERROR"
                 db_sdn_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the SDN 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_sdn and db_sdn_update:
                     self.update_db_2("sdns", sdn_id, db_sdn_update)
+                # Register the SDN 'create' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('sdn', 'create', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)
 
     async def edit(self, sdn_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'sdn_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, and the HA check always returns True
+        op_id = sdn_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('sdn', 'edit', op_id):
+            return
+
         sdn_id = sdn_content["_id"]
         sdn_content.pop("op_id", None)
         logging_text = "Task sdn_edit={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
+
         db_sdn = None
         db_sdn_update = {}
         exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
         step = "Getting sdn from db"
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('sdn', 'edit', op_id)
+
             db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
             RO_sdn_id = None
             if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
@@ -658,6 +813,9 @@ class SdnLcm(LcmBase):
                 if sdn_RO:
                     await RO.edit("sdn", RO_sdn_id, descriptor=sdn_RO)
                 db_sdn_update["_admin.operationalState"] = "ENABLED"
+                # Mark the SDN 'edit' HA task as successful
+                operationState_HA = 'COMPLETED'
+                detailed_status_HA = 'Done'
 
             self.logger.debug(logging_text + "Exit Ok RO_sdn_id={}".format(RO_sdn_id))
             return
@@ -672,21 +830,44 @@ class SdnLcm(LcmBase):
             if exc and db_sdn:
                 db_sdn["_admin.operationalState"] = "ERROR"
                 db_sdn["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the SDN 'edit' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_sdn_update:
                     self.update_db_2("sdns", sdn_id, db_sdn_update)
+                # Register the SDN 'edit' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('sdn', 'edit', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)
 
-    async def delete(self, sdn_id, order_id):
+    async def delete(self, sdn_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, and the HA check always returns True
+        op_id = sdn_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('sdn', 'delete', op_id):
+            return
+
+        sdn_id = sdn_content["_id"]
         logging_text = "Task sdn_delete={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
+
         db_sdn = None
         db_sdn_update = {}
         exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
         step = "Getting sdn from db"
         try:
+            # wait for any previous tasks in process
+            await self.lcm_tasks.waitfor_related_HA('sdn', 'delete', op_id)
+
             db_sdn = self.db.get_one("sdns", {"_id": sdn_id})
             if db_sdn.get("_admin") and db_sdn["_admin"].get("deployed") and db_sdn["_admin"]["deployed"].get("RO"):
                 RO_sdn_id = db_sdn["_admin"]["deployed"]["RO"]
@@ -717,9 +898,17 @@ class SdnLcm(LcmBase):
             if exc and db_sdn:
                 db_sdn["_admin.operationalState"] = "ERROR"
                 db_sdn["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the SDN 'delete' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+                self.lcm_tasks.register_HA('sdn', 'delete', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
             try:
                 if db_sdn and db_sdn_update:
                     self.update_db_2("sdns", sdn_id, db_sdn_update)
+                # If the SDN 'delete' HA task was succesful, the DB entry has been deleted,
+                # which means that there is nowhere to register this task, so do nothing here.
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)
