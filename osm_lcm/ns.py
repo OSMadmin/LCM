@@ -1604,13 +1604,49 @@ class NsLcm(LcmBase):
         }
         return nslcmop
 
+    def _get_terminate_primitive_params(self, seq, vnf_index):
+        primitive = seq.get('name')
+        primitive_params = {}
+        params = {
+            "member_vnf_index": vnf_index,
+            "primitive": primitive,
+            "primitive_params": primitive_params,
+        }
+        desc_params = {}
+        return self._map_primitive_params(seq, params, desc_params)
+
+    def _add_suboperation(self, db_nslcmop, nslcmop_id, vnf_index, vdu_id, vdu_count_index,
+                          vdu_name, primitive, mapped_primitive_params):
+        # Create the "_admin.operations" array, or append operation if array already exists
+        key_admin = '_admin'
+        key_operations = 'operations'
+        db_nslcmop_update = {}
+        db_nslcmop_admin = db_nslcmop.get(key_admin, {})
+        op_list = db_nslcmop_admin.get(key_operations)
+        new_op = {'member_vnf_index': vnf_index,
+                  'vdu_id': vdu_id,
+                  'vdu_count_index': vdu_count_index,
+                  'primitive': primitive,
+                  'primitive_params': mapped_primitive_params}
+        if db_nslcmop_admin:
+            if not op_list:
+                # First operation, create key 'operations' with current operation as first list element
+                db_nslcmop_admin.update({key_operations: [new_op]})
+                op_list = db_nslcmop_admin.get(key_operations)
+            else:
+                # Not first operation, append operation to existing list
+                op_list.append(new_op)
+
+        db_nslcmop_update['_admin.operations'] = op_list
+        self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+
     async def _terminate_action(self, db_nslcmop, nslcmop_id, nsr_id):
         """ Create a primitive with params from VNFD
             Called from terminate() before deleting instance
             Calls action() to execute the primitive """
         logging_text = "Task ns={} _terminate_action={} ".format(nsr_id, nslcmop_id)
-        db_vnfds = {}
         db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
+        db_vnfds = {}
         # Loop over VNFRs
         for vnfr in db_vnfrs_list:
             vnfd_id = vnfr["vnfd-id"]
@@ -1625,39 +1661,43 @@ class NsLcm(LcmBase):
             # Get the primitive's sorted sequence list
             seq_list = self._get_terminate_config_primitive_seq_list(vnfd)
             for seq in seq_list:
-                # For each sequence in list, call terminate action
+                # For each sequence in list, get primitive and call _ns_execute_primitive()
                 step = "Calling terminate action for vnf_member_index={} primitive={}".format(
                     vnf_index, seq.get("name"))
                 self.logger.debug(logging_text + step)
-                # Create the primitive for each sequence
-                operation = "action"
-                # primitive, i.e. "primitive": "touch"
+                # Create the primitive for each sequence, i.e. "primitive": "touch"
                 primitive = seq.get('name')
-                primitive_params = {}
-                params = {
-                    "member_vnf_index": vnf_index,
-                    "primitive": primitive,
-                    "primitive_params": primitive_params,
-                }
-                nslcmop_primitive = self._create_nslcmop(nsr_id, operation, params)
-                # Get a copy of db_nslcmop 'admin' part
-                db_nslcmop_action = {"_admin": deepcopy(db_nslcmop["_admin"])}
-                # Update db_nslcmop with the primitive data
-                db_nslcmop_action.update(nslcmop_primitive)
-                # Create a new db entry for the created primitive, returns the new ID.
-                # (The ID is normally obtained from Kafka.)
-                nslcmop_terminate_action_id = self.db.create(
-                    "nslcmops", db_nslcmop_action)
-                # Execute the primitive
-                nslcmop_operation_state, nslcmop_operation_state_detail = await self.action(
-                    nsr_id, nslcmop_terminate_action_id)
+                mapped_primitive_params = self._get_terminate_primitive_params(seq, vnf_index)
+                # The following 3 parameters are currently set to None for 'terminate':
+                # vdu_id, vdu_count_index, vdu_name
+                vdu_id = db_nslcmop["operationParams"].get("vdu_id")
+                vdu_count_index = db_nslcmop["operationParams"].get("vdu_count_index")
+                vdu_name = db_nslcmop["operationParams"].get("vdu_name")
+                # Add suboperation
+                self._add_suboperation(db_nslcmop,
+                                       nslcmop_id,
+                                       vnf_index,
+                                       vdu_id,
+                                       vdu_count_index,
+                                       vdu_name,
+                                       primitive,
+                                       mapped_primitive_params)
+                # Suboperations: Call _ns_execute_primitive() instead of action()
+                db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+                nsr_deployed = db_nsr["_admin"]["deployed"]
+                result, result_detail = await self._ns_execute_primitive(
+                    nsr_deployed, vnf_index, vdu_id, vdu_name, vdu_count_index, primitive,
+                    mapped_primitive_params)
+
+                # nslcmop_operation_state, nslcmop_operation_state_detail = await self.action(
+                #    nsr_id, nslcmop_terminate_action_id)
                 # Launch Exception if action() returns other than ['COMPLETED', 'PARTIALLY_COMPLETED']
-                nslcmop_operation_states_ok = ['COMPLETED', 'PARTIALLY_COMPLETED']
-                if nslcmop_operation_state not in nslcmop_operation_states_ok:
+                result_ok = ['COMPLETED', 'PARTIALLY_COMPLETED']
+                if result not in result_ok:
                     raise LcmException(
                         "terminate_primitive_action for vnf_member_index={}",
                         " primitive={} fails with error {}".format(
-                            vnf_index, seq.get("name"), nslcmop_operation_state_detail))
+                            vnf_index, seq.get("name"), result_detail))
 
     async def terminate(self, nsr_id, nslcmop_id):
 
@@ -2240,7 +2280,7 @@ class NsLcm(LcmBase):
                         raise LcmException("reached the limit of {} (max-instance-count) "
                                            "scaling-out operations for the "
                                            "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
-                        
+
                 nb_scale_op += 1
                 vdu_scaling_info["scaling_direction"] = "OUT"
                 vdu_scaling_info["vdu-create"] = {}
