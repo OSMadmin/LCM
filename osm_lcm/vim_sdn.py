@@ -29,7 +29,8 @@ __author__ = "Alfonso Tierno"
 
 class VimLcm(LcmBase):
     # values that are encrypted at vim config because they are passwords
-    vim_config_encrypted = ("admin_password", "nsx_password", "vcenter_password")
+    vim_config_encrypted = {"1.1": ("admin_password", "nsx_password", "vcenter_password"),
+                            "default": ("admin_password", "nsx_password", "vcenter_password", "vrops_password")}
 
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
         """
@@ -105,7 +106,9 @@ class VimLcm(LcmBase):
                     del vim_account_RO["config"]["sdn-controller"]
                 if "sdn-port-mapping" in vim_account_RO["config"]:
                     del vim_account_RO["config"]["sdn-port-mapping"]
-                for p in self.vim_config_encrypted:
+                vim_config_encrypted_keys = self.vim_config_encrypted.get(schema_version) or \
+                    self.vim_config_encrypted.get("default")
+                for p in vim_config_encrypted_keys:
                     if vim_account_RO["config"].get(p):
                         vim_account_RO["config"][p] = self.db.decrypt(vim_account_RO["config"][p],
                                                                       schema_version=schema_version,
@@ -223,7 +226,9 @@ class VimLcm(LcmBase):
                 if "config" in vim_content:
                     vim_account_RO["config"] = vim_content["config"]
                 if vim_content.get("config"):
-                    for p in self.vim_config_encrypted:
+                    vim_config_encrypted_keys = self.vim_config_encrypted.get(schema_version) or \
+                        self.vim_config_encrypted.get("default")
+                    for p in vim_config_encrypted_keys:
                         if vim_content["config"].get(p):
                             vim_account_RO["config"][p] = self.db.decrypt(vim_content["config"][p],
                                                                           schema_version=schema_version,
