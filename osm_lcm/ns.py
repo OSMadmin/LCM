@@ -2272,14 +2272,12 @@ class NsLcm(LcmBase):
             vdu_scaling_info = {"scaling_group_name": scaling_group, "vdu": []}
             if scaling_type == "SCALE_OUT":
                 # count if max-instance-count is reached
-                if "max-instance-count" in scaling_descriptor and scaling_descriptor["max-instance-count"] is not None:
-                    max_instance_count = int(scaling_descriptor["max-instance-count"])
-
-                    # self.logger.debug("MAX_INSTANCE_COUNT is {}".format(scaling_descriptor["max-instance-count"]))
-                    if nb_scale_op >= max_instance_count:
-                        raise LcmException("reached the limit of {} (max-instance-count) "
-                                           "scaling-out operations for the "
-                                           "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
+                max_instance_count = scaling_descriptor.get("max-instance-count", 10)
+                # self.logger.debug("MAX_INSTANCE_COUNT is {}".format(max_instance_count))
+                if nb_scale_op >= max_instance_count:
+                    raise LcmException("reached the limit of {} (max-instance-count) "
+                                       "scaling-out operations for the "
+                                       "scaling-group-descriptor '{}'".format(nb_scale_op, scaling_group))
 
                 nb_scale_op += 1
                 vdu_scaling_info["scaling_direction"] = "OUT"
