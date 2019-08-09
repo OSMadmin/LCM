@@ -1089,7 +1089,9 @@ class TestMyNS(asynctest.TestCase):
             self.my_ns.RO.get_list = asynctest.CoroutineMock(self.my_ns.RO.get_list, return_value=[])
             self.my_ns.RO.create = asynctest.CoroutineMock(self.my_ns.RO.create, side_effect=self._ro_create())
             self.my_ns.RO.show = asynctest.CoroutineMock(self.my_ns.RO.show, side_effect=self._ro_show())
-            self.my_ns.RO.create_action = asynctest.CoroutineMock(self.my_ns.RO.create_action)
+            self.my_ns.RO.create_action = asynctest.CoroutineMock(self.my_ns.RO.create_action,
+                                                                  return_value={"vm-id": {"vim_result": 200,
+                                                                                          "description": "done"}})
 
     @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
     async def test_instantiate(self):
