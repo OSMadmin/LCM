@@ -24,8 +24,8 @@ import functools
 import traceback
 from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound, TemplateSyntaxError
 
-import ROclient
-from lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
+from osm_lcm import ROclient
+from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
 
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
@@ -102,6 +102,7 @@ class NsLcm(LcmBase):
             juju_public_key=vca_config.get('pubkey'),
             ca_cert=vca_config.get('cacert'),
         )
+        self.RO = ROclient.ROClient(self.loop, **self.ro_config)
 
     def vnfd2RO(self, vnfd, new_id=None, additionalParams=None, nsrId=None):
         """
@@ -1034,7 +1035,6 @@ class NsLcm(LcmBase):
                                        .format(vca_deployed["member-vnf-index"], vca_deployed["vdu_id"]))
 
             # deploy RO
-            RO = ROclient.ROClient(self.loop, **self.ro_config)
             # get vnfds, instantiate at RO
             for c_vnf in nsd.get("constituent-vnfd", ()):
                 member_vnf_index = c_vnf["member-vnf-index"]
@@ -1057,7 +1057,7 @@ class NsLcm(LcmBase):
 
                 # look if present
                 RO_update = {"member-vnf-index": member_vnf_index}
-                vnfd_list = await RO.get_list("vnfd", filter_by={"osm_id": vnfd_id_RO})
+                vnfd_list = await self.RO.get_list("vnfd", filter_by={"osm_id": vnfd_id_RO})
                 if vnfd_list:
                     RO_update["id"] = vnfd_list[0]["uuid"]
                     self.logger.debug(logging_text + "vnfd='{}'  member_vnf_index='{}' exists at RO. Using RO_id={}".
@@ -1065,7 +1065,7 @@ class NsLcm(LcmBase):
                 else:
                     vnfd_RO = self.vnfd2RO(vnfd, vnfd_id_RO, db_vnfrs[c_vnf["member-vnf-index"]].
                                            get("additionalParamsForVnf"), nsr_id)
-                    desc = await RO.create("vnfd", descriptor=vnfd_RO)
+                    desc = await self.RO.create("vnfd", descriptor=vnfd_RO)
                     RO_update["id"] = desc["uuid"]
                     self.logger.debug(logging_text + "vnfd='{}' member_vnf_index='{}' created at RO. RO_id={}".format(
                         vnfd_ref, member_vnf_index, desc["uuid"]))
@@ -1080,7 +1080,7 @@ class NsLcm(LcmBase):
 
             RO_osm_nsd_id = "{}.{}.{}".format(nsr_id, RO_descriptor_number, nsd_ref[:23])
             RO_descriptor_number += 1
-            nsd_list = await RO.get_list("nsd", filter_by={"osm_id": RO_osm_nsd_id})
+            nsd_list = await self.RO.get_list("nsd", filter_by={"osm_id": RO_osm_nsd_id})
             if nsd_list:
                 db_nsr_update["_admin.deployed.RO.nsd_id"] = RO_nsd_uuid = nsd_list[0]["uuid"]
                 self.logger.debug(logging_text + "nsd={} exists at RO. Using RO_id={}".format(
@@ -1098,7 +1098,7 @@ class NsLcm(LcmBase):
                         member_vnf_index = cp["member-vnf-index-ref"]
                         cp["vnfd-id-ref"] = vnf_index_2_RO_id[member_vnf_index]
 
-                desc = await RO.create("nsd", descriptor=nsd_RO)
+                desc = await self.RO.create("nsd", descriptor=nsd_RO)
                 db_nsr_update["_admin.nsState"] = "INSTANTIATED"
                 db_nsr_update["_admin.deployed.RO.nsd_id"] = RO_nsd_uuid = desc["uuid"]
                 self.logger.debug(logging_text + "nsd={} created at RO. RO_id={}".format(nsd_ref, RO_nsd_uuid))
@@ -1111,18 +1111,18 @@ class NsLcm(LcmBase):
                 try:
                     step = db_nsr_update["detailed-status"] = "Looking for existing ns at RO"
                     # self.logger.debug(logging_text + step + " RO_ns_id={}".format(RO_nsr_id))
-                    desc = await RO.show("ns", RO_nsr_id)
+                    desc = await self.RO.show("ns", RO_nsr_id)
                 except ROclient.ROClientException as e:
                     if e.http_code != HTTPStatus.NOT_FOUND:
                         raise
                     RO_nsr_id = db_nsr_update["_admin.deployed.RO.nsr_id"] = None
                 if RO_nsr_id:
-                    ns_status, ns_status_info = RO.check_ns_status(desc)
+                    ns_status, ns_status_info = self.RO.check_ns_status(desc)
                     db_nsr_update["_admin.deployed.RO.nsr_status"] = ns_status
                     if ns_status == "ERROR":
                         step = db_nsr_update["detailed-status"] = "Deleting ns at RO. RO_ns_id={}".format(RO_nsr_id)
                         self.logger.debug(logging_text + step)
-                        await RO.delete("ns", RO_nsr_id)
+                        await self.RO.delete("ns", RO_nsr_id)
                         RO_nsr_id = db_nsr_update["_admin.deployed.RO.nsr_id"] = None
             if not RO_nsr_id:
                 step = db_nsr_update["detailed-status"] = "Checking dependencies"
@@ -1152,9 +1152,9 @@ class NsLcm(LcmBase):
                 RO_ns_params = self.ns_params_2_RO(ns_params, nsd, db_vnfds_ref, n2vc_key_list)
 
                 step = db_nsr_update["detailed-status"] = "Creating ns at RO"
-                desc = await RO.create("ns", descriptor=RO_ns_params,
-                                       name=db_nsr["name"],
-                                       scenario=RO_nsd_uuid)
+                desc = await self.RO.create("ns", descriptor=RO_ns_params,
+                                            name=db_nsr["name"],
+                                            scenario=RO_nsd_uuid)
                 RO_nsr_id = db_nsr_update["_admin.deployed.RO.nsr_id"] = desc["uuid"]
                 db_nsr_update["_admin.nsState"] = "INSTANTIATED"
                 db_nsr_update["_admin.deployed.RO.nsr_status"] = "BUILD"
@@ -1167,8 +1167,8 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + step)
 
             while time() <= start_deploy + self.total_deploy_timeout:
-                desc = await RO.show("ns", RO_nsr_id)
-                ns_status, ns_status_info = RO.check_ns_status(desc)
+                desc = await self.RO.show("ns", RO_nsr_id)
+                ns_status, ns_status_info = self.RO.check_ns_status(desc)
                 db_nsr_update["_admin.deployed.RO.nsr_status"] = ns_status
                 if ns_status == "ERROR":
                     raise ROclient.ROClientException(ns_status_info)
@@ -1775,7 +1775,6 @@ class NsLcm(LcmBase):
 
             # remove from RO
             RO_fail = False
-            RO = ROclient.ROClient(self.loop, **self.ro_config)
 
             # Delete ns
             RO_nsr_id = RO_delete_action = None
@@ -1788,7 +1787,7 @@ class NsLcm(LcmBase):
                     self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
                     self.logger.debug(logging_text + step)
-                    desc = await RO.delete("ns", RO_nsr_id)
+                    desc = await self.RO.delete("ns", RO_nsr_id)
                     RO_delete_action = desc["action_id"]
                     db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = RO_delete_action
                     db_nsr_update["_admin.deployed.RO.nsr_id"] = None
@@ -1802,9 +1801,9 @@ class NsLcm(LcmBase):
 
                     delete_timeout = 20 * 60   # 20 minutes
                     while delete_timeout > 0:
-                        desc = await RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
-                                             extra_item_id=RO_delete_action)
-                        ns_status, ns_status_info = RO.check_action_status(desc)
+                        desc = await self.RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
+                                                  extra_item_id=RO_delete_action)
+                        ns_status, ns_status_info = self.RO.check_action_status(desc)
                         if ns_status == "ERROR":
                             raise ROclient.ROClientException(ns_status_info)
                         elif ns_status == "BUILD":
@@ -1846,7 +1845,7 @@ class NsLcm(LcmBase):
                 try:
                     step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] =\
                         "Deleting nsd at RO"
-                    await RO.delete("nsd", RO_nsd_id)
+                    await self.RO.delete("nsd", RO_nsd_id)
                     self.logger.debug(logging_text + "RO_nsd_id={} deleted".format(RO_nsd_id))
                     db_nsr_update["_admin.deployed.RO.nsd_id"] = None
                 except ROclient.ROClientException as e:
@@ -1871,7 +1870,7 @@ class NsLcm(LcmBase):
                         step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] =\
                             "Deleting member_vnf_index={} RO_vnfd_id={} from RO".format(
                                 vnf_deployed["member-vnf-index"], RO_vnfd_id)
-                        await RO.delete("vnfd", RO_vnfd_id)
+                        await self.RO.delete("vnfd", RO_vnfd_id)
                         self.logger.debug(logging_text + "RO_vnfd_id={} deleted".format(RO_vnfd_id))
                         db_nsr_update["_admin.deployed.RO.vnfd.{}.id".format(index)] = None
                     except ROclient.ROClientException as e:
@@ -2361,8 +2360,7 @@ class NsLcm(LcmBase):
 
             if RO_scaling_info:
                 scale_process = "RO"
-                RO = ROclient.ROClient(self.loop, **self.ro_config)
-                RO_desc = await RO.create_action("ns", RO_nsr_id, {"vdu-scaling": RO_scaling_info})
+                RO_desc = await self.RO.create_action("ns", RO_nsr_id, {"vdu-scaling": RO_scaling_info})
                 db_nsr_update["_admin.scaling-group.{}.nb-scale-op".format(admin_scale_index)] = nb_scale_op
                 db_nsr_update["_admin.scaling-group.{}.time".format(admin_scale_index)] = time()
                 # wait until ready
@@ -2377,9 +2375,9 @@ class NsLcm(LcmBase):
                 deployment_timeout = 1 * 3600   # One hour
                 while deployment_timeout > 0:
                     if not RO_task_done:
-                        desc = await RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
-                                             extra_item_id=RO_nslcmop_id)
-                        ns_status, ns_status_info = RO.check_action_status(desc)
+                        desc = await self.RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
+                                                  extra_item_id=RO_nslcmop_id)
+                        ns_status, ns_status_info = self.RO.check_action_status(desc)
                         if ns_status == "ERROR":
                             raise ROclient.ROClientException(ns_status_info)
                         elif ns_status == "BUILD":
@@ -2391,8 +2389,8 @@ class NsLcm(LcmBase):
                         else:
                             assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
                     else:
-                        desc = await RO.show("ns", RO_nsr_id)
-                        ns_status, ns_status_info = RO.check_ns_status(desc)
+                        desc = await self.RO.show("ns", RO_nsr_id)
+                        ns_status, ns_status_info = self.RO.check_ns_status(desc)
                         if ns_status == "ERROR":
                             raise ROclient.ROClientException(ns_status_info)
                         elif ns_status == "BUILD":
@@ -2404,7 +2402,7 @@ class NsLcm(LcmBase):
                                 self.scale_vnfr(db_vnfr, vdu_create=vdu_create, vdu_delete=vdu_delete)
                                 vnfr_scaled = True
                             try:
-                                desc = await RO.show("ns", RO_nsr_id)
+                                desc = await self.RO.show("ns", RO_nsr_id)
                                 # nsr_deployed["nsr_ip"] = RO.get_ns_vnf_info(desc)
                                 self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
                                 break
