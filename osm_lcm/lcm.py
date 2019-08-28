@@ -23,14 +23,12 @@ import logging
 import logging.handlers
 import getopt
 import sys
-import ROclient
-import ns
-import vim_sdn
-import netslice
-from time import time, sleep
-from lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
 
-# from osm_lcm import version as lcm_version, version_date as lcm_version_date, ROclient
+from osm_lcm import ROclient, ns, vim_sdn, netslice
+from time import time, sleep
+from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
+from osm_lcm import version as lcm_version, version_date as lcm_version_date
+
 from osm_common import dbmemory, dbmongo, fslocal, msglocal, msgkafka
 from osm_common import version as common_version
 from osm_common.dbbase import DbException
@@ -42,12 +40,12 @@ from n2vc import version as n2vc_version
 
 
 __author__ = "Alfonso Tierno"
-min_RO_version = [0, 6, 3]
+min_RO_version = "0.6.3"
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.19"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
-lcm_version = '0.1.41'
-lcm_version_date = '2019-06-19'
+# lcm_version = '0.1.41'
+# lcm_version_date = '2019-06-19'
 health_check_file = path.expanduser("~") + "/time_last_ping"   # TODO find better location for this file
 
 
@@ -186,7 +184,7 @@ class Lcm:
         try:
             RO = ROclient.ROClient(self.loop, **self.ro_config)
             RO_version = await RO.get_version()
-            if RO_version < min_RO_version:
+            if versiontuple(RO_version) < versiontuple(min_RO_version):
                 raise LcmException("Not compatible osm/RO version '{}.{}.{}'. Needed '{}.{}.{}' or higher".format(
                     *RO_version, *min_RO_version
                 ))

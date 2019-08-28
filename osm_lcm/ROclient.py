@@ -617,7 +617,7 @@ class ROClient:
                 for word in str(response_text).split(" "):
                     if "." in word:
                         version_text, _, _ = word.partition("-")
-                        return list(map(int, version_text.split(".")))
+                        return version_text
                 raise ROClientException("Got invalid version text: '{}'".format(response_text), http_code=500)
         except aiohttp.errors.ClientOSError as e:
             raise ROClientException(e, http_code=504)

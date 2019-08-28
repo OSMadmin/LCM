@@ -1,13 +1,25 @@
 # -*- coding: utf-8 -*-
+##
+# Licensed under the Apache License, Version 2.0 (the "License"); you may
+# not use this file except in compliance with the License. You may obtain
+# a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
+##
 
 import asyncio
 import logging
 import logging.handlers
 import traceback
-import ns
-from ns import populate_dict as populate_dict
-import ROclient
-from lcm_utils import LcmException, LcmBase
+from osm_lcm.ns import populate_dict as populate_dict
+from osm_lcm import ROclient, ns
+from osm_lcm.lcm_utils import LcmException, LcmBase
 from osm_common.dbbase import DbException
 from time import time
 from copy import deepcopy

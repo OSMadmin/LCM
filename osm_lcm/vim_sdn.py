@@ -18,8 +18,8 @@
 
 import logging
 import logging.handlers
-import ROclient
-from lcm_utils import LcmException, LcmBase
+from osm_lcm import ROclient
+from osm_lcm.lcm_utils import LcmException, LcmBase
 from osm_common.dbbase import DbException
 from copy import deepcopy
 
