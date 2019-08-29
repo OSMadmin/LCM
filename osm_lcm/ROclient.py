@@ -285,17 +285,33 @@ class ROClient:
         net_done = 0
         vm_done = 0
 
+        def _get_ref(desc):  # return an identification for the network or vm. Try vim_id if exist, if not descriptor id
+            # for net
+            if desc.get("vim_net_id"):
+                return "'vim-id={}'".format(desc["vim_net_id"])
+            elif desc.get("ns_net_osm_id"):
+                return "'nsd-vld-id={}'".format(desc["ns_net_osm_id"])
+            elif desc.get("vnf_net_osm_id"):
+                return "'vnfd-vld-id={}'".format(desc["vnf_net_osm_id"])
+            # for VM
+            elif desc.get("vim_vm_id"):
+                return "'vim-id={}'".format(desc["vim_vm_id"])
+            elif desc.get("vdu_osm_id"):
+                return "'vnfd-vdu-id={}'".format(desc["vdu_osm_id"])
+            else:
+                return ""
+
         for net in ns_descriptor["nets"]:
             net_total += 1
             if net["status"] in ("ERROR", "VIM_ERROR"):
-                return "ERROR", net["error_msg"]
+                return "ERROR", "VIM network ({}) on error: {}".format(_get_ref(net), net["error_msg"])
             elif net["status"] == "ACTIVE":
                 net_done += 1
         for vnf in ns_descriptor["vnfs"]:
             for vm in vnf["vms"]:
                 vm_total += 1
                 if vm["status"] in ("ERROR", "VIM_ERROR"):
-                    return "ERROR", vm["error_msg"]
+                    return "ERROR", "VIM VM ({}) on error: {}".format(_get_ref(vm), vm["error_msg"])
                 elif vm["status"] == "ACTIVE":
                     vm_done += 1
 

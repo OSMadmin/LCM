@@ -601,12 +601,13 @@ class NsLcm(LcmBase):
                                     break
                             else:
                                 raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vdur={} interface={} "
-                                                   "at RO info".format(vnf_index, vdur["vdu-id-ref"], ifacer["name"]))
+                                                   "from VIM info".format(vnf_index, vdur["vdu-id-ref"],
+                                                                          ifacer["name"]))
                         vnfr_update["vdur.{}".format(vdu_index)] = vdur
                         break
                     else:
-                        raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vdur={} count_index={} at "
-                                           "RO info".format(vnf_index, vdur["vdu-id-ref"], vdur["count-index"]))
+                        raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vdur={} count_index={} from "
+                                           "VIM info".format(vnf_index, vdur["vdu-id-ref"], vdur["count-index"]))
 
                 for vld_index, vld in enumerate(get_iterable(db_vnfr, "vld")):
                     for net_RO in get_iterable(nsr_desc_RO, "nets"):
@@ -619,14 +620,14 @@ class NsLcm(LcmBase):
                         vnfr_update["vld.{}".format(vld_index)] = vld
                         break
                     else:
-                        raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vld={} at RO info".format(
+                        raise LcmException("ns_update_vnfr: Not found member_vnf_index={} vld={} from VIM info".format(
                             vnf_index, vld["id"]))
 
                 self.update_db_2("vnfrs", db_vnfr["_id"], vnfr_update)
                 break
 
             else:
-                raise LcmException("ns_update_vnfr: Not found member_vnf_index={} at RO info".format(vnf_index))
+                raise LcmException("ns_update_vnfr: Not found member_vnf_index={} from VIM info".format(vnf_index))
 
     async def instantiate(self, nsr_id, nslcmop_id):
 
@@ -1151,7 +1152,7 @@ class NsLcm(LcmBase):
                 n2vc_key_list.append(n2vc_key)
                 RO_ns_params = self.ns_params_2_RO(ns_params, nsd, db_vnfds_ref, n2vc_key_list)
 
-                step = db_nsr_update["detailed-status"] = "Creating ns at RO"
+                step = db_nsr_update["detailed-status"] = "Deploying ns at VIM"
                 desc = await self.RO.create("ns", descriptor=RO_ns_params,
                                             name=db_nsr["name"],
                                             scenario=RO_nsd_uuid)
@@ -1162,7 +1163,7 @@ class NsLcm(LcmBase):
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             # wait until NS is ready
-            step = ns_status_detailed = detailed_status = "Waiting ns ready at RO. RO_id={}".format(RO_nsr_id)
+            step = ns_status_detailed = detailed_status = "Waiting VIM to deploy ns. RO_id={}".format(RO_nsr_id)
             detailed_status_old = None
             self.logger.debug(logging_text + step)
 
@@ -1783,7 +1784,8 @@ class NsLcm(LcmBase):
                 RO_delete_action = nsr_deployed["RO"].get("nsr_delete_action_id")
             try:
                 if RO_nsr_id:
-                    step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] = "Deleting ns at RO"
+                    step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] = \
+                        "Deleting ns from VIM"
                     self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
                     self.logger.debug(logging_text + step)
@@ -1844,7 +1846,7 @@ class NsLcm(LcmBase):
                 RO_nsd_id = nsr_deployed["RO"]["nsd_id"]
                 try:
                     step = db_nsr_update["detailed-status"] = db_nslcmop_update["detailed-status"] =\
-                        "Deleting nsd at RO"
+                        "Deleting nsd from RO"
                     await self.RO.delete("nsd", RO_nsd_id)
                     self.logger.debug(logging_text + "RO_nsd_id={} deleted".format(RO_nsd_id))
                     db_nsr_update["_admin.deployed.RO.nsd_id"] = None
@@ -2254,7 +2256,7 @@ class NsLcm(LcmBase):
             #         break
 
             # TODO check if ns is in a proper status
-            step = "Sending scale order to RO"
+            step = "Sending scale order to VIM"
             nb_scale_op = 0
             if not db_nsr["_admin"].get("scaling-group"):
                 self.update_db_2("nsrs", nsr_id, {"_admin.scaling-group": [{"name": scaling_group, "nb-scale-op": 0}]})
@@ -2384,7 +2386,7 @@ class NsLcm(LcmBase):
                             detailed_status = step + "; {}".format(ns_status_info)
                         elif ns_status == "ACTIVE":
                             RO_task_done = True
-                            step = detailed_status = "Waiting ns ready at RO. RO_id={}".format(RO_nsr_id)
+                            step = detailed_status = "Waiting VIM to deploy ns. RO_id={}".format(RO_nsr_id)
                             self.logger.debug(logging_text + step)
                         else:
                             assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
