@@ -31,7 +31,7 @@ from uuid import uuid4
 
 __author__ = "Alfonso Tierno <alfonso.tiernosepulveda@telefonica.com>"
 
-""" Perform unittests using asynctest 
+""" Perform unittests using asynctest of osm_lcm.ns module
 It allows, if some testing ENV are supplied, testing without mocking some external libraries for debugging:
     OSMLCMTEST_NS_PUBKEY: public ssh-key returned by N2VC to inject to VMs
     OSMLCMTEST_PACKAGES_PATH: path where the vnf-packages are stored (de-compressed), each one on a 'vnfd_id' folder
@@ -39,7 +39,7 @@ It allows, if some testing ENV are supplied, testing without mocking some extern
     OSMLCMTEST_VCA_NOMOCK: Do no mock the VCA, N2VC library, for debugging it
     OSMLCMTEST_RO_NOMOCK: Do no mock the ROClient library, for debugging it
     OSMLCMTEST_DB_NOMOCK: Do no mock the database library, for debugging it
-    OSMLCMTEST_FS_NOMOCK: Do no mock the File Sorage library, for debugging it
+    OSMLCMTEST_FS_NOMOCK: Do no mock the File Storage library, for debugging it
     OSMLCMTEST_LOGGING_NOMOCK: Do no mock the logging
     OSMLCM_VCA_XXX: configuration of N2VC
     OSMLCM_RO_XXX: configuration of RO
@@ -48,9 +48,11 @@ It allows, if some testing ENV are supplied, testing without mocking some extern
 
 vca_config = {   # TODO replace with os.get_env to get other configurations
     "host": getenv("OSMLCM_VCA_HOST", "vca"),
-    "port": 17070,
-    "user": "admin",
-    "secret": "secret",
+    "port": getenv("OSMLCM_VCA_PORT", 17070),
+    "user": getenv("OSMLCM_VCA_USER", "admin"),
+    "secret": getenv("OSMLCM_VCA_SECRET", "vca"),
+    "pubkey": getenv("OSMLCM_VCA_PUBKEY", None),
+    'cacert': getenv("OSMLCM_VCA_CACERT", None)
 }
 
 ro_config = {
