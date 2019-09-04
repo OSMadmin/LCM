@@ -53,7 +53,7 @@ def get_iterable(in_dict, in_key):
 
 def populate_dict(target_dict, key_list, value):
     """
-    Upate target_dict creating nested dictionaries with the key_list. Last key_list item is asigned the value.
+    Update target_dict creating nested dictionaries with the key_list. Last key_list item is asigned the value.
     Example target_dict={K: J}; key_list=[a,b,c];  target_dict will be {K: J, a: {b: {c: value}}}
     :param target_dict: dictionary to be changed
     :param key_list: list of keys to insert at target_dict
@@ -101,6 +101,7 @@ class NsLcm(LcmBase):
             artifacts=None,
             juju_public_key=vca_config.get('pubkey'),
             ca_cert=vca_config.get('cacert'),
+            api_proxy=vca_config.get('apiproxy')
         )
         self.RO = ROclient.ROClient(self.loop, **self.ro_config)
 
@@ -456,7 +457,7 @@ class NsLcm(LcmBase):
                     for vld_id, instance_scenario_id in vld_params["ns-net"].items():
                         RO_vld_ns_net = {"instance_scenario_id": instance_scenario_id, "osm_id": vld_id}
                 if RO_vld_ns_net:
-                    populate_dict(RO_ns_params, ("networks", vld_params["name"], "use-network"), RO_vld_ns_net)            
+                    populate_dict(RO_ns_params, ("networks", vld_params["name"], "use-network"), RO_vld_ns_net)
             if "vnfd-connection-point-ref" in vld_params:
                 for cp_params in vld_params["vnfd-connection-point-ref"]:
                     # look for interface
@@ -653,6 +654,7 @@ class NsLcm(LcmBase):
         exc = None
         try:
             # wait for any previous tasks in process
+            step = "Waiting for previous tasks"
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
             step = "Getting nslcmop={} from db".format(nslcmop_id)
@@ -721,7 +723,7 @@ class NsLcm(LcmBase):
 
                 machine_spec = {}
                 if native_charm:
-                    machine_spec["username"] = charm_params.get("username"),
+                    machine_spec["username"] = charm_params.get("username")
                     machine_spec["hostname"] = charm_params.get("rw_mgmt_ip")
 
                 # Note: The charm needs to exist on disk at the location
@@ -848,7 +850,6 @@ class NsLcm(LcmBase):
                         if vdu_config["juju"].get("proxy") is False:
                             # native_charm, will be deployed after VM. Skip
                             proxy_charm = None
-
                         if proxy_charm:
                             if not vca_model_name:
                                 step = "creating VCA model name"
@@ -882,7 +883,6 @@ class NsLcm(LcmBase):
                 if ns_config["juju"].get("proxy") is False:
                     # native_charm, will be deployed after VM. Skip
                     proxy_charm = None
-
                 if proxy_charm:
                     step = "deploying proxy charm to configure ns"
                     # TODO is NS magmt IP address needed?
@@ -1281,8 +1281,8 @@ class NsLcm(LcmBase):
                 vnf_config = vnfd.get("vnf-configuration")
                 if vnf_config and vnf_config.get("juju"):
                     native_charm = vnf_config["juju"].get("proxy") is False
-
-                    if native_charm:
+                    proxy_charm = vnf_config["juju"]["charm"]
+                    if native_charm and proxy_charm:
                         if not vca_model_name:
                             step = "creating VCA model name '{}'".format(nsr_id)
                             self.logger.debug(logging_text + step)
@@ -1291,6 +1291,8 @@ class NsLcm(LcmBase):
                             db_nsr_update["_admin.deployed.VCA-model-name"] = nsr_id
                             self.update_db_2("nsrs", nsr_id, db_nsr_update)
                         step = "deploying native charm for vnf_member_index={}".format(vnf_index)
+                        self.logger.debug(logging_text + step)
+
                         vnfr_params["rw_mgmt_ip"] = db_vnfrs[vnf_index]["ip-address"]
                         charm_params = {
                             "user_values": vnfr_params,
@@ -1323,8 +1325,8 @@ class NsLcm(LcmBase):
 
                     if vdu_config and vdu_config.get("juju"):
                         native_charm = vdu_config["juju"].get("proxy") is False
-
-                        if native_charm:
+                        proxy_charm = vdu_config["juju"]["charm"]
+                        if native_charm and proxy_charm:
                             if not vca_model_name:
                                 step = "creating VCA model name"
                                 await self.n2vc.CreateNetworkService(nsr_id)
@@ -1333,8 +1335,11 @@ class NsLcm(LcmBase):
                                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
                             step = "deploying native charm for vnf_member_index={} vdu_id={}".format(vnf_index,
                                                                                                      vdu["id"])
-                            await self.n2vc.login()
+
+                            self.logger.debug(logging_text + step)
+
                             vdur = db_vnfrs[vnf_index]["vdur"][vdu_index]
+
                             # TODO for the moment only first vdu_id contains a charm deployed
                             if vdur["vdu-id-ref"] != vdu["id"]:
                                 raise LcmException("Mismatch vdur {}, vdu {} at index {} for vnf {}"
@@ -1358,6 +1363,8 @@ class NsLcm(LcmBase):
                                     charm_params["username"] = vdu_config["config-access"]["ssh-access"].get(
                                         "default-user")
 
+                            await self.n2vc.login()
+
                             deploy_charm(vnf_index, vdu["id"], vdur.get("name"), vdur["count-index"],
                                          charm_params, n2vc_info, native_charm)
                             number_to_configure += 1
@@ -1367,8 +1374,8 @@ class NsLcm(LcmBase):
             ns_config = nsd.get("ns-configuration")
             if ns_config and ns_config.get("juju"):
                 native_charm = ns_config["juju"].get("proxy") is False
-
-                if native_charm:
+                proxy_charm = ns_config["juju"]["charm"]
+                if native_charm and proxy_charm:
                     step = "deploying native charm to configure ns"
                     # TODO is NS magmt IP address needed?
 
