@@ -42,7 +42,9 @@ def versiontuple(v):
     """
     filled = []
     for point in v.split("."):
-        filled.append(point.zfill(16))
+        point, _, _ = point.partition("+")
+        point, _, _ = point.partition("-")
+        filled.append(point.zfill(20))
     return tuple(filled)
 
 

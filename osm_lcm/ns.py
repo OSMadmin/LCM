@@ -304,36 +304,39 @@ class NsLcm(LcmBase):
             "wim_account": wim_account_2_RO(ns_params.get("wimAccountId")),
             # "scenario": ns_params["nsdId"],
         }
-        if n2vc_key_list:
-            for vnfd_ref, vnfd in vnfd_dict.items():
-                vdu_needed_access = []
-                mgmt_cp = None
-                if vnfd.get("vnf-configuration"):
-                    if vnfd.get("mgmt-interface"):
-                        if vnfd["mgmt-interface"].get("vdu-id"):
-                            vdu_needed_access.append(vnfd["mgmt-interface"]["vdu-id"])
-                        elif vnfd["mgmt-interface"].get("cp"):
-                            mgmt_cp = vnfd["mgmt-interface"]["cp"]
+        n2vc_key_list = n2vc_key_list or []
+        for vnfd_ref, vnfd in vnfd_dict.items():
+            vdu_needed_access = []
+            mgmt_cp = None
+            if vnfd.get("vnf-configuration"):
+                ssh_required = vnfd["vnf-configuration"].get("config-access", {}).get("ssh-access").get("required")
+                if ssh_required and vnfd.get("mgmt-interface"):
+                    if vnfd["mgmt-interface"].get("vdu-id"):
+                        vdu_needed_access.append(vnfd["mgmt-interface"]["vdu-id"])
+                    elif vnfd["mgmt-interface"].get("cp"):
+                        mgmt_cp = vnfd["mgmt-interface"]["cp"]
 
-                for vdu in vnfd.get("vdu", ()):
-                    if vdu.get("vdu-configuration"):
+            for vdu in vnfd.get("vdu", ()):
+                if vdu.get("vdu-configuration"):
+                    ssh_required = vdu["vdu-configuration"].get("config-access", {}).get("ssh-access").get("required")
+                    if ssh_required:
                         vdu_needed_access.append(vdu["id"])
-                    elif mgmt_cp:
-                        for vdu_interface in vdu.get("interface"):
-                            if vdu_interface.get("external-connection-point-ref") and \
-                                    vdu_interface["external-connection-point-ref"] == mgmt_cp:
-                                vdu_needed_access.append(vdu["id"])
-                                mgmt_cp = None
-                                break
+                elif mgmt_cp:
+                    for vdu_interface in vdu.get("interface"):
+                        if vdu_interface.get("external-connection-point-ref") and \
+                                vdu_interface["external-connection-point-ref"] == mgmt_cp:
+                            vdu_needed_access.append(vdu["id"])
+                            mgmt_cp = None
+                            break
 
-                if vdu_needed_access:
-                    for vnf_member in nsd.get("constituent-vnfd"):
-                        if vnf_member["vnfd-id-ref"] != vnfd_ref:
-                            continue
-                        for vdu in vdu_needed_access:
-                            populate_dict(RO_ns_params,
-                                          ("vnfs", vnf_member["member-vnf-index"], "vdus", vdu, "mgmt_keys"),
-                                          n2vc_key_list)
+            if vdu_needed_access:
+                for vnf_member in nsd.get("constituent-vnfd"):
+                    if vnf_member["vnfd-id-ref"] != vnfd_ref:
+                        continue
+                    for vdu in vdu_needed_access:
+                        populate_dict(RO_ns_params,
+                                      ("vnfs", vnf_member["member-vnf-index"], "vdus", vdu, "mgmt_keys"),
+                                      n2vc_key_list)
 
         if ns_params.get("vduImage"):
             RO_ns_params["vduImage"] = ns_params["vduImage"]

@@ -34,8 +34,10 @@ __author__ = "Alfonso Tierno <alfonso.tiernosepulveda@telefonica.com>"
 """ Perform unittests using asynctest of osm_lcm.ns module
 It allows, if some testing ENV are supplied, testing without mocking some external libraries for debugging:
     OSMLCMTEST_NS_PUBKEY: public ssh-key returned by N2VC to inject to VMs
+    OSMLCMTEST_NS_NAME: change name of NS
     OSMLCMTEST_PACKAGES_PATH: path where the vnf-packages are stored (de-compressed), each one on a 'vnfd_id' folder
     OSMLCMTEST_NS_IPADDRESS: IP address where emulated VMs are reached. Comma separate list
+    OSMLCMTEST_RO_VIMID: VIM id of RO target vim IP. Obtain it with openmano datcenter-list on RO container
     OSMLCMTEST_VCA_NOMOCK: Do no mock the VCA, N2VC library, for debugging it
     OSMLCMTEST_RO_NOMOCK: Do no mock the ROClient library, for debugging it
     OSMLCMTEST_DB_NOMOCK: Do no mock the database library, for debugging it
@@ -233,6 +235,10 @@ db_vnfds_text = """
             vcpu-count: 1
     version: '1.0'
     vnf-configuration:
+        config-access:
+            ssh-access:
+                required: True
+                default-user: ubuntu
         config-primitive:
         -   name: touch
             parameter:
@@ -1083,6 +1089,7 @@ class TestMyNS(asynctest.TestCase):
             self.my_ns.RO.get_list = asynctest.CoroutineMock(self.my_ns.RO.get_list, return_value=[])
             self.my_ns.RO.create = asynctest.CoroutineMock(self.my_ns.RO.create, side_effect=self._ro_create())
             self.my_ns.RO.show = asynctest.CoroutineMock(self.my_ns.RO.show, side_effect=self._ro_show())
+            self.my_ns.RO.create_action = asynctest.CoroutineMock(self.my_ns.RO.create_action)
 
     @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
     async def test_instantiate(self):
@@ -1099,6 +1106,10 @@ class TestMyNS(asynctest.TestCase):
                 for db_vdur in db_vnfr["vdur"]:
                     db_vdur.pop("ip_address", None)
                     db_vdur.pop("mac_address", None)
+            if getenv("OSMLCMTEST_RO_VIMID"):
+                self.db_content["vim_accounts"][0]["_admin"]["deployed"]["RO"] = getenv("OSMLCMTEST_RO_VIMID")
+            if getenv("OSMLCMTEST_RO_VIMID"):
+                self.db_content["nsrs"][0]["_admin"]["deployed"]["RO"] = getenv("OSMLCMTEST_RO_VIMID")
 
         await self.my_ns.instantiate(nsr_id, nslcmop_id)
 

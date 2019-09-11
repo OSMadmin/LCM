@@ -40,7 +40,7 @@ from n2vc import version as n2vc_version
 
 
 __author__ = "Alfonso Tierno"
-min_RO_version = "0.6.3"
+min_RO_version = "6.0.2"
 min_n2vc_version = "0.0.2"
 min_common_version = "0.1.19"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
@@ -181,17 +181,27 @@ class Lcm:
         self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
 
     async def check_RO_version(self):
-        try:
-            RO = ROclient.ROClient(self.loop, **self.ro_config)
-            RO_version = await RO.get_version()
-            if versiontuple(RO_version) < versiontuple(min_RO_version):
-                raise LcmException("Not compatible osm/RO version '{}.{}.{}'. Needed '{}.{}.{}' or higher".format(
-                    *RO_version, *min_RO_version
-                ))
-        except ROclient.ROClientException as e:
-            error_text = "Error while conneting to osm/RO " + str(e)
-            self.logger.critical(error_text, exc_info=True)
-            raise LcmException(error_text)
+        tries = 14
+        last_error = None
+        while True:
+            try:
+                ro_server = ROclient.ROClient(self.loop, **self.ro_config)
+                ro_version = await ro_server.get_version()
+                if versiontuple(ro_version) < versiontuple(min_RO_version):
+                    raise LcmException("Not compatible osm/RO version '{}'. Needed '{}' or higher".format(
+                        ro_version, min_RO_version))
+                self.logger.info("Connected to RO version {}".format(ro_version))
+                return
+            except ROclient.ROClientException as e:
+                tries -= 1
+                error_text = "Error while connecting to RO on {}: {}".format(self.ro_config["endpoint_url"], e)
+                if tries <= 0:
+                    self.logger.critical(error_text)
+                    raise LcmException(error_text)
+                if last_error != error_text:
+                    last_error = error_text
+                    self.logger.error(error_text + ". Waiting until {} seconds".format(5*tries))
+                await asyncio.sleep(5)
 
     async def test(self, param=None):
         self.logger.debug("Starting/Ending test task: {}".format(param))
