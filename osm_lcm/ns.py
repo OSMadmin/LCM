@@ -53,7 +53,7 @@ def get_iterable(in_dict, in_key):
 
 def populate_dict(target_dict, key_list, value):
     """
-    Upate target_dict creating nested dictionaries with the key_list. Last key_list item is asigned the value.
+    Update target_dict creating nested dictionaries with the key_list. Last key_list item is assigned the value.
     Example target_dict={K: J}; key_list=[a,b,c];  target_dict will be {K: J, a: {b: {c: value}}}
     :param target_dict: dictionary to be changed
     :param key_list: list of keys to insert at target_dict
@@ -65,6 +65,21 @@ def populate_dict(target_dict, key_list, value):
             target_dict[key] = {}
         target_dict = target_dict[key]
     target_dict[key_list[-1]] = value
+
+
+def deep_get(target_dict, key_list):
+    """
+    Get a value from target_dict entering in the nested keys. If keys does not exist, it returns None
+    Example target_dict={a: {b: 5}}; key_list=[a,b] returns 5; both key_list=[a,b,c] and key_list=[f,h] return None
+    :param target_dict: dictionary to be read
+    :param key_list: list of keys to read from  target_dict
+    :return: The wanted value if exist, None otherwise
+    """
+    for key in key_list:
+        if not isinstance(target_dict, dict) or key not in target_dict:
+            return None
+        target_dict = target_dict[key]
+    return target_dict
 
 
 class NsLcm(LcmBase):
@@ -309,7 +324,7 @@ class NsLcm(LcmBase):
             vdu_needed_access = []
             mgmt_cp = None
             if vnfd.get("vnf-configuration"):
-                ssh_required = vnfd["vnf-configuration"].get("config-access", {}).get("ssh-access").get("required")
+                ssh_required = deep_get(vnfd, ("vnf-configuration", "config-access", "ssh-access", "required"))
                 if ssh_required and vnfd.get("mgmt-interface"):
                     if vnfd["mgmt-interface"].get("vdu-id"):
                         vdu_needed_access.append(vnfd["mgmt-interface"]["vdu-id"])
@@ -318,7 +333,7 @@ class NsLcm(LcmBase):
 
             for vdu in vnfd.get("vdu", ()):
                 if vdu.get("vdu-configuration"):
-                    ssh_required = vdu["vdu-configuration"].get("config-access", {}).get("ssh-access").get("required")
+                    ssh_required = deep_get(vdu, ("vdu-configuration", "config-access", "ssh-access", "required"))
                     if ssh_required:
                         vdu_needed_access.append(vdu["id"])
                 elif mgmt_cp:
@@ -700,8 +715,7 @@ class NsLcm(LcmBase):
 
             db_nsr_update["detailed-status"] = "creating"
             db_nsr_update["operational-status"] = "init"
-            if not db_nsr["_admin"].get("deployed") or not db_nsr["_admin"]["deployed"].get("RO") or \
-                    not db_nsr["_admin"]["deployed"]["RO"].get("vnfd"):
+            if not isinstance(deep_get(db_nsr, ("_admin", "deployed", "RO", "vnfd")), list):
                 populate_dict(db_nsr, ("_admin", "deployed", "RO", "vnfd"), [])
                 db_nsr_update["_admin.deployed.RO.vnfd"] = []
 
@@ -1110,7 +1124,7 @@ class NsLcm(LcmBase):
 
             # Crate ns at RO
             # if present use it unless in error status
-            RO_nsr_id = db_nsr["_admin"].get("deployed", {}).get("RO", {}).get("nsr_id")
+            RO_nsr_id = deep_get(db_nsr, ("_admin", "deployed", "RO", "nsr_id"))
             if RO_nsr_id:
                 try:
                     step = db_nsr_update["detailed-status"] = "Looking for existing ns at RO"

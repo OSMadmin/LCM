@@ -1131,6 +1131,32 @@ class TestMyNS(asynctest.TestCase):
         # TODO add more checks of called methods
         # TODO add a terminate
 
+    def test_ns_params_2_RO(self):
+        vim = self._db_get_list("vim_accounts")[0]
+        vim_id = vim["_id"]
+        ro_vim_id = vim["_admin"]["deployed"]["RO"]
+        ns_params = {"vimAccountId": vim_id}
+        mgmt_interface = {"cp": "cp"}
+        vdu = [{"id": "vdu_id", "interface": [{"external-connection-point-ref": "cp"}]}]
+        vnfd_dict = {
+            "1": {"vdu": vdu, "mgmt-interface": mgmt_interface},
+            "2": {"vdu": vdu, "mgmt-interface": mgmt_interface, "vnf-configuration": None},
+            "3": {"vdu": vdu, "mgmt-interface": mgmt_interface, "vnf-configuration": {"config-access": None}},
+            "4": {"vdu": vdu, "mgmt-interface": mgmt_interface,
+                  "vnf-configuration": {"config-access": {"ssh-access": None}}},
+            "5": {"vdu": vdu, "mgmt-interface": mgmt_interface,
+                  "vnf-configuration": {"config-access": {"ssh-access": {"required": True, "default_user": "U"}}}},
+        }
+        nsd = {"constituent-vnfd": []}
+        for k in vnfd_dict.keys():
+            nsd["constituent-vnfd"].append({"vnfd-id-ref": k, "member-vnf-index": k})
+
+        n2vc_key_list = ["key"]
+        ro_ns_params = self.my_ns.ns_params_2_RO(ns_params, nsd, vnfd_dict, n2vc_key_list)
+        ro_params_expected = {'wim_account': None, "datacenter": ro_vim_id,
+                              "vnfs": {"5": {"vdus": {"vdu_id": {"mgmt_keys": n2vc_key_list}}}}}
+        self.assertEqual(ro_ns_params, ro_params_expected)
+
     @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
     async def test_scale(self):
         pass
