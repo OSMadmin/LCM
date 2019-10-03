@@ -88,6 +88,10 @@ class NsLcm(LcmBase):
     timeout_charm_delete = 10 * 60
     timeout_primitive = 10 * 60  # timeout for primitive execution
 
+    SUBOPERATION_STATUS_NOT_FOUND = -1
+    SUBOPERATION_STATUS_NEW = -2
+    SUBOPERATION_STATUS_SKIP = -3
+
     def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
@@ -1640,30 +1644,156 @@ class NsLcm(LcmBase):
         desc_params = {}
         return self._map_primitive_params(seq, params, desc_params)
 
-    def _add_suboperation(self, db_nslcmop, nslcmop_id, vnf_index, vdu_id, vdu_count_index,
-                          vdu_name, primitive, mapped_primitive_params):
-        # Create the "_admin.operations" array, or append operation if array already exists
-        key_admin = '_admin'
-        key_operations = 'operations'
-        db_nslcmop_update = {}
-        db_nslcmop_admin = db_nslcmop.get(key_admin, {})
-        op_list = db_nslcmop_admin.get(key_operations)
+    # sub-operations
+
+    def _reintent_or_skip_suboperation(self, db_nslcmop, op_index):
+        op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
+        if (op.get('operationState') == 'COMPLETED'):
+            # b. Skip sub-operation
+            # _ns_execute_primitive() or RO.create_action() will NOT be executed
+            return self.SUBOPERATION_STATUS_SKIP
+        else:
+            # c. Reintent executing sub-operation
+            # The sub-operation exists, and operationState != 'COMPLETED'
+            # Update operationState = 'PROCESSING' to indicate a reintent.
+            operationState = 'PROCESSING'
+            detailed_status = 'In progress'
+            self._update_suboperation_status(
+                db_nslcmop, op_index, operationState, detailed_status)
+            # Return the sub-operation index
+            # _ns_execute_primitive() or RO.create_action() will be called from scale()
+            # with arguments extracted from the sub-operation
+            return op_index
+
+    # Find a sub-operation where all keys in a matching dictionary must match
+    # Returns the index of the matching sub-operation, or SUBOPERATION_STATUS_NOT_FOUND if no match
+    def _find_suboperation(self, db_nslcmop, match):
+        if (db_nslcmop and match):
+            op_list = db_nslcmop.get('_admin', {}).get('operations', [])
+            for i, op in enumerate(op_list):
+                if all(op.get(k) == match[k] for k in match):
+                    return i
+        return self.SUBOPERATION_STATUS_NOT_FOUND
+
+    # Update status for a sub-operation given its index
+    def _update_suboperation_status(self, db_nslcmop, op_index, operationState, detailed_status):
+        # Update DB for HA tasks
+        q_filter = {'_id': db_nslcmop['_id']}
+        update_dict = {'_admin.operations.{}.operationState'.format(op_index): operationState,
+                       '_admin.operations.{}.detailed-status'.format(op_index): detailed_status}
+        self.db.set_one("nslcmops",
+                        q_filter=q_filter,
+                        update_dict=update_dict,
+                        fail_on_empty=False)
+
+    # Add sub-operation, return the index of the added sub-operation
+    # Optionally, set operationState, detailed-status, and operationType
+    # Status and type are currently set for 'scale' sub-operations:
+    # 'operationState' : 'PROCESSING' | 'COMPLETED' | 'FAILED'
+    # 'detailed-status' : status message
+    # 'operationType': may be any type, in the case of scaling: 'PRE-SCALE' | 'POST-SCALE'
+    # Status and operation type are currently only used for 'scale', but NOT for 'terminate' sub-operations.
+    def _add_suboperation(self, db_nslcmop, vnf_index, vdu_id, vdu_count_index,
+                          vdu_name, primitive, mapped_primitive_params,
+                          operationState=None, detailed_status=None, operationType=None,
+                          RO_nsr_id=None, RO_scaling_info=None):
+        if not (db_nslcmop):
+            return self.SUBOPERATION_STATUS_NOT_FOUND
+        # Get the "_admin.operations" list, if it exists
+        db_nslcmop_admin = db_nslcmop.get('_admin', {})
+        op_list = db_nslcmop_admin.get('operations')
+        # Create or append to the "_admin.operations" list
         new_op = {'member_vnf_index': vnf_index,
                   'vdu_id': vdu_id,
                   'vdu_count_index': vdu_count_index,
                   'primitive': primitive,
                   'primitive_params': mapped_primitive_params}
-        if db_nslcmop_admin:
-            if not op_list:
-                # First operation, create key 'operations' with current operation as first list element
-                db_nslcmop_admin.update({key_operations: [new_op]})
-                op_list = db_nslcmop_admin.get(key_operations)
-            else:
-                # Not first operation, append operation to existing list
-                op_list.append(new_op)
+        if operationState:
+            new_op['operationState'] = operationState
+        if detailed_status:
+            new_op['detailed-status'] = detailed_status
+        if operationType:
+            new_op['lcmOperationType'] = operationType
+        if RO_nsr_id:
+            new_op['RO_nsr_id'] = RO_nsr_id
+        if RO_scaling_info:
+            new_op['RO_scaling_info'] = RO_scaling_info
+        if not op_list:
+            # No existing operations, create key 'operations' with current operation as first list element
+            db_nslcmop_admin.update({'operations': [new_op]})
+            op_list = db_nslcmop_admin.get('operations')
+        else:
+            # Existing operations, append operation to list
+            op_list.append(new_op)
 
-        db_nslcmop_update['_admin.operations'] = op_list
-        self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+        db_nslcmop_update = {'_admin.operations': op_list}
+        self.update_db_2("nslcmops", db_nslcmop['_id'], db_nslcmop_update)
+        op_index = len(op_list) - 1
+        return op_index
+
+    # Helper methods for scale() sub-operations
+
+    # pre-scale/post-scale:
+    # Check for 3 different cases:
+    # a. New: First time execution, return SUBOPERATION_STATUS_NEW
+    # b. Skip: Existing sub-operation exists, operationState == 'COMPLETED', return SUBOPERATION_STATUS_SKIP
+    # c. Reintent: Existing sub-operation exists, operationState != 'COMPLETED', return op_index to re-execute
+    def _check_or_add_scale_suboperation(self, db_nslcmop, vnf_index,
+                                         vnf_config_primitive, primitive_params, operationType,
+                                         RO_nsr_id=None, RO_scaling_info=None):
+        # Find this sub-operation
+        if (RO_nsr_id and RO_scaling_info):
+            operationType = 'SCALE-RO'
+            match = {
+                'member_vnf_index': vnf_index,
+                'RO_nsr_id': RO_nsr_id,
+                'RO_scaling_info': RO_scaling_info,
+            }
+        else:
+            match = {
+                'member_vnf_index': vnf_index,
+                'primitive': vnf_config_primitive,
+                'primitive_params': primitive_params,
+                'lcmOperationType': operationType
+            }
+        op_index = self._find_suboperation(db_nslcmop, match)
+        if (op_index == self.SUBOPERATION_STATUS_NOT_FOUND):
+            # a. New sub-operation
+            # The sub-operation does not exist, add it.
+            # _ns_execute_primitive() will be called from scale() as usual, with non-modified arguments
+            # The following parameters are set to None for all kind of scaling:
+            vdu_id = None
+            vdu_count_index = None
+            vdu_name = None
+            if (RO_nsr_id and RO_scaling_info):
+                vnf_config_primitive = None
+                primitive_params = None
+            else:
+                RO_nsr_id = None
+                RO_scaling_info = None
+            # Initial status for sub-operation
+            operationState = 'PROCESSING'
+            detailed_status = 'In progress'
+            # Add sub-operation for pre/post-scaling (zero or more operations)
+            self._add_suboperation(db_nslcmop,
+                                   vnf_index,
+                                   vdu_id,
+                                   vdu_count_index,
+                                   vdu_name,
+                                   vnf_config_primitive,
+                                   primitive_params,
+                                   operationState,
+                                   detailed_status,
+                                   operationType,
+                                   RO_nsr_id,
+                                   RO_scaling_info)
+            return self.SUBOPERATION_STATUS_NEW
+        else:
+            # Return either SUBOPERATION_STATUS_SKIP (operationState == 'COMPLETED'),
+            # or op_index (operationState != 'COMPLETED')
+            return self._reintent_or_skip_suboperation(db_nslcmop, op_index)
+
+    # Helper methods for terminate()
 
     async def _terminate_action(self, db_nslcmop, nslcmop_id, nsr_id):
         """ Create a primitive with params from VNFD
@@ -1698,7 +1828,7 @@ class NsLcm(LcmBase):
                 vdu_id = db_nslcmop["operationParams"].get("vdu_id")
                 vdu_count_index = db_nslcmop["operationParams"].get("vdu_count_index")
                 vdu_name = db_nslcmop["operationParams"].get("vdu_name")
-                # Add suboperation
+                # Add sub-operation
                 self._add_suboperation(db_nslcmop,
                                        nslcmop_id,
                                        vnf_index,
@@ -1707,7 +1837,7 @@ class NsLcm(LcmBase):
                                        vdu_name,
                                        primitive,
                                        mapped_primitive_params)
-                # Suboperations: Call _ns_execute_primitive() instead of action()
+                # Sub-operations: Call _ns_execute_primitive() instead of action()
                 db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
                 nsr_deployed = db_nsr["_admin"]["deployed"]
                 result, result_detail = await self._ns_execute_primitive(
@@ -2348,12 +2478,12 @@ class NsLcm(LcmBase):
                             })
                 vdu_delete = vdu_scaling_info.pop("vdu-delete")
 
-            # execute primitive service PRE-SCALING
+            # PRE-SCALE BEGIN
             step = "Executing pre-scale vnf-config-primitive"
             if scaling_descriptor.get("scaling-config-action"):
                 for scaling_config_action in scaling_descriptor["scaling-config-action"]:
-                    if scaling_config_action.get("trigger") and scaling_config_action["trigger"] == "pre-scale-in" \
-                            and scaling_type == "SCALE_IN":
+                    if (scaling_config_action.get("trigger") == "pre-scale-in" and scaling_type == "SCALE_IN") \
+                       or (scaling_config_action.get("trigger") == "pre-scale-out" and scaling_type == "SCALE_OUT"):
                         vnf_config_primitive = scaling_config_action["vnf-config-primitive-name-ref"]
                         step = db_nslcmop_update["detailed-status"] = \
                             "executing pre-scale scaling-config-action '{}'".format(vnf_config_primitive)
@@ -2371,108 +2501,169 @@ class NsLcm(LcmBase):
                         vnfr_params = {"VDU_SCALE_INFO": vdu_scaling_info}
                         if db_vnfr.get("additionalParamsForVnf"):
                             vnfr_params.update(db_vnfr["additionalParamsForVnf"])
-
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring pre-scaling"
-                        result, result_detail = await self._ns_execute_primitive(
-                            nsr_deployed, vnf_index, None, None, None, vnf_config_primitive,
-                            self._map_primitive_params(config_primitive, {}, vnfr_params))
-                        self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
-                            vnf_config_primitive, result, result_detail))
+                        primitive_params = self._map_primitive_params(config_primitive, {}, vnfr_params)
+
+                        # Pre-scale reintent check: Check if this sub-operation has been executed before
+                        op_index = self._check_or_add_scale_suboperation(
+                            db_nslcmop, nslcmop_id, vnf_index, vnf_config_primitive, primitive_params, 'PRE-SCALE')
+                        if (op_index == self.SUBOPERATION_STATUS_SKIP):
+                            # Skip sub-operation
+                            result = 'COMPLETED'
+                            result_detail = 'Done'
+                            self.logger.debug(logging_text +
+                                              "vnf_config_primitive={} Skipped sub-operation, result {} {}".format(
+                                                  vnf_config_primitive, result, result_detail))
+                        else:
+                            if (op_index == self.SUBOPERATION_STATUS_NEW):
+                                # New sub-operation: Get index of this sub-operation
+                                op_index = len(db_nslcmop.get('_admin', {}).get('operations')) - 1
+                                self.logger.debug(logging_text + "vnf_config_primitive={} New sub-operation".
+                                                  format(vnf_config_primitive))
+                            else:
+                                # Reintent:  Get registered params for this existing sub-operation
+                                op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
+                                vnf_index = op.get('member_vnf_index')
+                                vnf_config_primitive = op.get('primitive')
+                                primitive_params = op.get('primitive_params')
+                                self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation reintent".
+                                                  format(vnf_config_primitive))
+                            # Execute the primitive, either with new (first-time) or registered (reintent) args
+                            result, result_detail = await self._ns_execute_primitive(
+                                nsr_deployed, vnf_index, None, None, None, vnf_config_primitive, primitive_params)
+                            self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
+                                vnf_config_primitive, result, result_detail))
+                            # Update operationState = COMPLETED | FAILED
+                            self._update_suboperation_status(
+                                db_nslcmop, op_index, result, result_detail)
+
                         if result == "FAILED":
                             raise LcmException(result_detail)
                         db_nsr_update["config-status"] = old_config_status
                         scale_process = None
+            # PRE-SCALE END
 
+            # SCALE RO - BEGIN
+            # Should this block be skipped if 'RO_nsr_id' == None ?
+            # if (RO_nsr_id and RO_scaling_info):
             if RO_scaling_info:
                 scale_process = "RO"
-                RO_desc = await self.RO.create_action("ns", RO_nsr_id, {"vdu-scaling": RO_scaling_info})
-                db_nsr_update["_admin.scaling-group.{}.nb-scale-op".format(admin_scale_index)] = nb_scale_op
-                db_nsr_update["_admin.scaling-group.{}.time".format(admin_scale_index)] = time()
-                # wait until ready
-                RO_nslcmop_id = RO_desc["instance_action_id"]
-                db_nslcmop_update["_admin.deploy.RO"] = RO_nslcmop_id
-
-                RO_task_done = False
-                step = detailed_status = "Waiting RO_task_id={} to complete the scale action.".format(RO_nslcmop_id)
-                detailed_status_old = None
-                self.logger.debug(logging_text + step)
-
-                deployment_timeout = 1 * 3600   # One hour
-                while deployment_timeout > 0:
-                    if not RO_task_done:
-                        desc = await self.RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
-                                                  extra_item_id=RO_nslcmop_id)
-                        ns_status, ns_status_info = self.RO.check_action_status(desc)
-                        if ns_status == "ERROR":
-                            raise ROclient.ROClientException(ns_status_info)
-                        elif ns_status == "BUILD":
-                            detailed_status = step + "; {}".format(ns_status_info)
-                        elif ns_status == "ACTIVE":
-                            RO_task_done = True
-                            step = detailed_status = "Waiting VIM to deploy ns. RO_id={}".format(RO_nsr_id)
-                            self.logger.debug(logging_text + step)
-                        else:
-                            assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
+                # Scale RO reintent check: Check if this sub-operation has been executed before
+                op_index = self._check_or_add_scale_suboperation(
+                    db_nslcmop, vnf_index, None, None, 'SCALE-RO', RO_nsr_id, RO_scaling_info)
+                if (op_index == self.SUBOPERATION_STATUS_SKIP):
+                    # Skip sub-operation
+                    result = 'COMPLETED'
+                    result_detail = 'Done'
+                    self.logger.debug(logging_text + "Skipped sub-operation RO, result {} {}".format(
+                        result, result_detail))
+                else:
+                    if (op_index == self.SUBOPERATION_STATUS_NEW):
+                        # New sub-operation: Get index of this sub-operation
+                        op_index = len(db_nslcmop.get('_admin', {}).get('operations')) - 1
+                        self.logger.debug(logging_text + "New sub-operation RO")
                     else:
-                        desc = await self.RO.show("ns", RO_nsr_id)
-                        ns_status, ns_status_info = self.RO.check_ns_status(desc)
-                        if ns_status == "ERROR":
-                            raise ROclient.ROClientException(ns_status_info)
-                        elif ns_status == "BUILD":
-                            detailed_status = step + "; {}".format(ns_status_info)
-                        elif ns_status == "ACTIVE":
-                            step = detailed_status = \
-                                "Waiting for management IP address reported by the VIM. Updating VNFRs"
-                            if not vnfr_scaled:
-                                self.scale_vnfr(db_vnfr, vdu_create=vdu_create, vdu_delete=vdu_delete)
-                                vnfr_scaled = True
-                            try:
-                                desc = await self.RO.show("ns", RO_nsr_id)
-                                # nsr_deployed["nsr_ip"] = RO.get_ns_vnf_info(desc)
-                                self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
-                                break
-                            except LcmExceptionNoMgmtIP:
-                                pass
+                        # Reintent:  Get registered params for this existing sub-operation
+                        op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
+                        RO_nsr_id = op.get('RO_nsr_id')
+                        RO_scaling_info = op.get('RO_scaling_info')
+                        self.logger.debug(logging_text + "Sub-operation RO reintent".format(
+                            vnf_config_primitive))
+
+                    RO_desc = await self.RO.create_action("ns", RO_nsr_id, {"vdu-scaling": RO_scaling_info})
+                    db_nsr_update["_admin.scaling-group.{}.nb-scale-op".format(admin_scale_index)] = nb_scale_op
+                    db_nsr_update["_admin.scaling-group.{}.time".format(admin_scale_index)] = time()
+                    # wait until ready
+                    RO_nslcmop_id = RO_desc["instance_action_id"]
+                    db_nslcmop_update["_admin.deploy.RO"] = RO_nslcmop_id
+
+                    RO_task_done = False
+                    step = detailed_status = "Waiting RO_task_id={} to complete the scale action.".format(RO_nslcmop_id)
+                    detailed_status_old = None
+                    self.logger.debug(logging_text + step)
+
+                    deployment_timeout = 1 * 3600   # One hour
+                    while deployment_timeout > 0:
+                        if not RO_task_done:
+                            desc = await self.RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
+                                                      extra_item_id=RO_nslcmop_id)
+                            ns_status, ns_status_info = self.RO.check_action_status(desc)
+                            if ns_status == "ERROR":
+                                raise ROclient.ROClientException(ns_status_info)
+                            elif ns_status == "BUILD":
+                                detailed_status = step + "; {}".format(ns_status_info)
+                            elif ns_status == "ACTIVE":
+                                RO_task_done = True
+                                step = detailed_status = "Waiting ns ready at RO. RO_id={}".format(RO_nsr_id)
+                                self.logger.debug(logging_text + step)
+                            else:
+                                assert False, "ROclient.check_action_status returns unknown {}".format(ns_status)
                         else:
-                            assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
-                    if detailed_status != detailed_status_old:
-                        detailed_status_old = db_nslcmop_update["detailed-status"] = detailed_status
-                        self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+                            if ns_status == "ERROR":
+                                raise ROclient.ROClientException(ns_status_info)
+                            elif ns_status == "BUILD":
+                                detailed_status = step + "; {}".format(ns_status_info)
+                            elif ns_status == "ACTIVE":
+                                step = detailed_status = \
+                                    "Waiting for management IP address reported by the VIM. Updating VNFRs"
+                                if not vnfr_scaled:
+                                    self.scale_vnfr(db_vnfr, vdu_create=vdu_create, vdu_delete=vdu_delete)
+                                    vnfr_scaled = True
+                                try:
+                                    desc = await self.RO.show("ns", RO_nsr_id)
+                                    # nsr_deployed["nsr_ip"] = RO.get_ns_vnf_info(desc)
+                                    self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
+                                    break
+                                except LcmExceptionNoMgmtIP:
+                                    pass
+                            else:
+                                assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
+                        if detailed_status != detailed_status_old:
+                            self._update_suboperation_status(
+                                db_nslcmop, op_index, 'COMPLETED', detailed_status)
+                            detailed_status_old = db_nslcmop_update["detailed-status"] = detailed_status
+                            self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
 
-                    await asyncio.sleep(5, loop=self.loop)
-                    deployment_timeout -= 5
-                if deployment_timeout <= 0:
-                    raise ROclient.ROClientException("Timeout waiting ns to be ready")
+                        await asyncio.sleep(5, loop=self.loop)
+                        deployment_timeout -= 5
+                    if deployment_timeout <= 0:
+                        self._update_suboperation_status(
+                            db_nslcmop, nslcmop_id, op_index, 'FAILED', "Timeout when waiting for ns to get ready")
+                        raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
-                # update VDU_SCALING_INFO with the obtained ip_addresses
-                if vdu_scaling_info["scaling_direction"] == "OUT":
-                    for vdur in reversed(db_vnfr["vdur"]):
-                        if vdu_scaling_info["vdu-create"].get(vdur["vdu-id-ref"]):
-                            vdu_scaling_info["vdu-create"][vdur["vdu-id-ref"]] -= 1
-                            vdu_scaling_info["vdu"].append({
-                                "name": vdur["name"],
-                                "vdu_id": vdur["vdu-id-ref"],
-                                "interface": []
-                            })
-                            for interface in vdur["interfaces"]:
-                                vdu_scaling_info["vdu"][-1]["interface"].append({
-                                    "name": interface["name"],
-                                    "ip_address": interface["ip-address"],
-                                    "mac_address": interface.get("mac-address"),
+                    # update VDU_SCALING_INFO with the obtained ip_addresses
+                    if vdu_scaling_info["scaling_direction"] == "OUT":
+                        for vdur in reversed(db_vnfr["vdur"]):
+                            if vdu_scaling_info["vdu-create"].get(vdur["vdu-id-ref"]):
+                                vdu_scaling_info["vdu-create"][vdur["vdu-id-ref"]] -= 1
+                                vdu_scaling_info["vdu"].append({
+                                    "name": vdur["name"],
+                                    "vdu_id": vdur["vdu-id-ref"],
+                                    "interface": []
                                 })
-                    del vdu_scaling_info["vdu-create"]
+                                for interface in vdur["interfaces"]:
+                                    vdu_scaling_info["vdu"][-1]["interface"].append({
+                                        "name": interface["name"],
+                                        "ip_address": interface["ip-address"],
+                                        "mac_address": interface.get("mac-address"),
+                                    })
+                        del vdu_scaling_info["vdu-create"]
+
+                    self._update_suboperation_status(db_nslcmop, op_index, 'COMPLETED', 'Done')
+            # SCALE RO - END
 
             scale_process = None
             if db_nsr_update:
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
+            # POST-SCALE BEGIN
             # execute primitive service POST-SCALING
             step = "Executing post-scale vnf-config-primitive"
             if scaling_descriptor.get("scaling-config-action"):
                 for scaling_config_action in scaling_descriptor["scaling-config-action"]:
-                    if scaling_config_action.get("trigger") and scaling_config_action["trigger"] == "post-scale-out" \
-                            and scaling_type == "SCALE_OUT":
+                    if (scaling_config_action.get("trigger") == "post-scale-in" and scaling_type == "SCALE_IN") \
+                       or (scaling_config_action.get("trigger") == "post-scale-out" and scaling_type == "SCALE_OUT"):
                         vnf_config_primitive = scaling_config_action["vnf-config-primitive-name-ref"]
                         step = db_nslcmop_update["detailed-status"] = \
                             "executing post-scale scaling-config-action '{}'".format(vnf_config_primitive)
@@ -2492,16 +2683,46 @@ class NsLcm(LcmBase):
                                                                                                      config_primitive))
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring post-scaling"
+                        primitive_params = self._map_primitive_params(config_primitive, {}, vnfr_params)
 
-                        result, result_detail = await self._ns_execute_primitive(
-                            nsr_deployed, vnf_index, None, None, None, vnf_config_primitive,
-                            self._map_primitive_params(config_primitive, {}, vnfr_params))
-                        self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
-                            vnf_config_primitive, result, result_detail))
+                        # Post-scale reintent check: Check if this sub-operation has been executed before
+                        op_index = self._check_or_add_scale_suboperation(
+                            db_nslcmop, nslcmop_id, vnf_index, vnf_config_primitive, primitive_params, 'POST-SCALE')
+                        if (op_index == self.SUBOPERATION_STATUS_SKIP):
+                            # Skip sub-operation
+                            result = 'COMPLETED'
+                            result_detail = 'Done'
+                            self.logger.debug(logging_text +
+                                              "vnf_config_primitive={} Skipped sub-operation, result {} {}".
+                                              format(vnf_config_primitive, result, result_detail))
+                        else:
+                            if (op_index == self.SUBOPERATION_STATUS_NEW):
+                                # New sub-operation: Get index of this sub-operation
+                                op_index = len(db_nslcmop.get('_admin', {}).get('operations')) - 1
+                                self.logger.debug(logging_text + "vnf_config_primitive={} New sub-operation".
+                                                  format(vnf_config_primitive))
+                            else:
+                                # Reintent:  Get registered params for this existing sub-operation
+                                op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
+                                vnf_index = op.get('member_vnf_index')
+                                vnf_config_primitive = op.get('primitive')
+                                primitive_params = op.get('primitive_params')
+                                self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation reintent".
+                                                  format(vnf_config_primitive))
+                            # Execute the primitive, either with new (first-time) or registered (reintent) args
+                            result, result_detail = await self._ns_execute_primitive(
+                                nsr_deployed, vnf_index, None, None, None, vnf_config_primitive, primitive_params)
+                            self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
+                                vnf_config_primitive, result, result_detail))
+                            # Update operationState = COMPLETED | FAILED
+                            self._update_suboperation_status(
+                                db_nslcmop, op_index, result, result_detail)
+
                         if result == "FAILED":
                             raise LcmException(result_detail)
                         db_nsr_update["config-status"] = old_config_status
                         scale_process = None
+            # POST-SCALE END
 
             db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
             db_nslcmop_update["statusEnteredTime"] = time()
