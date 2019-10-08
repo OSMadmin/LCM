@@ -17,6 +17,11 @@
 # under the License.
 ##
 
+
+# DEBUG WITH PDB
+import os
+import pdb
+
 import asyncio
 import yaml
 import logging
@@ -24,7 +29,11 @@ import logging.handlers
 import getopt
 import sys
 
-from osm_lcm import ROclient, ns, vim_sdn, netslice
+from osm_lcm import ns
+from osm_lcm import vim_sdn
+from osm_lcm import netslice
+from osm_lcm import ROclient
+
 from time import time, sleep
 from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
 from osm_lcm import version as lcm_version, version_date as lcm_version_date
@@ -38,10 +47,14 @@ from os import environ, path
 from random import choice as random_choice
 from n2vc import version as n2vc_version
 
+if os.getenv('OSMLCM_PDB_DEBUG', None) is not None:
+    pdb.set_trace()
+
 
 __author__ = "Alfonso Tierno"
 min_RO_version = "6.0.2"
 min_n2vc_version = "0.0.2"
+
 min_common_version = "0.1.19"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
 # lcm_version = '0.1.41'
@@ -149,6 +162,7 @@ class Lcm:
                 raise LcmException("Invalid configuration param '{}' at '[storage]':'driver'".format(
                     config["storage"]["driver"]))
 
+            # copy message configuration in order to remove 'group_id' for msg_admin
             config_message = config["message"].copy()
             config_message["loop"] = self.loop
             if config_message["driver"] == "local":
@@ -530,7 +544,7 @@ class Lcm:
 
 def usage():
     print("""Usage: {} [options]
-        -c|--config [configuration_file]: loads the configuration file (default: ./nbi.cfg)
+        -c|--config [configuration_file]: loads the configuration file (default: ./lcm.cfg)
         --health-check: do not run lcm, but inspect kafka bus to determine if lcm is healthy
         -h|--help: shows this help
         """.format(sys.argv[0]))
@@ -556,8 +570,14 @@ def health_check():
 
 
 if __name__ == '__main__':
+
     try:
         # load parameters and configuration
+        # -h
+        # -c value
+        # --config value
+        # --help
+        # --health-check
         opts, args = getopt.getopt(sys.argv[1:], "hc:", ["config=", "help", "health-check"])
         # TODO add  "log-socket-host=", "log-socket-port=", "log-file="
         config_file = None
@@ -577,9 +597,10 @@ if __name__ == '__main__':
             #     log_file = a
             else:
                 assert False, "Unhandled option"
+
         if config_file:
             if not path.isfile(config_file):
-                print("configuration file '{}' not exist".format(config_file), file=sys.stderr)
+                print("configuration file '{}' does not exist".format(config_file), file=sys.stderr)
                 exit(1)
         else:
             for config_file in (__file__[:__file__.rfind(".")] + ".cfg", "./lcm.cfg", "/etc/osm/lcm.cfg"):
