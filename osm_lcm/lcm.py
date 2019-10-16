@@ -361,7 +361,7 @@ class Lcm:
                 return
         elif topic == "vim_account":
             vim_id = params["_id"]
-            if command == "create":
+            if command in ("create", "created"):
                 task = asyncio.ensure_future(self.vim.create(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_create", task)
                 return
@@ -374,13 +374,15 @@ class Lcm:
                 print("not implemented show with vim_account")
                 sys.stdout.flush()
                 return
-            elif command == "edit":
+            elif command in ("edit", "edited"):
                 task = asyncio.ensure_future(self.vim.edit(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_edit", task)
                 return
+            elif command == "deleted":
+                return  # TODO cleaning of task just in case should be done
         elif topic == "wim_account":
             wim_id = params["_id"]
-            if command == "create":
+            if command in ("create", "created"):
                 task = asyncio.ensure_future(self.wim.create(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_create", task)
                 return
@@ -393,13 +395,15 @@ class Lcm:
                 print("not implemented show with wim_account")
                 sys.stdout.flush()
                 return
-            elif command == "edit":
+            elif command in ("edit", "edited"):
                 task = asyncio.ensure_future(self.wim.edit(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_edit", task)
                 return
+            elif command == "deleted":
+                return  # TODO cleaning of task just in case should be done
         elif topic == "sdn":
             _sdn_id = params["_id"]
-            if command == "create":
+            if command in ("create", "created"):
                 task = asyncio.ensure_future(self.sdn.create(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_create", task)
                 return
@@ -408,10 +412,12 @@ class Lcm:
                 task = asyncio.ensure_future(self.sdn.delete(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_delete", task)
                 return
-            elif command == "edit":
+            elif command in ("edit", "edited"):
                 task = asyncio.ensure_future(self.sdn.edit(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_edit", task)
                 return
+            elif command == "deleted":
+                return  # TODO cleaning of task just in case should be done
         self.logger.critical("unknown topic {} and command '{}'".format(topic, command))
 
     async def kafka_read(self):
