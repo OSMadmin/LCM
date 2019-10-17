@@ -414,6 +414,11 @@ class NsLcm(LcmBase):
                     populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
                                                  internal_vld_params["name"], "ip-profile"),
                                   ip_profile_2_RO(internal_vld_params["ip-profile"]))
+                if internal_vld_params.get("provider-network"):
+
+                    populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "networks",
+                                                 internal_vld_params["name"], "provider-network"),
+                                  internal_vld_params["provider-network"].copy())
 
                 for icp_params in get_iterable(internal_vld_params, "internal-connection-point"):
                     # look for interface
@@ -447,6 +452,11 @@ class NsLcm(LcmBase):
                 populate_dict(RO_ns_params, ("networks", vld_params["name"], "ip-profile"),
                               ip_profile_2_RO(vld_params["ip-profile"]))
 
+            if vld_params.get("provider-network"):
+
+                populate_dict(RO_ns_params, ("networks", vld_params["name"], "provider-network"),
+                              vld_params["provider-network"].copy())
+
             if "wimAccountId" in vld_params and vld_params["wimAccountId"] is not None:
                 populate_dict(RO_ns_params, ("networks", vld_params["name"], "wim_account"),
                               wim_account_2_RO(vld_params["wimAccountId"])),
@@ -462,6 +472,7 @@ class NsLcm(LcmBase):
                     RO_vld_sites.append({"netmap-use": vld_params["vim-network-name"]})
                 if RO_vld_sites:
                     populate_dict(RO_ns_params, ("networks", vld_params["name"], "sites"), RO_vld_sites)
+
             if vld_params.get("vim-network-id"):
                 RO_vld_sites = []
                 if isinstance(vld_params["vim-network-id"], dict):
