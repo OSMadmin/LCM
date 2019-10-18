@@ -18,6 +18,7 @@
 
 import asyncio
 from collections import OrderedDict
+from time import time
 # from osm_common.dbbase import DbException
 
 __author__ = "Alfonso Tierno"
@@ -71,6 +72,8 @@ class LcmBase:
         """
         if not _desc:
             return
+        now = time()
+        _desc["_admin.modified"] = now
         self.db.set_one(item, {"_id": _id}, _desc)
         _desc.clear()
         # except DbException as e:
@@ -248,12 +251,15 @@ class TaskRegistry(LcmBase):
         else:
             # NS/NSI
             if self._is_service_type_HA(topic):
+                now = time()
                 starttime_this_op = db_lcmop.get("startTime")
                 instance_id_label = self.topic2instid_dict.get(topic)
                 instance_id = db_lcmop.get(instance_id_label)
                 _filter = {instance_id_label: instance_id,
                            'operationState': 'PROCESSING',
-                           'startTime.lt': starttime_this_op}
+                           'startTime.lt': starttime_this_op,
+                           "_admin.modified.gt": now - 2*3600,  # ignore if tow hours of inactivity
+                           }
             # VIM/WIM/SDN
             elif self._is_account_type_HA(topic):
                 _, op_index = self._get_account_and_op_HA(op_id)
