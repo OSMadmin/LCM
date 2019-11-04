@@ -16,10 +16,13 @@
 # under the License.
 ##
 
+import asyncio
+import yaml
 import logging
 import logging.handlers
 from osm_lcm import ROclient
 from osm_lcm.lcm_utils import LcmException, LcmBase
+from n2vc.k8s_helm_conn import K8sHelmConnector
 from osm_common.dbbase import DbException
 from copy import deepcopy
 
@@ -912,3 +915,349 @@ class SdnLcm(LcmBase):
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("sdn", sdn_id, order_id)
+
+
+class K8sClusterLcm(LcmBase):
+
+    def __init__(self, db, msg, fs, lcm_tasks, vca_config, loop):
+        """
+        Init, Connect to database, filesystem storage, and messaging
+        :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
+        :return: None
+        """
+
+        self.logger = logging.getLogger('lcm.k8scluster')
+        self.loop = loop
+        self.lcm_tasks = lcm_tasks
+        self.vca_config = vca_config
+        self.fs = fs
+        self.db = db
+
+        self.k8scluster = K8sHelmConnector(
+            kubectl_command=self.vca_config.get("kubectlpath"),
+            helm_command=self.vca_config.get("helmpath"),
+            fs=self.fs,
+            log=self.logger,
+            db=self.db,
+            on_update_db=None
+        )
+
+        super().__init__(db, msg, fs, self.logger)
+
+    async def create(self, k8scluster_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'create' task here for related future HA operations
+        op_id = k8scluster_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('k8scluster', 'create', op_id):
+            return
+
+        k8scluster_id = k8scluster_content["_id"]
+        k8scluster_content.pop("op_id", None)
+        logging_text = "Task k8scluster_create={} ".format(k8scluster_id)
+        self.logger.debug(logging_text + "Enter")
+
+        db_k8scluster = None
+        db_k8scluster_update = {}
+
+        exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
+        try:
+            step = "Getting k8scluster-id='{}' from db".format(k8scluster_id)
+            self.logger.debug(logging_text + step)
+            db_k8scluster = self.db.get_one("k8sclusters", {"_id": k8scluster_id})
+            self.db.encrypt_decrypt_fields(db_k8scluster.get("credentials"), 'decrypt', ['password', 'secret'],
+                                           schema_version=db_k8scluster["schema_version"], salt=db_k8scluster["_id"])
+            print(db_k8scluster.get("credentials"))
+            print("\n\n\n    FIN CREDENTIALS")
+            print(yaml.safe_dump(db_k8scluster.get("credentials")))
+            print("\n\n\n    FIN OUTPUT")
+            cluster_uuid, uninstall_sw = await self.k8scluster.init_env(yaml.safe_dump(db_k8scluster.
+                                                                                       get("credentials")))
+            db_k8scluster_update["cluster-uuid"] = cluster_uuid
+            if uninstall_sw:
+                db_k8scluster_update["uninstall-sw"] = uninstall_sw
+            step = "Getting the list of repos"
+            self.logger.debug(logging_text + step)
+            task_list = []
+            db_k8srepo_list = self.db.get_list("k8srepos", {})
+            for repo in db_k8srepo_list:
+                step = "Adding repo {} to cluster: {}".format(repo["name"], cluster_uuid)
+                self.logger.debug(logging_text + step)
+                task = asyncio.ensure_future(self.k8scluster.repo_add(cluster_uuid=cluster_uuid,
+                                                                      name=repo["name"], url=repo["url"],
+                                                                      repo_type="chart"))
+                task_list.append(task)
+                if not repo["_admin"].get("cluster-inserted"):
+                    repo["_admin"]["cluster-inserted"] = []
+                repo["_admin"]["cluster-inserted"].append(cluster_uuid)
+                self.update_db_2("k8srepos", repo["_id"], repo)
+
+            done = None
+            pending = None
+            if len(task_list) > 0:
+                self.logger.debug('Waiting for terminate pending tasks...')
+                done, pending = await asyncio.wait(task_list, timeout=3600)
+                if not pending:
+                    self.logger.debug('All tasks finished...')
+                else:
+                    self.logger.info('There are pending tasks: {}'.format(pending))
+            db_k8scluster_update["_admin.operationalState"] = "ENABLED"
+
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_k8scluster:
+                db_k8scluster_update["_admin.operationalState"] = "ERROR"
+                db_k8scluster_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the k8scluster 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+            try:
+                if db_k8scluster_update:
+                    self.update_db_2("k8sclusters", k8scluster_id, db_k8scluster_update)
+                # Register the K8scluster 'create' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('k8scluster', 'create', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+            self.lcm_tasks.remove("k8sclusters", k8scluster_id, order_id)
+
+    async def delete(self, k8scluster_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'delete' task here for related future HA operations
+        op_id = k8scluster_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('k8scluster', 'delete', op_id):
+            return
+
+        k8scluster_id = k8scluster_content["_id"]
+        k8scluster_content.pop("op_id", None)
+        logging_text = "Task k8scluster_delete={} ".format(k8scluster_id)
+        self.logger.debug(logging_text + "Enter")
+
+        db_k8scluster = None
+        db_k8scluster_update = {}
+        exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
+        try:
+            step = "Getting k8scluster='{}' from db".format(k8scluster_id)
+            self.logger.debug(logging_text + step)
+            db_k8scluster = self.db.get_one("k8sclusters", {"_id": k8scluster_id})
+            uninstall_sw = db_k8scluster.get("uninstall-sw")
+            if uninstall_sw is False or uninstall_sw is None:
+                uninstall_sw = False
+            cluster_removed = await self.k8scluster.reset(cluster_uuid=db_k8scluster.get("cluster-uuid"),
+                                                          uninstall_sw=uninstall_sw)
+
+            if cluster_removed:
+                step = "Removing k8scluster='{}' from db".format(k8scluster_id)
+                self.logger.debug(logging_text + step)
+                db_k8srepo_list = self.db.get_list("k8srepos", {})
+                for k8srepo in db_k8srepo_list:
+                    index = 0
+                    for cluster in k8srepo["_admin"]["cluster-inserted"]:
+                        if db_k8scluster.get("cluster-uuid") == cluster:
+                            del(k8srepo["_admin"]["cluster-inserted"][index])
+                            break
+                        index += 1
+                self.update_db_2("k8srepos", k8srepo["_id"], k8srepo)
+                self.db.del_one("k8sclusters", {"_id": k8scluster_id})
+            else:
+                raise LcmException("An error happened during the reset of the k8s cluster '{}'".format(k8scluster_id))
+            # if not cluster_removed:
+            #     raise Exception("K8scluster was not properly removed")
+
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_k8scluster:
+                db_k8scluster_update["_admin.operationalState"] = "ERROR"
+                db_k8scluster_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the WIM 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+            try:
+                if db_k8scluster_update:
+                    self.update_db_2("k8sclusters", k8scluster_id, db_k8scluster_update)
+                # Register the K8scluster 'delete' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('k8scluster', 'delete', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+            self.lcm_tasks.remove("k8sclusters", k8scluster_id, order_id)
+
+
+class K8sRepoLcm(LcmBase):
+
+    def __init__(self, db, msg, fs, lcm_tasks, vca_config, loop):
+        """
+        Init, Connect to database, filesystem storage, and messaging
+        :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
+        :return: None
+        """
+
+        self.logger = logging.getLogger('lcm.k8srepo')
+        self.loop = loop
+        self.lcm_tasks = lcm_tasks
+        self.vca_config = vca_config
+        self.fs = fs
+        self.db = db
+
+        self.k8srepo = K8sHelmConnector(
+            kubectl_command=self.vca_config.get("kubectlpath"),
+            helm_command=self.vca_config.get("helmpath"),
+            fs=self.fs,
+            log=self.logger,
+            db=self.db,
+            on_update_db=None
+        )
+
+        super().__init__(db, msg, fs, self.logger)
+
+    async def create(self, k8srepo_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'create' task here for related future HA operations
+
+        op_id = k8srepo_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('k8srepo', 'create', op_id):
+            return
+
+        k8srepo_id = k8srepo_content.get("_id")
+        logging_text = "Task k8srepo_create={} ".format(k8srepo_id)
+        self.logger.debug(logging_text + "Enter")
+
+        db_k8srepo = None
+        db_k8srepo_update = {}
+        exc = None
+        operationState_HA = ''
+        detailed_status_HA = ''
+        try:
+            step = "Getting k8srepo-id='{}' from db".format(k8srepo_id)
+            self.logger.debug(logging_text + step)
+            db_k8srepo = self.db.get_one("k8srepos", {"_id": k8srepo_id})
+            step = "Getting k8scluster_list from db"
+            self.logger.debug(logging_text + step)
+            db_k8scluster_list = self.db.get_list("k8sclusters", {})
+            db_k8srepo_update["_admin.cluster-inserted"] = []
+            task_list = []
+            for k8scluster in db_k8scluster_list:
+                step = "Adding repo to cluster: {}".format(k8scluster["cluster-uuid"])
+                self.logger.debug(logging_text + step)
+                task = asyncio.ensure_future(self.k8srepo.repo_add(cluster_uuid=k8scluster["cluster-uuid"],
+                                                                   name=db_k8srepo["name"], url=db_k8srepo["url"],
+                                                                   repo_type="chart"))
+                task_list.append(task)
+                db_k8srepo_update["_admin.cluster-inserted"].append(k8scluster["cluster-uuid"])
+
+            done = None
+            pending = None
+            if len(task_list) > 0:
+                self.logger.debug('Waiting for terminate pending tasks...')
+                done, pending = await asyncio.wait(task_list, timeout=3600)
+                if not pending:
+                    self.logger.debug('All tasks finished...')
+                else:
+                    self.logger.info('There are pending tasks: {}'.format(pending))
+            db_k8srepo_update["_admin.operationalState"] = "ENABLED"
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_k8srepo:
+                db_k8srepo_update["_admin.operationalState"] = "ERROR"
+                db_k8srepo_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the WIM 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+            try:
+                if db_k8srepo_update:
+                    self.update_db_2("k8srepos", k8srepo_id, db_k8srepo_update)
+                # Register the K8srepo 'create' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('k8srepo', 'create', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+            self.lcm_tasks.remove("k8srepo", k8srepo_id, order_id)
+
+    async def delete(self, k8srepo_content, order_id):
+
+        # HA tasks and backward compatibility:
+        # If 'vim_content' does not include 'op_id', we a running a legacy NBI version.
+        # In such a case, HA is not supported by NBI, 'op_id' is None, and lock_HA() will do nothing.
+        # Register 'delete' task here for related future HA operations
+        op_id = k8srepo_content.pop('op_id', None)
+        if not self.lcm_tasks.lock_HA('k8srepo', 'delete', op_id):
+            return
+
+        k8srepo_id = k8srepo_content.get("_id")
+        logging_text = "Task k8srepo_delete={} ".format(k8srepo_id)
+        self.logger.debug(logging_text + "Enter")
+
+        db_k8srepo = None
+        db_k8srepo_update = {}
+
+        operationState_HA = ''
+        detailed_status_HA = ''
+        try:
+            step = "Getting k8srepo-id='{}' from db".format(k8srepo_id)
+            self.logger.debug(logging_text + step)
+            db_k8srepo = self.db.get_one("k8srepos", {"_id": k8srepo_id})
+            step = "Getting k8scluster_list from db"
+            self.logger.debug(logging_text + step)
+            db_k8scluster_list = self.db.get_list("k8sclusters", {})
+
+            task_list = []
+            for k8scluster in db_k8scluster_list:
+                task = asyncio.ensure_future(self.k8srepo.repo_remove(cluster_uuid=k8scluster["cluster-uuid"],
+                                                                      name=db_k8srepo["name"]))
+                task_list.append(task)
+            done = None
+            pending = None
+            if len(task_list) > 0:
+                self.logger.debug('Waiting for terminate pending tasks...')
+                done, pending = await asyncio.wait(task_list, timeout=3600)
+                if not pending:
+                    self.logger.debug('All tasks finished...')
+                else:
+                    self.logger.info('There are pending tasks: {}'.format(pending))
+            self.db.del_one("k8srepos", {"_id": k8srepo_id})
+
+        except Exception as e:
+            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            exc = e
+        finally:
+            if exc and db_k8srepo:
+                db_k8srepo_update["_admin.operationalState"] = "ERROR"
+                db_k8srepo_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+                # Mark the WIM 'create' HA task as erroneous
+                operationState_HA = 'FAILED'
+                detailed_status_HA = "ERROR {}: {}".format(step, exc)
+            try:
+                if db_k8srepo_update:
+                    self.update_db_2("k8srepos", k8srepo_id, db_k8srepo_update)
+                # Register the K8srepo 'delete' HA task either
+                # succesful or erroneous, or do nothing (if legacy NBI)
+                self.lcm_tasks.register_HA('k8srepo', 'delete', op_id,
+                                           operationState=operationState_HA,
+                                           detailed_status=detailed_status_HA)
+            except DbException as e:
+                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+            self.lcm_tasks.remove("k8srepo", k8srepo_id, order_id)

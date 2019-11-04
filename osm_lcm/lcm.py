@@ -193,6 +193,8 @@ class Lcm:
         self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
         self.wim = vim_sdn.WimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
         self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
+        self.k8scluster = vim_sdn.K8sClusterLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.vca_config, self.loop)
+        self.k8srepo = vim_sdn.K8sRepoLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.vca_config, self.loop)
 
     async def check_RO_version(self):
         tries = 14
@@ -287,8 +289,31 @@ class Lcm:
                 except Exception as e:
                     self.logger.error("Cannot write into '{}' for healthcheck: {}".format(health_check_file, e))
             return
+        elif topic == "k8scluster":
+            if command == "create" or command == "created":
+                k8scluster_id = params.get("_id")
+                task = asyncio.ensure_future(self.k8scluster.create(params, order_id))
+                self.lcm_tasks.register("k8scluster", k8scluster_id, order_id, "k8scluster_create", task)
+                return
+            elif command == "delete" or command == "deleted":
+                k8scluster_id = params.get("_id")
+                task = asyncio.ensure_future(self.k8scluster.delete(params, order_id))
+                self.lcm_tasks.register("k8scluster", k8scluster_id, order_id, "k8scluster_delete", task)
+                return
+        elif topic == "k8srepo":
+            if command == "create" or command == "created":
+                k8srepo_id = params.get("_id")
+                self.logger.debug("k8srepo_id = {}".format(k8srepo_id))
+                task = asyncio.ensure_future(self.k8srepo.create(params, order_id))
+                self.lcm_tasks.register("k8srepo", k8srepo_id, order_id, "k8srepo_create", task)
+                return
+            elif command == "delete" or command == "deleted":
+                k8srepo_id = params.get("_id")
+                task = asyncio.ensure_future(self.k8srepo.delete(params, order_id))
+                self.lcm_tasks.register("k8srepo", k8srepo_id, order_id, "k8srepo_delete", task)
+                return
         elif topic == "ns":
-            if command == "instantiate":
+            if command == "instantiate" or command == "instantiated":
                 # self.logger.debug("Deploying NS {}".format(nsr_id))
                 nslcmop = params
                 nslcmop_id = nslcmop["_id"]
@@ -296,7 +321,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.ns.instantiate(nsr_id, nslcmop_id))
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
                 return
-            elif command == "terminate":
+            elif command == "terminate" or command == "terminated":
                 # self.logger.debug("Deleting NS {}".format(nsr_id))
                 nslcmop = params
                 nslcmop_id = nslcmop["_id"]
@@ -339,7 +364,7 @@ class Lcm:
             elif command in ("terminated", "instantiated", "scaled", "actioned"):  # "scaled-cooldown-time"
                 return
         elif topic == "nsi":  # netslice LCM processes (instantiate, terminate, etc)
-            if command == "instantiate":
+            if command == "instantiate" or command == "instantiated":
                 # self.logger.debug("Instantiating Network Slice {}".format(nsilcmop["netsliceInstanceId"]))
                 nsilcmop = params
                 nsilcmop_id = nsilcmop["_id"]  # slice operation id
@@ -347,7 +372,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.netslice.instantiate(nsir_id, nsilcmop_id))
                 self.lcm_tasks.register("nsi", nsir_id, nsilcmop_id, "nsi_instantiate", task)
                 return
-            elif command == "terminate":
+            elif command == "terminate" or command == "terminated":
                 # self.logger.debug("Terminating Network Slice NS {}".format(nsilcmop["netsliceInstanceId"]))
                 nsilcmop = params
                 nsilcmop_id = nsilcmop["_id"]  # slice operation id
@@ -375,11 +400,11 @@ class Lcm:
                 return
         elif topic == "vim_account":
             vim_id = params["_id"]
-            if command == "create":
+            if command == "create" or command == "created":
                 task = asyncio.ensure_future(self.vim.create(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_create", task)
                 return
-            elif command == "delete":
+            elif command == "delete" or command == "deleted":
                 self.lcm_tasks.cancel(topic, vim_id)
                 task = asyncio.ensure_future(self.vim.delete(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_delete", task)
@@ -388,17 +413,17 @@ class Lcm:
                 print("not implemented show with vim_account")
                 sys.stdout.flush()
                 return
-            elif command == "edit":
+            elif command == "edit" or command == "edited":
                 task = asyncio.ensure_future(self.vim.edit(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_edit", task)
                 return
         elif topic == "wim_account":
             wim_id = params["_id"]
-            if command == "create":
+            if command == "create" or command == "created":
                 task = asyncio.ensure_future(self.wim.create(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_create", task)
                 return
-            elif command == "delete":
+            elif command == "delete" or command == "deleted":
                 self.lcm_tasks.cancel(topic, wim_id)
                 task = asyncio.ensure_future(self.wim.delete(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_delete", task)
@@ -407,22 +432,22 @@ class Lcm:
                 print("not implemented show with wim_account")
                 sys.stdout.flush()
                 return
-            elif command == "edit":
+            elif command == "edit" or command == "edited":
                 task = asyncio.ensure_future(self.wim.edit(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_edit", task)
                 return
         elif topic == "sdn":
             _sdn_id = params["_id"]
-            if command == "create":
+            if command == "create" or command == "created":
                 task = asyncio.ensure_future(self.sdn.create(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_create", task)
                 return
-            elif command == "delete":
+            elif command == "delete" or command == "deleted":
                 self.lcm_tasks.cancel(topic, _sdn_id)
                 task = asyncio.ensure_future(self.sdn.delete(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_delete", task)
                 return
-            elif command == "edit":
+            elif command == "edit" or command == "edited":
                 task = asyncio.ensure_future(self.sdn.edit(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_edit", task)
                 return
@@ -435,7 +460,7 @@ class Lcm:
         self.first_start = True
         while self.consecutive_errors < 10:
             try:
-                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi")
+                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi", "k8scluster", "k8srepo")
                 topics_admin = ("admin", )
                 await asyncio.gather(
                     self.msg.aioread(topics, self.loop, self.kafka_read_callback),
