@@ -663,6 +663,57 @@ class NsLcm(LcmBase):
             else:
                 raise LcmException("ns_update_vnfr: Not found member_vnf_index={} from VIM info".format(vnf_index))
 
+    @staticmethod
+    def _get_ns_config_info(vca_deployed_list):
+        """
+        Generates a mapping between vnf,vdu elements and the N2VC id
+        :param vca_deployed_list: List of database _admin.deploy.VCA that contains this list
+        :return: a dictionary with {osm-config-mapping: {}} where its element contains:
+            "<member-vnf-index>": <N2VC-id>  for a vnf configuration, or
+            "<member-vnf-index>.<vdu.id>.<vdu replica(0, 1,..)>": <N2VC-id>  for a vdu configuration
+        """
+        mapping = {}
+        ns_config_info = {"osm-config-mapping": mapping}
+        for vca in vca_deployed_list:
+            if not vca["member-vnf-index"]:
+                continue
+            if not vca["vdu_id"]:
+                mapping[vca["member-vnf-index"]] = vca["application"]
+            else:
+                mapping["{}.{}.{}".format(vca["member-vnf-index"], vca["vdu_id"], vca["vdu_count_index"])] =\
+                    vca["application"]
+        return ns_config_info
+
+    @staticmethod
+    def _get_initial_config_primitive_list(desc_primitive_list, vca_deployed):
+        """
+        Generates a list of initial-config-primitive based on the list provided by the descriptor. It includes internal
+        primitives as verify-ssh-credentials, or config when needed
+        :param desc_primitive_list: information of the descriptor
+        :param vca_deployed: information of the deployed, needed for known if it is related to an NS, VNF, VDU and if
+            this element contains a ssh public key
+        :return: The modified list. Can ba an empty list, but always a list
+        """
+        if desc_primitive_list:
+            primitive_list = desc_primitive_list.copy()
+        else:
+            primitive_list = []
+        # look for primitive config, and get the position. None if not present
+        config_position = None
+        for index, primitive in enumerate(primitive_list):
+            if primitive["name"] == "config":
+                config_position = index
+                break
+
+        # for NS, add always a config primitive if not present (bug 874)
+        if not vca_deployed["member-vnf-index"] and config_position is None:
+            primitive_list.insert(0, {"name": "config", "parameter": []})
+            config_position = 0
+        # for VNF/VDU add verify-ssh-credentials after config
+        if vca_deployed["member-vnf-index"] and config_position is not None and vca_deployed.get("ssh-public-key"):
+            primitive_list.insert(config_position + 1, {"name": "verify-ssh-credentials", "parameter": []})
+        return primitive_list
+
     async def instantiate(self, nsr_id, nslcmop_id):
 
         # Try to lock HA task here
@@ -1240,7 +1291,7 @@ class NsLcm(LcmBase):
                 step = "executing proxy charm initial primitives for member_vnf_index={} vdu_id={}".format(vnf_index,
                                                                                                            vdu_id)
                 add_params = {}
-                initial_config_primitive_list = []
+                initial_config_primitive_list = None
                 if vnf_index:
                     if db_vnfrs[vnf_index].get("additionalParamsForVnf"):
                         add_params = db_vnfrs[vnf_index]["additionalParamsForVnf"].copy()
@@ -1249,8 +1300,7 @@ class NsLcm(LcmBase):
                     if vdu_id:
                         for vdu_index, vdu in enumerate(get_iterable(vnfd, 'vdu')):
                             if vdu["id"] == vdu_id:
-                                initial_config_primitive_list = vdu['vdu-configuration'].get(
-                                    'initial-config-primitive', [])
+                                initial_config_primitive_list = vdu['vdu-configuration'].get('initial-config-primitive')
                                 break
                         else:
                             raise LcmException("Not found vdu_id={} at vnfd:vdu".format(vdu_id))
@@ -1262,7 +1312,7 @@ class NsLcm(LcmBase):
                         add_params["rw_mgmt_ip"] = vdur["ip-address"]
                     else:
                         add_params["rw_mgmt_ip"] = db_vnfrs[vnf_index]["ip-address"]
-                        initial_config_primitive_list = vnfd["vnf-configuration"].get('initial-config-primitive', [])
+                        initial_config_primitive_list = vnfd["vnf-configuration"].get('initial-config-primitive')
                 else:
                     if db_nsr.get("additionalParamsForNs"):
                         add_params = db_nsr["additionalParamsForNs"].copy()
@@ -1270,12 +1320,13 @@ class NsLcm(LcmBase):
                         if isinstance(v, str) and v.startswith("!!yaml "):
                             add_params[k] = yaml.safe_load(v[7:])
                     add_params["rw_mgmt_ip"] = None
-                    initial_config_primitive_list = nsd["ns-configuration"].get('initial-config-primitive', [])
+                    add_params["ns_config_info"] = self._get_ns_config_info(vca_deployed_list)
+                    initial_config_primitive_list = nsd["ns-configuration"].get('initial-config-primitive')
 
                 # add primitive verify-ssh-credentials to the list after config only when is a vnf or vdu charm
-                initial_config_primitive_list = initial_config_primitive_list.copy()
-                if initial_config_primitive_list and vnf_index and vca_deployed.get("ssh-public-key"):
-                    initial_config_primitive_list.insert(1, {"name": "verify-ssh-credentials", "parameter": []})
+                # add config if not present for NS charm
+                initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
+                                                                                        vca_deployed)
 
                 for initial_config_primitive in initial_config_primitive_list:
                     primitive_params_ = self._map_primitive_params(initial_config_primitive, {}, add_params)
@@ -2155,6 +2206,11 @@ class NsLcm(LcmBase):
                                                                width=256)
             elif isinstance(calculated_params[param_name], str) and calculated_params[param_name].startswith("!!yaml "):
                 calculated_params[param_name] = calculated_params[param_name][7:]
+
+        # add always ns_config_info if primitive name is config
+        if primitive_desc["name"] == "config":
+            if "ns_config_info" in instantiation_params:
+                calculated_params["ns_config_info"] = instantiation_params["ns_config_info"]
         return calculated_params
 
     async def _ns_execute_primitive(self, db_deployed, member_vnf_index, vdu_id, vdu_name, vdu_count_index,
