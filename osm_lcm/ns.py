@@ -738,7 +738,7 @@ class NsLcm(LcmBase):
         exc = None
         try:
             # wait for any previous tasks in process
-            step = "Waiting for previous tasks"
+            step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
             step = "Getting nslcmop={} from db".format(nslcmop_id)
@@ -1936,6 +1936,7 @@ class NsLcm(LcmBase):
         autoremove = False  # autoremove after terminated
         try:
             # wait for any previous tasks in process
+            step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA("ns", 'nslcmops', nslcmop_id)
 
             step = "Getting nslcmop={} from db".format(nslcmop_id)
@@ -2297,6 +2298,7 @@ class NsLcm(LcmBase):
         exc = None
         try:
             # wait for any previous tasks in process
+            step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
             step = "Getting information from database"
@@ -2430,6 +2432,7 @@ class NsLcm(LcmBase):
         vnfr_scaled = False
         try:
             # wait for any previous tasks in process
+            step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
             step = "Getting nslcmop from database"
