@@ -138,23 +138,23 @@ class NsLcm(LcmBase):
                           .format(table, filter, path, updated_data))
 
         # write NS status to database
-        try:
-            nsrs_id = filter.get('_id')
-            # get ns record
-            nsr = self.db.get_one(table=table, q_filter=filter)
-            # get VCA deployed list
-            vca_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'VCA'))
-            # get RO deployed
-            ro_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'RO'))
-            for vca in vca_list:
-                status = vca.get('status')
-                detailed_status = vca.get('detailed-status')
-            for ro in ro_list:
-                pass
-
-        except Exception as e:
-            self.logger.error('_on_update_n2vc_db(table={},filter={},path={},updated_data={}) Error updating db: {}'
-                          .format(table, filter, path, updated_data, e))
+        # try:
+        #     # nsrs_id = filter.get('_id')
+        #     # get ns record
+        #     nsr = self.db.get_one(table=table, q_filter=filter)
+        #     # get VCA deployed list
+        #     vca_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'VCA'))
+        #     # get RO deployed
+        #     ro_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'RO'))
+        #     for vca in vca_list:
+        #         status = vca.get('status')
+        #         detailed_status = vca.get('detailed-status')
+        #     for ro in ro_list:
+        #         pass
+        #
+        # except Exception as e:
+        #     self.logger.error('_on_update_n2vc_db(table={},filter={},path={},updated_data={}) Error updating db: {}'
+        #                       .format(table, filter, path, updated_data, e))
 
     def vnfd2RO(self, vnfd, new_id=None, additionalParams=None, nsrId=None):
         """
@@ -1673,6 +1673,7 @@ class NsLcm(LcmBase):
         db_nslcmop_update = {}
         nslcmop_operation_state = None
         autoremove = False  # autoremove after terminated
+        pending_tasks = []
         try:
             # wait for any previous tasks in process
             await self.lcm_tasks.waitfor_related_HA("ns", 'nslcmops', nslcmop_id)
@@ -1689,8 +1690,6 @@ class NsLcm(LcmBase):
             # RO_vim_id = db_vim["_admin"]["deployed"]["RO"]
             # Call internal terminate action
             await self._terminate_action(db_nslcmop, nslcmop_id, nsr_id)
-
-            pending_tasks = []
 
             db_nsr_update["operational-status"] = "terminating"
             db_nsr_update["config-status"] = "terminating"
@@ -1923,7 +1922,7 @@ class NsLcm(LcmBase):
         return calculated_params
 
     async def _ns_execute_primitive(self, db_deployed, member_vnf_index, vdu_id, vdu_name, vdu_count_index,
-                                    primitive, primitive_params, retries=0, retries_interval=30) -> str, str:
+                                    primitive, primitive_params, retries=0, retries_interval=30) -> (str, str):
 
         # find vca_deployed record for this action
         try:
@@ -1962,13 +1961,13 @@ class NsLcm(LcmBase):
                     # execution was OK
                     break
                 except Exception as e:
-                    self.logger.debug('Error executing action {} on {} -> {}'.format(primitive, ee_id, e))
                     retries -= 1
                     if retries >= 0:
+                        self.logger.debug('Error executing action {} on {} -> {}'.format(primitive, ee_id, e))
                         # wait and retry
                         await asyncio.sleep(retries_interval, loop=self.loop)
-            else:
-                return 'Cannot execute action {} on {}: {}'.format(primitive, ee_id, e), 'FAIL'
+                    else:
+                        return 'Cannot execute action {} on {}: {}'.format(primitive, ee_id, e), 'FAIL'
 
             return output, 'OK'
 

@@ -980,7 +980,7 @@ class TestMyNS(asynctest.TestCase):
             yield "app_name-{}".format(num_calls)
             num_calls += 1
 
-    def _n2vc_CreateExecutionEnvironment(self, namespace):
+    def _n2vc_CreateExecutionEnvironment(self, namespace, reuse_ee_id, db_dict):
         k_list = namespace.split(".")
         ee_id = k_list[1] + "."
         if len(k_list) >= 2:
@@ -988,7 +988,7 @@ class TestMyNS(asynctest.TestCase):
                 ee_id += k[:8]
         else:
             ee_id += "_NS_"
-        return ee_id
+        return ee_id, {}
 
     def _ro_show(self, *args, **kwargs):
         ro_ns_desc = yaml.load(ro_ns_text)
@@ -1074,13 +1074,16 @@ class TestMyNS(asynctest.TestCase):
             # allow several versions of n2vc
             self.my_ns.n2vc.FormatApplicationName = asynctest.Mock(side_effect=self._n2vc_FormatApplicationName())
             self.my_ns.n2vc.DeployCharms = asynctest.CoroutineMock(side_effect=self._n2vc_DeployCharms)
-            self.my_ns.n2vc.CreateExecutionEnvironment = asynctest.CoroutineMock(
+            self.my_ns.n2vc.create_execution_environment = asynctest.CoroutineMock(
                 side_effect=self._n2vc_CreateExecutionEnvironment)
-            self.my_ns.n2vc.InstallConfigurationSW = asynctest.CoroutineMock(return_value=pub_key)
-            self.my_ns.n2vc.ExecutePrimitive = asynctest.CoroutineMock(side_effect=self._return_uuid)
+            self.my_ns.n2vc.install_configuration_sw = asynctest.CoroutineMock(return_value=pub_key)
+            self.my_ns.n2vc.get_ee_ssh_public__key = asynctest.CoroutineMock(return_value=pub_key)
+            self.my_ns.n2vc.exec_primitive = asynctest.CoroutineMock(side_effect=self._return_uuid)
             self.my_ns.n2vc.GetPrimitiveStatus = asynctest.CoroutineMock(return_value="completed")
             self.my_ns.n2vc.GetPrimitiveOutput = asynctest.CoroutineMock(return_value={"result": "ok",
                                                                                        "pubkey": pub_key})
+            self.my_ns.n2vc.get_public_key = asynctest.CoroutineMock(
+                return_value=getenv("OSMLCM_VCA_PUBKEY", "public_key"))
 
         # Mock RO
         if not getenv("OSMLCMTEST_RO_NOMOCK"):
