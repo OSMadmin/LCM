@@ -20,18 +20,18 @@ WORKDIR /app/LCM
 
 RUN apt-get update && apt-get install -y git tox python3 \
     python3-pip python3-aiohttp python3-jinja2 \
-    && pip3 install pip==9.0.3 \
-    && pip3 install -U 'PyYAML==3.*' 'aiohttp==0.20.2' flake8
+    && python3 -m pip install pip --upgrade  \
+    && python3 -m pip install -U 'PyYAML==3.*' 'aiohttp==0.20.2' flake8
 
 RUN git -C /app clone https://osm.etsi.org/gerrit/osm/N2VC.git \
-    && pip3 install -e /app/N2VC \
-    && pip3 install -e /app/N2VC/modules/libjuju \
+    && python3 -m pip install -e /app/N2VC \
+    && python3 -m pip install -U juju \
     && apt-get install -y libffi-dev libssl-dev openssh-client
     # cd N2VC; python3 setup.py develop
     # cd modules/libjuju; python3 setup.py develop
 
 RUN git -C /app clone https://osm.etsi.org/gerrit/osm/common.git \
-    && pip3 install -e /app/common
+    && python3 -m pip install -e /app/common
     #  python3-pymongo python3-yaml pycrypto aiokafka
 
 RUN mkdir -p /app/storage/kafka && mkdir -p /app/log
