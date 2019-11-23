@@ -17,6 +17,11 @@
 # under the License.
 ##
 
+
+# DEBUG WITH PDB
+import os
+import pdb
+
 import asyncio
 import yaml
 import logging
@@ -24,7 +29,11 @@ import logging.handlers
 import getopt
 import sys
 
-from osm_lcm import ROclient, ns, vim_sdn, netslice
+from osm_lcm import ns
+from osm_lcm import vim_sdn
+from osm_lcm import netslice
+from osm_lcm import ROclient
+
 from time import time, sleep
 from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
 from osm_lcm import version as lcm_version, version_date as lcm_version_date
@@ -38,10 +47,14 @@ from os import environ, path
 from random import choice as random_choice
 from n2vc import version as n2vc_version
 
+if os.getenv('OSMLCM_PDB_DEBUG', None) is not None:
+    pdb.set_trace()
+
 
 __author__ = "Alfonso Tierno"
 min_RO_version = "6.0.2"
 min_n2vc_version = "0.0.2"
+
 min_common_version = "0.1.19"
 # uncomment if LCM is installed as library and installed, and get them from __init__.py
 # lcm_version = '0.1.41'
@@ -149,6 +162,7 @@ class Lcm:
                 raise LcmException("Invalid configuration param '{}' at '[storage]':'driver'".format(
                     config["storage"]["driver"]))
 
+            # copy message configuration in order to remove 'group_id' for msg_admin
             config_message = config["message"].copy()
             config_message["loop"] = self.loop
             if config_message["driver"] == "local":
@@ -179,6 +193,8 @@ class Lcm:
         self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
         self.wim = vim_sdn.WimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
         self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
+        self.k8scluster = vim_sdn.K8sClusterLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.vca_config, self.loop)
+        self.k8srepo = vim_sdn.K8sRepoLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.vca_config, self.loop)
 
     async def check_RO_version(self):
         tries = 14
@@ -273,8 +289,31 @@ class Lcm:
                 except Exception as e:
                     self.logger.error("Cannot write into '{}' for healthcheck: {}".format(health_check_file, e))
             return
+        elif topic == "k8scluster":
+            if command == "create" or command == "created":
+                k8scluster_id = params.get("_id")
+                task = asyncio.ensure_future(self.k8scluster.create(params, order_id))
+                self.lcm_tasks.register("k8scluster", k8scluster_id, order_id, "k8scluster_create", task)
+                return
+            elif command == "delete" or command == "deleted":
+                k8scluster_id = params.get("_id")
+                task = asyncio.ensure_future(self.k8scluster.delete(params, order_id))
+                self.lcm_tasks.register("k8scluster", k8scluster_id, order_id, "k8scluster_delete", task)
+                return
+        elif topic == "k8srepo":
+            if command == "create" or command == "created":
+                k8srepo_id = params.get("_id")
+                self.logger.debug("k8srepo_id = {}".format(k8srepo_id))
+                task = asyncio.ensure_future(self.k8srepo.create(params, order_id))
+                self.lcm_tasks.register("k8srepo", k8srepo_id, order_id, "k8srepo_create", task)
+                return
+            elif command == "delete" or command == "deleted":
+                k8srepo_id = params.get("_id")
+                task = asyncio.ensure_future(self.k8srepo.delete(params, order_id))
+                self.lcm_tasks.register("k8srepo", k8srepo_id, order_id, "k8srepo_delete", task)
+                return
         elif topic == "ns":
-            if command == "instantiate":
+            if command == "instantiate" or command == "instantiated":
                 # self.logger.debug("Deploying NS {}".format(nsr_id))
                 nslcmop = params
                 nslcmop_id = nslcmop["_id"]
@@ -282,7 +321,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.ns.instantiate(nsr_id, nslcmop_id))
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
                 return
-            elif command == "terminate":
+            elif command == "terminate" or command == "terminated":
                 # self.logger.debug("Deleting NS {}".format(nsr_id))
                 nslcmop = params
                 nslcmop_id = nslcmop["_id"]
@@ -325,7 +364,7 @@ class Lcm:
             elif command in ("terminated", "instantiated", "scaled", "actioned"):  # "scaled-cooldown-time"
                 return
         elif topic == "nsi":  # netslice LCM processes (instantiate, terminate, etc)
-            if command == "instantiate":
+            if command == "instantiate" or command == "instantiated":
                 # self.logger.debug("Instantiating Network Slice {}".format(nsilcmop["netsliceInstanceId"]))
                 nsilcmop = params
                 nsilcmop_id = nsilcmop["_id"]  # slice operation id
@@ -333,7 +372,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.netslice.instantiate(nsir_id, nsilcmop_id))
                 self.lcm_tasks.register("nsi", nsir_id, nsilcmop_id, "nsi_instantiate", task)
                 return
-            elif command == "terminate":
+            elif command == "terminate" or command == "terminated":
                 # self.logger.debug("Terminating Network Slice NS {}".format(nsilcmop["netsliceInstanceId"]))
                 nsilcmop = params
                 nsilcmop_id = nsilcmop["_id"]  # slice operation id
@@ -365,7 +404,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.vim.create(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_create", task)
                 return
-            elif command == "delete":
+            elif command == "delete" or command == "deleted":
                 self.lcm_tasks.cancel(topic, vim_id)
                 task = asyncio.ensure_future(self.vim.delete(params, order_id))
                 self.lcm_tasks.register("vim_account", vim_id, order_id, "vim_delete", task)
@@ -386,7 +425,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.wim.create(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_create", task)
                 return
-            elif command == "delete":
+            elif command == "delete" or command == "deleted":
                 self.lcm_tasks.cancel(topic, wim_id)
                 task = asyncio.ensure_future(self.wim.delete(params, order_id))
                 self.lcm_tasks.register("wim_account", wim_id, order_id, "wim_delete", task)
@@ -407,7 +446,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.sdn.create(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_create", task)
                 return
-            elif command == "delete":
+            elif command == "delete" or command == "deleted":
                 self.lcm_tasks.cancel(topic, _sdn_id)
                 task = asyncio.ensure_future(self.sdn.delete(params, order_id))
                 self.lcm_tasks.register("sdn", _sdn_id, order_id, "sdn_delete", task)
@@ -427,7 +466,7 @@ class Lcm:
         self.first_start = True
         while self.consecutive_errors < 10:
             try:
-                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi")
+                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi", "k8scluster", "k8srepo")
                 topics_admin = ("admin", )
                 await asyncio.gather(
                     self.msg.aioread(topics, self.loop, self.kafka_read_callback),
@@ -487,7 +526,7 @@ class Lcm:
         # and not parse integer or boolean
         try:
             with open(config_file) as f:
-                conf = yaml.load(f)
+                conf = yaml.load(f, Loader=yaml.Loader)
             for k, v in environ.items():
                 if not k.startswith("OSMLCM_"):
                     continue
@@ -536,7 +575,7 @@ class Lcm:
 
 def usage():
     print("""Usage: {} [options]
-        -c|--config [configuration_file]: loads the configuration file (default: ./nbi.cfg)
+        -c|--config [configuration_file]: loads the configuration file (default: ./lcm.cfg)
         --health-check: do not run lcm, but inspect kafka bus to determine if lcm is healthy
         -h|--help: shows this help
         """.format(sys.argv[0]))
@@ -562,8 +601,15 @@ def health_check():
 
 
 if __name__ == '__main__':
+
     try:
+        print("SYS.PATH='{}'".format(sys.path))
         # load parameters and configuration
+        # -h
+        # -c value
+        # --config value
+        # --help
+        # --health-check
         opts, args = getopt.getopt(sys.argv[1:], "hc:", ["config=", "help", "health-check"])
         # TODO add  "log-socket-host=", "log-socket-port=", "log-file="
         config_file = None
@@ -583,9 +629,10 @@ if __name__ == '__main__':
             #     log_file = a
             else:
                 assert False, "Unhandled option"
+
         if config_file:
             if not path.isfile(config_file):
-                print("configuration file '{}' not exist".format(config_file), file=sys.stderr)
+                print("configuration file '{}' does not exist".format(config_file), file=sys.stderr)
                 exit(1)
         else:
             for config_file in (__file__[:__file__.rfind(".")] + ".cfg", "./lcm.cfg", "/etc/osm/lcm.cfg"):

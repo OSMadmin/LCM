@@ -51,7 +51,7 @@ setup(
     ],
     install_requires=[
         # 'pymongo',
-        'PyYAML==3.*',
+        'PyYAML>=3.*',
         'aiohttp==0.20.2',
         'osm-common',
         'n2vc',

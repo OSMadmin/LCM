@@ -100,7 +100,7 @@ class TaskRegistry(LcmBase):
 
     # NS/NSI: "services" VIM/WIM/SDN: "accounts"
     topic_service_list = ['ns', 'nsi']
-    topic_account_list = ['vim', 'wim', 'sdn']
+    topic_account_list = ['vim', 'wim', 'sdn', 'k8scluster', 'k8srepo']
 
     # Map topic to InstanceID
     topic2instid_dict = {
@@ -113,7 +113,9 @@ class TaskRegistry(LcmBase):
         'nsi': 'nsilcmops',
         'vim': 'vim_accounts',
         'wim': 'wim_accounts',
-        'sdn': 'sdns'}
+        'sdn': 'sdns',
+        'k8scluster': 'k8sclusters',
+        'k8srepo': 'k8srepos'}
 
     def __init__(self, worker_id=None, db=None, logger=None):
         self.task_registry = {
@@ -122,6 +124,8 @@ class TaskRegistry(LcmBase):
             "vim_account": {},
             "wim_account": {},
             "sdn": {},
+            "k8scluster": {},
+            "k8srepo": {},
         }
         self.worker_id = worker_id
         self.db = db
@@ -235,7 +239,7 @@ class TaskRegistry(LcmBase):
         # NS/NSI: Use op_id as '_id'
         elif self._is_service_type_HA(topic):
             _id = op_id
-        # VIM/SDN/WIM: Split op_id to get Account ID and Operation Index, use Account ID as '_id'
+        # VIM/SDN/WIM/K8SCLUSTER: Split op_id to get Account ID and Operation Index, use Account ID as '_id'
         elif self._is_account_type_HA(topic):
             _id, _ = self._get_account_and_op_HA(op_id)
         return _id
@@ -260,7 +264,7 @@ class TaskRegistry(LcmBase):
                            'startTime.lt': starttime_this_op,
                            "_admin.modified.gt": now - 2*3600,  # ignore if tow hours of inactivity
                            }
-            # VIM/WIM/SDN
+            # VIM/WIM/SDN/K8scluster
             elif self._is_account_type_HA(topic):
                 _, op_index = self._get_account_and_op_HA(op_id)
                 _ops = db_lcmop['_admin']['operations']
@@ -309,7 +313,7 @@ class TaskRegistry(LcmBase):
         the task in this instance of LCM, without querying the DB.
         """
 
-        # Backward compatibility for VIM/WIM/SDN without op_id
+        # Backward compatibility for VIM/WIM/SDN/k8scluster without op_id
         if self._is_account_type_HA(topic) and op_id is None:
             return True
 
