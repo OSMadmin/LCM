@@ -867,12 +867,20 @@ class NsLcm(LcmBase):
         step = "Deployed at VIM"
         self.logger.debug(logging_text + step)
 
-    # wait for ip addres at RO, and optionally, insert public key in virtual machine
-    # returns IP address
-    async def insert_key_ro(self, logging_text, nsr_id, vnfr_id, vdu_id, vdu_index, pub_key=None, user=None):
+    async def wait_vm_up_insert_key_ro(self, logging_text, nsr_id, vnfr_id, vdu_id, vdu_index, pub_key=None, user=None):
+        """
+        Wait for ip addres at RO, and optionally, insert public key in virtual machine
+        :param logging_text: prefix use for logging
+        :param nsr_id:
+        :param vnfr_id:
+        :param vdu_id:
+        :param vdu_index:
+        :param pub_key: public ssh key to inject, None to skip
+        :param user: user to apply the public ssh key
+        :return: IP address
+        """
 
-        self.logger.debug(logging_text + "Starting insert_key_ro")
-
+        # self.logger.debug(logging_text + "Starting wait_vm_up_insert_key_ro")
         ro_nsr_id = None
         ip_address = None
         nb_tries = 0
@@ -911,11 +919,11 @@ class NsLcm(LcmBase):
             if not target_vdu_id:
                 continue
 
-            self.logger.debug(logging_text + "IP address={}".format(ip_address))
+            # self.logger.debug(logging_text + "IP address={}".format(ip_address))
 
             # inject public key into machine
             if pub_key and user:
-                self.logger.debug(logging_text + "Inserting RO key")
+                # self.logger.debug(logging_text + "Inserting RO key")
                 try:
                     ro_vm_id = "{}-{}".format(db_vnfr["member-vnf-index-ref"], target_vdu_id)  # TODO add vdu_index
                     result_dict = await self.RO.create_action(
@@ -934,10 +942,12 @@ class NsLcm(LcmBase):
                                 result.get("description")))
                     break
                 except ROclient.ROClientException as e:
+                    if not nb_tries:
+                        self.logger.debug(logging_text + "error injecting key: {}. Retrying until {} seconds".
+                                          format(e, 20*10))
                     nb_tries += 1
-                    if nb_tries >= 10:
+                    if nb_tries >= 20:
                         raise LcmException("Reaching max tries injecting key. Error: {}".format(e))
-                    self.logger.debug(logging_text + "error injecting key: {}".format(e))
             else:
                 break
 
@@ -1042,22 +1052,24 @@ class NsLcm(LcmBase):
 
             # if SSH access is required, then get execution environment SSH public
             required = deep_get(config_descriptor, ("config-access", "ssh-access", "required"))
+            pub_key = None
+            user = None
             if is_proxy_charm and required:
-
-                pub_key = None
+                user = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
+                step = "Install configuration Software, getting public ssh key"
                 pub_key = await self.n2vc.get_ee_ssh_public__key(
                     ee_id=ee_id,
                     db_dict=db_dict
                 )
 
-                user = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
-                # insert pub_key into VM
-                # n2vc_redesign STEP 5.1
                 step = "Insert public key into VM"
-                self.logger.debug(logging_text + step)
+            else:
+                step = "Waiting to VM being up and getting IP address"
+            self.logger.debug(logging_text + step)
 
-            # wait for RO (ip-address)
-            rw_mgmt_ip = await self.insert_key_ro(
+            # n2vc_redesign STEP 5.1
+            # wait for RO (ip-address) Insert pub_key into VM
+            rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(
                 logging_text=logging_text,
                 nsr_id=nsr_id,
                 vnfr_id=vnfr_id,
@@ -1066,20 +1078,20 @@ class NsLcm(LcmBase):
                 user=user,
                 pub_key=pub_key
             )
+            self.logger.debug(logging_text + ' VM_ip_address={}'.format(rw_mgmt_ip))
 
-            # store rw_mgmt_ip in deploy params for later substitution
-            self.logger.debug('rw_mgmt_ip={}'.format(rw_mgmt_ip))
+            # store rw_mgmt_ip in deploy params for later replacement
             deploy_params["rw_mgmt_ip"] = rw_mgmt_ip
 
             # n2vc_redesign STEP 6  Execute initial config primitive
-            initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
             step = 'execute initial config primitive'
+            initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
 
             # sort initial config primitives by 'seq'
             try:
                 initial_config_primitive_list.sort(key=lambda val: int(val['seq']))
-            except Exception:
-                self.logger.warn(logging_text + 'Cannot sort by "seq" field' + step)
+            except Exception as e:
+                self.logger.error(logging_text + step + ": " + str(e))
 
             # add config if not present for NS charm
             initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
@@ -1145,7 +1157,6 @@ class NsLcm(LcmBase):
         nslcmop_operation_state = None
         db_vnfrs = {}     # vnf's info indexed by member-index
         # n2vc_info = {}
-        # n2vc_key_list = []  # list of public keys to be injected as authorized to VMs
         task_instantiation_list = []
         exc = None
         try:
@@ -1238,6 +1249,9 @@ class NsLcm(LcmBase):
             # n2vc_redesign STEP 1 Get VCA public ssh-key
             # feature 1429. Add n2vc public key to needed VMs
             n2vc_key = await self.n2vc.get_public_key()
+            n2vc_key_list = [n2vc_key]
+            if self.vca_config.get("public_key"):
+                n2vc_key_list.append(self.vca_config["public_key"])
 
             # n2vc_redesign STEP 2 Deploy Network Scenario
             task_ro = asyncio.ensure_future(
@@ -1249,7 +1263,7 @@ class NsLcm(LcmBase):
                     db_nslcmop=db_nslcmop,
                     db_vnfrs=db_vnfrs,
                     db_vnfds_ref=db_vnfds_ref,
-                    n2vc_key_list=[n2vc_key]
+                    n2vc_key_list=n2vc_key_list
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_RO", task_ro)
