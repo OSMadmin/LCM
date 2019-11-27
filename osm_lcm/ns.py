@@ -114,6 +114,8 @@ class NsLcm(LcmBase):
             self.vca_config['public_key'] = self.vca_config['pubkey']
         if 'cacert' in self.vca_config:
             self.vca_config['ca_cert'] = self.vca_config['cacert']
+        if 'apiproxy' in self.vca_config:
+            self.vca_config['api_proxy'] = self.vca_config['apiproxy']
 
         # create N2VC connector
         self.n2vc = N2VCJujuConnector(
@@ -124,10 +126,9 @@ class NsLcm(LcmBase):
             url='{}:{}'.format(self.vca_config['host'], self.vca_config['port']),
             username=self.vca_config.get('user', None),
             vca_config=self.vca_config,
-            on_update_db=self._on_update_n2vc_db
-            # TODO
-            # New N2VC argument
-            # api_proxy=vca_config.get('apiproxy')
+            on_update_db=self._on_update_n2vc_db,
+            # ca_cert=self.vca_config.get('cacert'),
+            # api_proxy=self.vca_config.get('apiproxy'),
         )
 
         self.k8sclusterhelm = K8sHelmConnector(
@@ -1001,35 +1002,35 @@ class NsLcm(LcmBase):
             if is_proxy_charm:
                 step = "create execution environment"
                 self.logger.debug(logging_text + step)
-                ee_id, credentials = await self.n2vc.create_execution_environment(
-                    namespace=namespace,
-                    reuse_ee_id=ee_id,
-                    db_dict=db_dict
-                )
-
+                ee_id, credentials = await self.n2vc.create_execution_environment(namespace=namespace,
+                                                                                  reuse_ee_id=ee_id,
+                                                                                  db_dict=db_dict)
             else:
-                step = "register execution environment"
-                # TODO wait until deployed by RO, when IP address has been filled. By pooling????
-                credentials = {}   # TODO db_credentials["ip_address"]
+                step = "Waiting to VM being up and getting IP address"
+                self.logger.debug(logging_text + step)
+                rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(logging_text, nsr_id, vnfr_id, vdu_id, vdu_index,
+                                                                 user=None, pub_key=None)
+                credentials = {"hostname": rw_mgmt_ip}
                 # get username
+                username = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
                 # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
                 #  merged. Meanwhile let's get username from initial-config-primitive
-                if config_descriptor.get("initial-config-primitive"):
-                    for param in config_descriptor["initial-config-primitive"][0].get("parameter", ()):
-                        if param["name"] == "ssh-username":
-                            credentials["username"] = param["value"]
-                if config_descriptor.get("config-access") and config_descriptor["config-access"].get("ssh-access"):
-                    if config_descriptor["config-access"]["ssh-access"].get("required"):
-                        credentials["username"] = \
-                            config_descriptor["config-access"]["ssh-access"].get("default-user")
-
+                if not username and config_descriptor.get("initial-config-primitive"):
+                    for config_primitive in config_descriptor["initial-config-primitive"]:
+                        for param in config_primitive.get("parameter", ()):
+                            if param["name"] == "ssh-username":
+                                username = param["value"]
+                                break
+                if not username:
+                    raise LcmException("Cannot determine the username neither with 'initial-config-promitive' nor with "
+                                       "'config-access.ssh-access.default-user'")
+                credentials["username"] = username
                 # n2vc_redesign STEP 3.2
+
+                step = "register execution environment {}".format(credentials)
                 self.logger.debug(logging_text + step)
-                ee_id = await self.n2vc.register_execution_environment(
-                    credentials=credentials,
-                    namespace=namespace,
-                    db_dict=db_dict
-                )
+                ee_id = await self.n2vc.register_execution_environment(credentials=credentials, namespace=namespace,
+                                                                       db_dict=db_dict)
 
             # for compatibility with MON/POL modules, the need model and application name at database
             # TODO ask to N2VC instead of assuming the format "model_name.application_name"
@@ -1041,44 +1042,33 @@ class NsLcm(LcmBase):
                                               db_update_entry + "ee_id": ee_id})
 
             # n2vc_redesign STEP 3.3
-            # TODO check if already done
+
             step = "Install configuration Software"
+            # TODO check if already done
             self.logger.debug(logging_text + step)
-            await self.n2vc.install_configuration_sw(
-                ee_id=ee_id,
-                artifact_path=artifact_path,
-                db_dict=db_dict
-            )
+            await self.n2vc.install_configuration_sw(ee_id=ee_id, artifact_path=artifact_path, db_dict=db_dict)
 
             # if SSH access is required, then get execution environment SSH public
-            required = deep_get(config_descriptor, ("config-access", "ssh-access", "required"))
-            pub_key = None
-            user = None
-            if is_proxy_charm and required:
-                user = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
-                step = "Install configuration Software, getting public ssh key"
-                pub_key = await self.n2vc.get_ee_ssh_public__key(
-                    ee_id=ee_id,
-                    db_dict=db_dict
-                )
+            if is_proxy_charm:  # if native charm we have waited already to VM be UP
+                pub_key = None
+                user = None
+                if deep_get(config_descriptor, ("config-access", "ssh-access", "required")):
+                    # Needed to inject a ssh key
+                    user = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
+                    step = "Install configuration Software, getting public ssh key"
+                    pub_key = await self.n2vc.get_ee_ssh_public__key(ee_id=ee_id, db_dict=db_dict)
 
-                step = "Insert public key into VM"
-            else:
-                step = "Waiting to VM being up and getting IP address"
-            self.logger.debug(logging_text + step)
+                    step = "Insert public key into VM"
+                else:
+                    step = "Waiting to VM being up and getting IP address"
+                self.logger.debug(logging_text + step)
 
-            # n2vc_redesign STEP 5.1
-            # wait for RO (ip-address) Insert pub_key into VM
-            rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(
-                logging_text=logging_text,
-                nsr_id=nsr_id,
-                vnfr_id=vnfr_id,
-                vdu_id=vdu_id,
-                vdu_index=vdu_index,
-                user=user,
-                pub_key=pub_key
-            )
-            self.logger.debug(logging_text + ' VM_ip_address={}'.format(rw_mgmt_ip))
+                # n2vc_redesign STEP 5.1
+                # wait for RO (ip-address) Insert pub_key into VM
+                rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(logging_text, nsr_id, vnfr_id, vdu_id, vdu_index,
+                                                                 user=user, pub_key=pub_key)
+
+                self.logger.debug(logging_text + ' VM_ip_address={}'.format(rw_mgmt_ip))
 
             # store rw_mgmt_ip in deploy params for later replacement
             deploy_params["rw_mgmt_ip"] = rw_mgmt_ip
@@ -1103,6 +1093,7 @@ class NsLcm(LcmBase):
                     deploy_params["ns_config_info"] = self._get_ns_config_info(vca_deployed_list)
                 # TODO check if already done
                 primitive_params_ = self._map_primitive_params(initial_config_primitive, {}, deploy_params)
+
                 step = "execute primitive '{}' params '{}'".format(initial_config_primitive["name"], primitive_params_)
                 self.logger.debug(logging_text + step)
                 await self.n2vc.exec_primitive(
@@ -1248,7 +1239,7 @@ class NsLcm(LcmBase):
             task_instantiation_list.append(task_kdu)
             # n2vc_redesign STEP 1 Get VCA public ssh-key
             # feature 1429. Add n2vc public key to needed VMs
-            n2vc_key = await self.n2vc.get_public_key()
+            n2vc_key = self.n2vc.get_public_key()
             n2vc_key_list = [n2vc_key]
             if self.vca_config.get("public_key"):
                 n2vc_key_list.append(self.vca_config["public_key"])

@@ -22,12 +22,14 @@ import yaml
 # import logging
 from os import getenv
 from osm_lcm.ns import NsLcm
-from osm_common.dbmongo import DbMongo
+from osm_common.dbmemory import DbMemory
 from osm_common.msgkafka import MsgKafka
 from osm_common.fslocal import FsLocal
 from osm_lcm.lcm_utils import TaskRegistry
 from n2vc.vnf import N2VC
+# from n2vc.k8s_helm_conn import K8sHelmConnector
 from uuid import uuid4
+from asynctest.mock import patch
 
 from osm_lcm.tests import test_db_descriptors as descriptors
 
@@ -68,41 +70,6 @@ ro_config = {
 
 
 class TestMyNS(asynctest.TestCase):
-
-    def _db_get_one(self, table, q_filter=None, fail_on_empty=True, fail_on_more=True):
-        if table not in self.db_content:
-            self.assertTrue(False, "db.get_one called with table={}".format(table))
-        for db_item in self.db_content[table]:
-            if db_item["_id"] == q_filter["_id"]:
-                return db_item
-        else:
-            self.assertTrue(False, "db.get_one, table={}, not found _id={}".format(table, q_filter["_id"]))
-
-    def _db_get_list(self, table, q_filter=None):
-        if table not in self.db_content:
-            self.assertTrue(False, "db.get_list called with table={} not found".format(table))
-        return self.db_content[table]
-
-    def _db_set_one(self, table, q_filter, update_dict, fail_on_empty=True, unset=None, pull=None, push=None):
-        db_item = self._db_get_one(table, q_filter, fail_on_empty=fail_on_empty)
-        for k, v in update_dict.items():
-            db_nested = db_item
-            k_list = k.split(".")
-            for k_nested in k_list[0:-1]:
-                if isinstance(db_nested, list):
-                    db_nested = db_nested[int(k_nested)]
-                else:
-                    if k_nested not in db_nested:
-                        db_nested[k_nested] = {}
-                    db_nested = db_nested[k_nested]
-            k_nested = k_list[-1]
-            if isinstance(db_nested, list):
-                if int(k_nested) < len(db_nested):
-                    db_nested[int(k_nested)] = v
-                else:
-                    db_nested.insert(int(k_nested), v)
-            else:
-                db_nested[k_nested] = v
 
     async def _n2vc_DeployCharms(self, model_name, application_name, vnfd, charm_path, params={}, machine_spec={},
                                  callback=None, *callback_args):
@@ -165,20 +132,19 @@ class TestMyNS(asynctest.TestCase):
     def _return_uuid(self, *args, **kwargs):
         return str(uuid4())
 
-    async def setUp(self):
+    @patch("osm_lcm.ns.K8sHelmConnector")
+    async def setUp(self, k8s_mock):
         # Mock DB
         if not getenv("OSMLCMTEST_DB_NOMOCK"):
-            self.db = asynctest.Mock(DbMongo())
-            self.db.get_one.side_effect = self._db_get_one
-            self.db.get_list.side_effect = self._db_get_list
-            self.db.set_one.side_effect = self._db_set_one
-            self.db_content = {
-                "nsrs": yaml.load(descriptors.db_nsrs_text, Loader=yaml.Loader),
-                "nslcmops": yaml.load(descriptors.db_nslcmops_text, Loader=yaml.Loader),
-                "vnfrs": yaml.load(descriptors.db_vnfrs_text, Loader=yaml.Loader),
-                "vnfds": yaml.load(descriptors.db_vnfds_text, Loader=yaml.Loader),
-                "vim_accounts": yaml.load(descriptors.db_vim_accounts_text, Loader=yaml.Loader),
-            }
+            self.db = DbMemory()
+            self.db.create_list("vnfds", yaml.load(descriptors.db_vnfds_text, Loader=yaml.Loader))
+            self.db.create_list("nsds", yaml.load(descriptors.db_nsds_text, Loader=yaml.Loader))
+            self.db.create_list("nsrs", yaml.load(descriptors.db_nsrs_text, Loader=yaml.Loader))
+            self.db.create_list("vim_accounts", yaml.load(descriptors.db_vim_accounts_text, Loader=yaml.Loader))
+            self.db.create_list("nslcmops", yaml.load(descriptors.db_nslcmops_text, Loader=yaml.Loader))
+            self.db.create_list("vnfrs", yaml.load(descriptors.db_vnfrs_text, Loader=yaml.Loader))
+            self.db.set_one = asynctest.Mock()
+
             self.db_vim_accounts = yaml.load(descriptors.db_vim_accounts_text, Loader=yaml.Loader)
 
         # Mock kafka
@@ -224,6 +190,11 @@ class TestMyNS(asynctest.TestCase):
             self.my_ns.n2vc.get_public_key = asynctest.CoroutineMock(
                 return_value=getenv("OSMLCM_VCA_PUBKEY", "public_key"))
 
+        # # Mock VCA - K8s
+        # if not getenv("OSMLCMTEST_VCA_K8s_NOMOCK"):
+        #     pub_key = getenv("OSMLCMTEST_NS_PUBKEY", "ssh-rsa test-pub-key t@osm.com")
+        #     self.my_ns.k8sclusterhelm = asynctest.Mock(K8sHelmConnector())
+
         # Mock RO
         if not getenv("OSMLCMTEST_RO_NOMOCK"):
             # self.my_ns.RO = asynctest.Mock(ROclient.ROClient(self.loop, **ro_config))
@@ -237,27 +208,27 @@ class TestMyNS(asynctest.TestCase):
 
     @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
     async def test_instantiate(self):
-        nsr_id = self.db_content["nsrs"][0]["_id"]
-        nslcmop_id = self.db_content["nslcmops"][0]["_id"]
+        nsr_id = self.db.get_list("nsrs")[0]["_id"]
+        nslcmop_id = self.db.get_list("nslcmops")[0]["_id"]
         print("Test instantiate started")
 
         # delete deployed information of database
         if not getenv("OSMLCMTEST_DB_NOMOCK"):
-            if self.db_content["nsrs"][0]["_admin"].get("deployed"):
-                del self.db_content["nsrs"][0]["_admin"]["deployed"]
-            for db_vnfr in self.db_content["vnfrs"]:
+            if self.db.get_list("nsrs")[0]["_admin"].get("deployed"):
+                del self.db.get_list("nsrs")[0]["_admin"]["deployed"]
+            for db_vnfr in self.db.get_list("vnfrs"):
                 db_vnfr.pop("ip_address", None)
                 for db_vdur in db_vnfr["vdur"]:
                     db_vdur.pop("ip_address", None)
                     db_vdur.pop("mac_address", None)
             if getenv("OSMLCMTEST_RO_VIMID"):
-                self.db_content["vim_accounts"][0]["_admin"]["deployed"]["RO"] = getenv("OSMLCMTEST_RO_VIMID")
+                self.db.get_list("vim_accounts")[0]["_admin"]["deployed"]["RO"] = getenv("OSMLCMTEST_RO_VIMID")
             if getenv("OSMLCMTEST_RO_VIMID"):
-                self.db_content["nsrs"][0]["_admin"]["deployed"]["RO"] = getenv("OSMLCMTEST_RO_VIMID")
+                self.db.get_list("nsrs")[0]["_admin"]["deployed"]["RO"] = getenv("OSMLCMTEST_RO_VIMID")
 
         await self.my_ns.instantiate(nsr_id, nslcmop_id)
 
-        print("instantiate_result: {}".format(self._db_get_one("nslcmops", {"_id": nslcmop_id}).get("detailed-status")))
+        print("instantiate_result: {}".format(self.db.get_one("nslcmops", {"_id": nslcmop_id}).get("detailed-status")))
 
         self.msg.aiowrite.assert_called_once_with("ns", "instantiated",
                                                   {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
@@ -276,7 +247,7 @@ class TestMyNS(asynctest.TestCase):
         # TODO add a terminate
 
     def test_ns_params_2_RO(self):
-        vim = self._db_get_list("vim_accounts")[0]
+        vim = self.db.get_list("vim_accounts")[0]
         vim_id = vim["_id"]
         ro_vim_id = vim["_admin"]["deployed"]["RO"]
         ns_params = {"vimAccountId": vim_id}
@@ -310,13 +281,13 @@ class TestMyNS(asynctest.TestCase):
         # scale-out/scale-in operations with success/error result
 
         # Test scale() with missing 'scaleVnfData', should return operationState = 'FAILED'
-        nsr_id = self.db_content["nsrs"][0]["_id"]
-        nslcmop_id = self.db_content["nslcmops"][0]["_id"]
+        nsr_id = self.db.get_list("nsrs")[0]["_id"]
+        nslcmop_id = self.db.get_list("nslcmops")[0]["_id"]
         await self.my_ns.scale(nsr_id, nslcmop_id)
         expected_value = 'FAILED'
-        return_value = self._db_get_one("nslcmops", {"_id": nslcmop_id}).get("operationState")
+        return_value = self.db.get_one("nslcmops", {"_id": nslcmop_id}).get("operationState")
         self.assertEqual(return_value, expected_value)
-        # print("scale_result: {}".format(self._db_get_one("nslcmops", {"_id": nslcmop_id}).get("detailed-status")))
+        # print("scale_result: {}".format(self.db.get_one("nslcmops", {"_id": nslcmop_id}).get("detailed-status")))
 
     # Test _reintent_or_skip_suboperation()
     # Expected result:
@@ -324,8 +295,7 @@ class TestMyNS(asynctest.TestCase):
     # - if marked as anything but 'COMPLETED', the suboperation index is expected
     def test_scale_reintent_or_skip_suboperation(self):
         # Load an alternative 'nslcmops' YAML for this test
-        self.db_content['nslcmops'] = yaml.load(descriptors.db_nslcmops_scale_text, Loader=yaml.Loader)
-        db_nslcmop = self.db_content['nslcmops'][0]
+        db_nslcmop = self.db.get_list('nslcmops')[0]
         op_index = 2
         # Test when 'operationState' is 'COMPLETED'
         db_nslcmop['_admin']['operations'][op_index]['operationState'] = 'COMPLETED'
@@ -342,8 +312,7 @@ class TestMyNS(asynctest.TestCase):
     # Expected result: index of the found sub-operation, or SUBOPERATION_STATUS_NOT_FOUND if not found
     def test_scale_find_suboperation(self):
         # Load an alternative 'nslcmops' YAML for this test
-        self.db_content['nslcmops'] = yaml.load(descriptors.db_nslcmops_scale_text, Loader=yaml.Loader)
-        db_nslcmop = self.db_content['nslcmops'][0]
+        db_nslcmop = self.db.get_list('nslcmops')[0]
         # Find this sub-operation
         op_index = 2
         vnf_index = db_nslcmop['_admin']['operations'][op_index]['member_vnf_index']
@@ -371,25 +340,22 @@ class TestMyNS(asynctest.TestCase):
 
     # Test _update_suboperation_status()
     def test_scale_update_suboperation_status(self):
-        db_nslcmop = self.db_content['nslcmops'][0]
+        db_nslcmop = self.db.get_list('nslcmops')[0]
         op_index = 0
         # Force the initial values to be distinct from the updated ones
-        db_nslcmop['_admin']['operations'][op_index]['operationState'] = 'PROCESSING'
-        db_nslcmop['_admin']['operations'][op_index]['detailed-status'] = 'In progress'
+        q_filter = {"_id": db_nslcmop["_id"]}
         # Test to change 'operationState' and 'detailed-status'
         operationState = 'COMPLETED'
         detailed_status = 'Done'
-        self.my_ns._update_suboperation_status(
-            db_nslcmop, op_index, operationState, detailed_status)
-        operationState_new = db_nslcmop['_admin']['operations'][op_index]['operationState']
-        detailed_status_new = db_nslcmop['_admin']['operations'][op_index]['detailed-status']
-        # print("DEBUG: operationState_new={}, detailed_status_new={}".format(operationState_new, detailed_status_new))
-        self.assertEqual(operationState, operationState_new)
-        self.assertEqual(detailed_status, detailed_status_new)
+        expected_update_dict = {'_admin.operations.0.operationState': operationState,
+                                '_admin.operations.0.detailed-status': detailed_status,
+                                }
+        self.my_ns._update_suboperation_status(db_nslcmop, op_index, operationState, detailed_status)
+        self.db.set_one.assert_called_once_with("nslcmops", q_filter=q_filter, update_dict=expected_update_dict,
+                                                fail_on_empty=False)
 
-    # Test _add_suboperation()
     def test_scale_add_suboperation(self):
-        db_nslcmop = self.db_content['nslcmops'][0]
+        db_nslcmop = self.db.get_list('nslcmops')[0]
         vnf_index = '1'
         num_ops_before = len(db_nslcmop.get('_admin', {}).get('operations', [])) - 1
         vdu_id = None
@@ -440,7 +406,7 @@ class TestMyNS(asynctest.TestCase):
     # - op_index (non-negative number): This is an existing sub-operation, operationState != 'COMPLETED'
     # - SUBOPERATION_STATUS_SKIP: This is an existing sub-operation, operationState == 'COMPLETED'
     def test_scale_check_or_add_scale_suboperation(self):
-        db_nslcmop = self.db_content['nslcmops'][0]
+        db_nslcmop = self.db.get_list('nslcmops')[0]
         operationType = 'PRE-SCALE'
         vnf_index = '1'
         primitive = 'touch'
