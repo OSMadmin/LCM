@@ -13,5 +13,5 @@
 ##
 
 # version moved to lcm.py. uncomment if LCM is installed as library and installed
-version = '6.0.3.post12'
-version_date = '2019-11-23'
+version = '6.0.3.post20'
+version_date = '2019-11-28'

@@ -907,9 +907,9 @@ class NsLcm(LcmBase):
                 for vdur in get_iterable(db_vnfr, "vdur"):
                     if (vdur["vdu-id-ref"] == vdu_id and vdur["count-index"] == vdu_index) or \
                             (ip_address and vdur.get("ip-address") == ip_address):
-                        if vdur["status"] == "ACTIVE":
+                        if vdur.get("status") == "ACTIVE":
                             target_vdu_id = vdur["vdu-id-ref"]
-                        elif vdur["status"] == "ERROR":
+                        elif vdur.get("status") == "ERROR":
                             raise LcmException("Cannot inject ssh-key because target VM is in error state")
                         break
                 else:
