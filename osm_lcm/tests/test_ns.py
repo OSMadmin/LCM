@@ -132,8 +132,9 @@ class TestMyNS(asynctest.TestCase):
     def _return_uuid(self, *args, **kwargs):
         return str(uuid4())
 
+    @patch("osm_lcm.ns.N2VCJujuConnector")
     @patch("osm_lcm.ns.K8sHelmConnector")
-    async def setUp(self, k8s_mock):
+    async def setUp(self, k8s_mock, n2vc_mock):
         # Mock DB
         if not getenv("OSMLCMTEST_DB_NOMOCK"):
             self.db = DbMemory()
@@ -141,9 +142,9 @@ class TestMyNS(asynctest.TestCase):
             self.db.create_list("nsds", yaml.load(descriptors.db_nsds_text, Loader=yaml.Loader))
             self.db.create_list("nsrs", yaml.load(descriptors.db_nsrs_text, Loader=yaml.Loader))
             self.db.create_list("vim_accounts", yaml.load(descriptors.db_vim_accounts_text, Loader=yaml.Loader))
+            self.db.create_list("k8sclusters", yaml.load(descriptors.db_k8sclusters_text, Loader=yaml.Loader))
             self.db.create_list("nslcmops", yaml.load(descriptors.db_nslcmops_text, Loader=yaml.Loader))
             self.db.create_list("vnfrs", yaml.load(descriptors.db_vnfrs_text, Loader=yaml.Loader))
-            self.db.set_one = asynctest.Mock()
 
             self.db_vim_accounts = yaml.load(descriptors.db_vim_accounts_text, Loader=yaml.Loader)
 
@@ -205,12 +206,14 @@ class TestMyNS(asynctest.TestCase):
             self.my_ns.RO.create_action = asynctest.CoroutineMock(self.my_ns.RO.create_action,
                                                                   return_value={"vm-id": {"vim_result": 200,
                                                                                           "description": "done"}})
+            # self.my_ns.wait_vm_up_insert_key_ro = asynctest.CoroutineMock(return_value="ip-address")
 
     @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
     async def test_instantiate(self):
+        self.db.set_one = asynctest.Mock()
         nsr_id = self.db.get_list("nsrs")[0]["_id"]
         nslcmop_id = self.db.get_list("nslcmops")[0]["_id"]
-        print("Test instantiate started")
+        # print("Test instantiate started")
 
         # delete deployed information of database
         if not getenv("OSMLCMTEST_DB_NOMOCK"):
@@ -228,7 +231,8 @@ class TestMyNS(asynctest.TestCase):
 
         await self.my_ns.instantiate(nsr_id, nslcmop_id)
 
-        print("instantiate_result: {}".format(self.db.get_one("nslcmops", {"_id": nslcmop_id}).get("detailed-status")))
+        # print("instantiate_result: {}".format(self.db.get_one("nslcmops",
+        # {"_id": nslcmop_id}).get("detailed-status")))
 
         self.msg.aiowrite.assert_called_once_with("ns", "instantiated",
                                                   {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
@@ -340,6 +344,7 @@ class TestMyNS(asynctest.TestCase):
 
     # Test _update_suboperation_status()
     def test_scale_update_suboperation_status(self):
+        self.db.set_one = asynctest.Mock()
         db_nslcmop = self.db.get_list('nslcmops')[0]
         op_index = 0
         # Force the initial values to be distinct from the updated ones
@@ -462,6 +467,28 @@ class TestMyNS(asynctest.TestCase):
         op_index_skip_RO = self.my_ns._check_or_add_scale_suboperation(
             db_nslcmop, vnf_index, None, None, 'SCALE-RO', RO_nsr_id, RO_scaling_info)
         self.assertEqual(op_index_skip_RO, self.my_ns.SUBOPERATION_STATUS_SKIP)
+
+    async def test_deploy_kdus(self):
+        db_nsr = self.db.get_list("nsrs")[1]
+        db_vnfr = self.db.get_list("vnfrs")[2]
+        db_vnfrs = {"multikdu": db_vnfr}
+        nsr_id = db_nsr["_id"]
+        # nslcmop_id = self.db.get_list("nslcmops")[1]["_id"]
+        logging_text = "KDU"
+        self.my_ns.k8sclusterhelm.install = asynctest.CoroutineMock(return_value="k8s_id")
+        await self.my_ns.deploy_kdus(logging_text, nsr_id, db_nsr, db_vnfrs)
+        db_nsr = self.db.get_list("nsrs")[1]
+        self.assertIn("K8s", db_nsr["_admin"]["deployed"], "K8s entry not created at '_admin.deployed'")
+        self.assertIsInstance(db_nsr["_admin"]["deployed"]["K8s"], list, "K8s entry is not of type list")
+        self.assertEqual(len(db_nsr["_admin"]["deployed"]["K8s"]), 2, "K8s entry is not of type list")
+        k8s_instace_info = {"kdu-instance": "k8s_id", "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
+                            "k8scluster-type": "chart",
+                            "kdu-name": "ldap", "kdu-model": "stable/openldap:1.2.1"}
+
+        self.assertEqual(db_nsr["_admin"]["deployed"]["K8s"][0], k8s_instace_info)
+        k8s_instace_info["kdu-name"] = "mongo"
+        k8s_instace_info["kdu-model"] = "stable/mongodb"
+        self.assertEqual(db_nsr["_admin"]["deployed"]["K8s"][1], k8s_instace_info)
 
 
 if __name__ == '__main__':

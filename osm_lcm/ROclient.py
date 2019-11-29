@@ -189,7 +189,7 @@ class ROClient:
     
     def _parse_yaml(self, descriptor, response=False):
         try:
-            return yaml.load(descriptor)
+            return yaml.load(descriptor, Loader=yaml.Loader)
         except yaml.YAMLError as exc:
             error_pos = ""
             if hasattr(exc, 'problem_mark'):

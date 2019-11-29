@@ -49,6 +49,21 @@ def versiontuple(v):
     return tuple(filled)
 
 
+def deep_get(target_dict, key_list):
+    """
+    Get a value from target_dict entering in the nested keys. If keys does not exist, it returns None
+    Example target_dict={a: {b: 5}}; key_list=[a,b] returns 5; both key_list=[a,b,c] and key_list=[f,h] return None
+    :param target_dict: dictionary to be read
+    :param key_list: list of keys to read from  target_dict
+    :return: The wanted value if exist, None otherwise
+    """
+    for key in key_list:
+        if not isinstance(target_dict, dict) or key not in target_dict:
+            return None
+        target_dict = target_dict[key]
+    return target_dict
+
+
 # LcmBase must be listed before TaskRegistry, as it is a dependency.
 class LcmBase:
 

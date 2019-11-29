@@ -72,7 +72,47 @@ db_nsds_text = """
         -   member-vnf-index-ref: '2'
             vnfd-connection-point-ref: vnf-data
             vnfd-id-ref: hackfest3charmed-vnf
+-   _admin:
+        created: 1575031728.9257665
+        modified: 1575031728.9257665
+        onboardingState: ONBOARDED
+        operationalState: ENABLED
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        storage:
+            descriptor: multikdu_ns/multikdu_nsd.yaml
+            folder: d0f63683-9032-4c6f-8928-ffd4674b9f69
+            fs: local
+            path: /app/storage/
+            pkg-dir: multikdu_ns
+            zipfile: multikdu_ns.tar.gz
+        usageState: NOT_IN_USE
+        userDefinedData: {}
+    _id: d0f63683-9032-4c6f-8928-ffd4674b9f69
+    constituent-vnfd:
+    -   member-vnf-index: multikdu
+        vnfd-id-ref: multikdu_knf
+    description: NS consisting of a single KNF multikdu_knf connected to mgmt network
+    id: multikdu_ns
+    logo: osm.png
+    name: multikdu_ns
+    short-name: multikdu_ns
+    vendor: OSM
+    version: '1.0'
+    vld:
+    -   id: mgmtnet
+        mgmt-network: true
+        name: mgmtnet
+        type: ELAN
+        vim-network-name: mgmt
+        vnfd-connection-point-ref:
+        -   member-vnf-index-ref: multikdu
+            vnfd-connection-point-ref: mgmt
+            vnfd-id-ref: multikdu_knf
 """
+
 db_nslcmops_text = """
 ---
 -   _admin:
@@ -130,7 +170,39 @@ db_nslcmops_text = """
     operationState: FAILED
     startTime: 1566823354.414689
     statusEnteredTime: 1566824534.5112448
+-   _admin:
+        created: 1575034637.044651
+        modified: 1575034637.044651
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+    _id: cf3aa178-7640-4174-b921-2330e6f2aad6
+    detailed-status: done
+    id: cf3aa178-7640-4174-b921-2330e6f2aad6
+    isAutomaticInvocation: false
+    isCancelPending: false
+    lcmOperationType: instantiate
+    links:
+        nsInstance: /osm/nslcm/v1/ns_instances/0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+        self: /osm/nslcm/v1/ns_lcm_op_occs/cf3aa178-7640-4174-b921-2330e6f2aad6
+    nsInstanceId: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+    operationParams:
+        lcmOperationType: instantiate
+        nsDescription: default description
+        nsInstanceId: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+        nsName: multikdu
+        nsdId: d0f63683-9032-4c6f-8928-ffd4674b9f69
+        nsr_id: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+        vimAccountId: 74337dcb-ef54-41e7-bd2d-8c0d7fcd326f
+        vld:
+        -   name: mgmtnet
+            vim-network-name: internal
+    operationState: COMPLETED
+    startTime: 1575034637.0445576
+    statusEnteredTime: 1575034663.8484545
 """
+
 db_nsrs_text = """
 ---
 -   _admin:
@@ -280,7 +352,78 @@ db_nsrs_text = """
         vim-id: c31364ba-f573-4ab6-bf1a-fed30ede39a8
     vnfd-id:
     - 7637bcf8-cf14-42dc-ad70-c66fcf1e6e77
+-   _admin:
+        created: 1575034637.011233
+        current-operation: null
+        deployed:
+            K8s:
+            -   k8scluster-uuid: 73d96432-d692-40d2-8440-e0c73aee209c
+                kdu-instance: stable-mongodb-0086856106
+                kdu-model: stable/mongodb
+                kdu-name: mongo
+                vnfr-id: 5ac34899-a23a-4b3c-918a-cd77acadbea6
+            -   k8scluster-uuid: 73d96432-d692-40d2-8440-e0c73aee209c
+                kdu-instance: stable-openldap-0092830263
+                kdu-model: stable/mongodb
+                kdu-name: mongo
+                vnfr-id: 5ac34899-a23a-4b3c-918a-cd77acadbea6
+            RO:
+                detailed-status: Deployed at VIM
+                nsd_id: b03a8de8-1898-4142-bc6d-3b0787df567d
+                nsr_id: b5ce3e00-8647-415d-afaa-d5a612cf3074
+                nsr_status: ACTIVE
+                operational-status: running
+                vnfd:
+                -   id: b9493dae-a4c9-4b96-8965-329581efb0a1
+                    member-vnf-index: multikdu
+            VCA: []
+        modified: 1575034637.011233
+        nsState: INSTANTIATED
+        nslcmop: null
+        operation-type: null
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+    _id: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+    additionalParamsForNs: null
+    admin-status: ENABLED
+    config-status: configured
+    constituent-vnfr-ref:
+    - 5ac34899-a23a-4b3c-918a-cd77acadbea6
+    create-time: 1575034636.9990137
+    datacenter: ea958ba5-4e58-4405-bf42-6e3be15d4c3a
+    description: default description
+    detailed-status: done
+    id: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+    instantiate_params:
+        nsDescription: default description
+        nsName: multikdu
+        nsdId: d0f63683-9032-4c6f-8928-ffd4674b9f69
+        vimAccountId: 74337dcb-ef54-41e7-bd2d-8c0d7fcd326f
+    name: multikdu
+    name-ref: multikdu
+    ns-instance-config-ref: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+    nsd-id: d0f63683-9032-4c6f-8928-ffd4674b9f69
+    nsd-name-ref: multikdu_ns
+    nsd-ref: multikdu_ns
+    operational-events: []
+    operational-status: init
+    orchestration-progress: {}
+    resource-orchestrator: osmopenmano
+    short-name: multikdu
+    ssh-authorized-key: null
+    vld:
+    -   id: mgmtnet
+        name: null
+        status: ACTIVE
+        status-detailed: null
+        vim-id: 9b6a2ac4-767e-4ec9-9497-8ba63084c77f
+        vim-network-name: mgmt
+    vnfd-id:
+    - 7ab0d10d-8ce2-4c68-aef6-cc5a437a9c62
 """
+
 db_ro_ns_text = """
 datacenter_tenant_id: dc5c67fa-c7f2-11e9-b9c0-02420aff0004
 description: null
@@ -531,6 +674,7 @@ vnfs:
     vnf_name: hackfest3charmed-vnf.2
     vnfd_osm_id: f48163a6-c807-47bc-9682-f72caef5af85.1.2
 """
+
 db_vim_accounts_text = """
 ---
 -   _admin:
@@ -565,6 +709,46 @@ db_vim_accounts_text = """
     vim_url: http://10.95.87.162:5000/v2.0
     vim_user: osm
 """
+
+db_k8sclusters_text = """
+-   _admin:
+        created: 1575031378.9268339
+        current_operation: 0
+        modified: 1575031378.9268339
+        operationalState: ENABLED
+        operations:
+        -   detailed-status: ''
+            lcmOperationType: create
+            operationParams: null
+            operationState: ''
+            startTime: 1575031378.926895
+            statusEnteredTime: 1575031378.926895
+            worker: 36681ccf7f32
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        helm-chart:
+            id: 73d96432-d692-40d2-8440-e0c73aee209c
+            created: True
+    _id: e7169dab-f71a-4f1f-b82b-432605e8c4b3
+    credentials:
+        apiVersion: v1
+        users:
+        -   name: admin
+            user:
+                password: qhpdogJXhBLG+JiYyyE0LeNsJXHkCSMy+sGVzlnJqes=
+                username: admin
+    description: Cluster3
+    k8s_version: '1.15'
+    name: cluster3
+    namespace: kube-system
+    nets:
+        net1: None
+    schema_version: '1.11'
+    vim_account: ea958ba5-4e58-4405-bf42-6e3be15d4c3a
+"""
+
 db_vnfds_text = """
 ---
 -   _admin:
@@ -728,7 +912,46 @@ db_vnfds_text = """
             seq: '2'
         juju:
             charm: simple
+-   _admin:
+        created: 1575031727.5383403
+        modified: 1575031727.5383403
+        onboardingState: ONBOARDED
+        operationalState: ENABLED
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        storage:
+            descriptor: multikdu_knf/multikdu_vnfd.yaml
+            folder: 7ab0d10d-8ce2-4c68-aef6-cc5a437a9c62
+            fs: local
+            path: /app/storage/
+            pkg-dir: multikdu_knf
+            zipfile: multikdu_knf.tar.gz
+        usageState: NOT_IN_USE
+        userDefinedData: {}
+    _id: 7ab0d10d-8ce2-4c68-aef6-cc5a437a9c62
+    connection-point:
+    -   name: mgmt
+    description: KNF with two KDU using helm-charts
+    id: multikdu_knf
+    k8s-cluster:
+        nets:
+        -   external-connection-point-ref: mgmt
+            id: mgmtnet
+    kdu:
+    -   helm-chart: stable/openldap:1.2.1
+        name: ldap
+    -   helm-chart: stable/mongodb
+        name: mongo
+    mgmt-interface:
+        cp: mgmt
+    name: multikdu_knf
+    short-name: multikdu_knf
+    vendor: Telefonica
+    version: '1.0'
 """
+
 db_vnfrs_text = """
 ---
 -   _admin:
@@ -885,7 +1108,48 @@ db_vnfrs_text = """
         vim-id: ff181e6d-2597-4244-b40b-bb0174bdfeb6
     vnfd-id: 7637bcf8-cf14-42dc-ad70-c66fcf1e6e77
     vnfd-ref: hackfest3charmed-vnf
+-   _admin:
+        created: 1575034637.009597
+        modified: 1575034637.009597
+        nsState: NOT_INSTANTIATED
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+    _id: 5ac34899-a23a-4b3c-918a-cd77acadbea6
+    additionalParamsForVnf: null
+    connection-point:
+    -   connection-point-id: null
+        id: null
+        name: mgmt
+    created-time: 1575034636.9990137
+    id: 5ac34899-a23a-4b3c-918a-cd77acadbea6
+    ip-address: null
+    k8s-cluster:
+        nets:
+        -   external-connection-point-ref: mgmt
+            id: mgmtnet
+            ns-vld-id: mgmtnet
+            vim_net: internal
+    kdur:
+    -   ip-address: null
+        k8s-cluster:
+            id: e7169dab-f71a-4f1f-b82b-432605e8c4b3
+        kdu-name: ldap
+        helm-chart: stable/openldap:1.2.1
+    -   ip-address: null
+        k8s-cluster:
+            id: e7169dab-f71a-4f1f-b82b-432605e8c4b3
+        kdu-name: mongo
+        helm-chart: stable/mongodb
+    member-vnf-index-ref: multikdu
+    nsr-id-ref: 0bcb701c-ee4d-41ab-8ee6-f4156f7f114d
+    vdur: []
+    vim-account-id: 74337dcb-ef54-41e7-bd2d-8c0d7fcd326f
+    vnfd-id: 7ab0d10d-8ce2-4c68-aef6-cc5a437a9c62
+    vnfd-ref: multikdu_knf
 """
+
 db_nslcmops_scale_text = """
 ---
 -   _admin:

@@ -21,7 +21,7 @@ import yaml
 import logging
 import logging.handlers
 from osm_lcm import ROclient
-from osm_lcm.lcm_utils import LcmException, LcmBase
+from osm_lcm.lcm_utils import LcmException, LcmBase, deep_get
 from n2vc.k8s_helm_conn import K8sHelmConnector
 from osm_common.dbbase import DbException
 from copy import deepcopy
@@ -971,29 +971,27 @@ class K8sClusterLcm(LcmBase):
             db_k8scluster = self.db.get_one("k8sclusters", {"_id": k8scluster_id})
             self.db.encrypt_decrypt_fields(db_k8scluster.get("credentials"), 'decrypt', ['password', 'secret'],
                                            schema_version=db_k8scluster["schema_version"], salt=db_k8scluster["_id"])
-            print(db_k8scluster.get("credentials"))
-            print("\n\n\n    FIN CREDENTIALS")
-            print(yaml.safe_dump(db_k8scluster.get("credentials")))
-            print("\n\n\n    FIN OUTPUT")
-            cluster_uuid, uninstall_sw = await self.k8scluster.init_env(yaml.safe_dump(db_k8scluster.
-                                                                                       get("credentials")))
-            db_k8scluster_update["cluster-uuid"] = cluster_uuid
-            if uninstall_sw:
-                db_k8scluster_update["uninstall-sw"] = uninstall_sw
+            # print(db_k8scluster.get("credentials"))
+            # print("\n\n\n    FIN CREDENTIALS")
+            # print(yaml.safe_dump(db_k8scluster.get("credentials")))
+            # print("\n\n\n    FIN OUTPUT")
+            k8s_hc_id, uninstall_sw = await self.k8scluster.init_env(yaml.safe_dump(db_k8scluster.get("credentials")))
+            db_k8scluster_update["_admin.helm-chart.id"] = k8s_hc_id
+            db_k8scluster_update["_admin.helm-chart.created"] = uninstall_sw
             step = "Getting the list of repos"
             self.logger.debug(logging_text + step)
             task_list = []
             db_k8srepo_list = self.db.get_list("k8srepos", {})
             for repo in db_k8srepo_list:
-                step = "Adding repo {} to cluster: {}".format(repo["name"], cluster_uuid)
+                step = "Adding repo {} to cluster: {}".format(repo["name"], k8s_hc_id)
                 self.logger.debug(logging_text + step)
-                task = asyncio.ensure_future(self.k8scluster.repo_add(cluster_uuid=cluster_uuid,
+                task = asyncio.ensure_future(self.k8scluster.repo_add(cluster_uuid=k8s_hc_id,
                                                                       name=repo["name"], url=repo["url"],
                                                                       repo_type="chart"))
                 task_list.append(task)
                 if not repo["_admin"].get("cluster-inserted"):
                     repo["_admin"]["cluster-inserted"] = []
-                repo["_admin"]["cluster-inserted"].append(cluster_uuid)
+                repo["_admin"]["cluster-inserted"].append(k8s_hc_id)
                 self.update_db_2("k8srepos", repo["_id"], repo)
 
             done = None
@@ -1053,11 +1051,12 @@ class K8sClusterLcm(LcmBase):
             step = "Getting k8scluster='{}' from db".format(k8scluster_id)
             self.logger.debug(logging_text + step)
             db_k8scluster = self.db.get_one("k8sclusters", {"_id": k8scluster_id})
-            uninstall_sw = db_k8scluster.get("uninstall-sw")
-            if uninstall_sw is False or uninstall_sw is None:
-                uninstall_sw = False
-            cluster_removed = await self.k8scluster.reset(cluster_uuid=db_k8scluster.get("cluster-uuid"),
-                                                          uninstall_sw=uninstall_sw)
+            k8s_hc_id = deep_get(db_k8scluster, ("_admin", "helm-chart", "id"))
+            uninstall_sw = deep_get(db_k8scluster, ("_admin", "helm-chart", "created"))
+            cluster_removed = True
+            if k8s_hc_id:
+                uninstall_sw = uninstall_sw or False
+                cluster_removed = await self.k8scluster.reset(cluster_uuid=k8s_hc_id, uninstall_sw=uninstall_sw)
 
             if cluster_removed:
                 step = "Removing k8scluster='{}' from db".format(k8scluster_id)

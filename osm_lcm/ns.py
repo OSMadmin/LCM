@@ -24,7 +24,7 @@ import traceback
 from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound, TemplateSyntaxError
 
 from osm_lcm import ROclient
-from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase
+from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase, deep_get
 from n2vc.k8s_helm_conn import K8sHelmConnector
 
 from osm_common.dbbase import DbException
@@ -66,21 +66,6 @@ def populate_dict(target_dict, key_list, value):
             target_dict[key] = {}
         target_dict = target_dict[key]
     target_dict[key_list[-1]] = value
-
-
-def deep_get(target_dict, key_list):
-    """
-    Get a value from target_dict entering in the nested keys. If keys does not exist, it returns None
-    Example target_dict={a: {b: 5}}; key_list=[a,b] returns 5; both key_list=[a,b,c] and key_list=[f,h] return None
-    :param target_dict: dictionary to be read
-    :param key_list: list of keys to read from  target_dict
-    :return: The wanted value if exist, None otherwise
-    """
-    for key in key_list:
-        if not isinstance(target_dict, dict) or key not in target_dict:
-            return None
-        target_dict = target_dict[key]
-    return target_dict
 
 
 class NsLcm(LcmBase):
@@ -1221,18 +1206,13 @@ class NsLcm(LcmBase):
             db_nsr_update["_admin.nsState"] = "INSTANTIATED"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
             self.logger.debug(logging_text + "Before deploy_kdus")
-            db_k8scluster_list = self.db.get_list("k8sclusters", {})
             # Call to deploy_kdus in case exists the "vdu:kdu" param
             task_kdu = asyncio.ensure_future(
                 self.deploy_kdus(
                     logging_text=logging_text,
                     nsr_id=nsr_id,
-                    nsd=nsd,
                     db_nsr=db_nsr,
-                    db_nslcmop=db_nslcmop,
                     db_vnfrs=db_vnfrs,
-                    db_vnfds_ref=db_vnfds_ref,
-                    db_k8scluster=db_k8scluster_list
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDUs", task_kdu)
@@ -1280,10 +1260,7 @@ class NsLcm(LcmBase):
                 # Get additional parameters
                 deploy_params = {}
                 if db_vnfr.get("additionalParamsForVnf"):
-                    deploy_params = db_vnfr["additionalParamsForVnf"].copy()
-                for k, v in deploy_params.items():
-                    if isinstance(v, str) and v.startswith("!!yaml "):
-                        deploy_params[k] = yaml.safe_load(v[7:])
+                    deploy_params = self._format_additional_params(db_vnfr["additionalParamsForVnf"].copy())
 
                 descriptor_config = vnfd.get("vnf-configuration")
                 if descriptor_config and descriptor_config.get("juju"):
@@ -1310,6 +1287,11 @@ class NsLcm(LcmBase):
                 for vdud in get_iterable(vnfd, 'vdu'):
                     vdu_id = vdud["id"]
                     descriptor_config = vdud.get('vdu-configuration')
+                    vdur = next((x for x in db_vnfr["vdur"] if x["vdu-id-ref"] == vdu_id), None)
+                    if vdur.get("additionalParams"):
+                        deploy_params_vdu = self._format_additional_params(vdur["additionalParams"])
+                    else:
+                        deploy_params_vdu = deploy_params
                     if descriptor_config and descriptor_config.get("juju"):
                         # look for vdu index in the db_vnfr["vdu"] section
                         # for vdur_index, vdur in enumerate(db_vnfr["vdur"]):
@@ -1336,7 +1318,7 @@ class NsLcm(LcmBase):
                                 member_vnf_index=member_vnf_index,
                                 vdu_index=vdu_index,
                                 vdu_name=vdu_name,
-                                deploy_params=deploy_params,
+                                deploy_params=deploy_params_vdu,
                                 descriptor_config=descriptor_config,
                                 base_folder=base_folder,
                                 task_instantiation_list=task_instantiation_list
@@ -1391,10 +1373,7 @@ class NsLcm(LcmBase):
                 # Get additional parameters
                 deploy_params = {}
                 if db_nsr.get("additionalParamsForNs"):
-                    deploy_params = db_nsr["additionalParamsForNs"].copy()
-                for k, v in deploy_params.items():
-                    if isinstance(v, str) and v.startswith("!!yaml "):
-                        deploy_params[k] = yaml.safe_load(v[7:])
+                    deploy_params = self._format_additional_params(db_nsr["additionalParamsForNs"].copy())
                 base_folder = nsd["_admin"]["storage"]
                 self._deploy_n2vc(
                     logging_text=logging_text,
@@ -1491,97 +1470,98 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + "Exit")
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_instantiate")
 
-    async def deploy_kdus(self, logging_text, nsr_id, nsd, db_nsr, db_nslcmop, db_vnfrs, db_vnfds_ref, db_k8scluster):
+    async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs):
         # Launch kdus if present in the descriptor
-        logging_text = "Deploy kdus: "
-        db_nsr_update = {}
-        db_nsr_update["_admin.deployed.K8s"] = []
+
+        k8scluster_id_2_uuic = {"helm-chart": {}, "juju-bundle": {}}
+
+        def _get_cluster_id(cluster_id, cluster_type):
+            nonlocal k8scluster_id_2_uuic
+            if cluster_id in k8scluster_id_2_uuic[cluster_type]:
+                return k8scluster_id_2_uuic[cluster_type][cluster_id]
+
+            db_k8scluster = self.db.get_one("k8sclusters", {"_id": cluster_id}, fail_on_empty=False)
+            if not db_k8scluster:
+                raise LcmException("K8s cluster {} cannot be found".format(cluster_id))
+            k8s_id = deep_get(db_k8scluster, ("_admin", cluster_type, "id"))
+            if not k8s_id:
+                raise LcmException("K8s cluster '{}' has not been initilized for '{}'".format(cluster_id, cluster_type))
+            k8scluster_id_2_uuic[cluster_type][cluster_id] = k8s_id
+            return k8s_id
+
+        logging_text += "Deploy kdus: "
         try:
-            # Look for all vnfds
-            # db_nsr_update["_admin.deployed.K8s"] = []
-            vnf_update = []
-            task_list = []
-            for c_vnf in nsd.get("constituent-vnfd", ()):
-                vnfr = db_vnfrs[c_vnf["member-vnf-index"]]
-                member_vnf_index = c_vnf["member-vnf-index"]
-                vnfd = db_vnfds_ref[c_vnf['vnfd-id-ref']]
-                vnfd_ref = vnfd["id"]
-                desc_params = {}
-
-                step = "Checking kdu from vnf: {} - member-vnf-index: {}".format(vnfd_ref, member_vnf_index)
-                self.logger.debug(logging_text + step)
-                if vnfd.get("kdu"):
-                    step = "vnf: {} has kdus".format(vnfd_ref)
-                    self.logger.debug(logging_text + step)
-                    for vnfr_name, vnfr_data in db_vnfrs.items():
-                        if vnfr_data["vnfd-ref"] == vnfd["id"]:
-                            if vnfr_data.get("additionalParamsForVnf"):
-                                desc_params = self._format_additional_params(vnfr_data["additionalParamsForVnf"])
-                            break
-                    else:
-                        raise LcmException("VNF descriptor not found with id: {}".format(vnfr_data["vnfd-ref"]))
-                        self.logger.debug(logging_text + step)
-
-                    for kdur in vnfr.get("kdur"):
-                        index = 0
-                        for k8scluster in db_k8scluster:
-                            if kdur["k8s-cluster"]["id"] == k8scluster["_id"]:
-                                cluster_uuid = k8scluster["cluster-uuid"]
-                                break
-                        else:
-                            raise LcmException("K8scluster not found with id: {}".format(kdur["k8s-cluster"]["id"]))
-                            self.logger.debug(logging_text + step)
-
-                        step = "Instantiate KDU {} in k8s cluster {}".format(kdur["kdu-name"], cluster_uuid)
-                        self.logger.debug(logging_text + step)
-                        for kdu in vnfd.get("kdu"):
-                            if kdu.get("name") == kdur["kdu-name"]:
-                                break
-                        else:
-                            raise LcmException("KDU not found with name: {} in VNFD {}".format(kdur["kdu-name"],
-                                                                                               vnfd["name"]))
-                            self.logger.debug(logging_text + step)
-                        kdumodel = None
-                        k8sclustertype = None
-                        if kdu.get("helm-chart"):
-                            kdumodel = kdu["helm-chart"]
-                            k8sclustertype = "chart"
-                        elif kdu.get("juju-bundle"):
-                            kdumodel = kdu["juju-bundle"]
-                            k8sclustertype = "juju"
-                        k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": cluster_uuid,
-                                            "vnfr-id": vnfr["id"], "k8scluster-type": k8sclustertype,
-                                            "kdu-name": kdur["kdu-name"], "kdu-model": kdumodel}
-                        db_nsr_update["_admin.deployed.K8s"].append(k8s_instace_info)
-                        db_dict = {"collection": "nsrs", "filter": {"_id": nsr_id}, "path": "_admin.deployed.K8s."
-                                                                                            "{}".format(index)}
-                        if k8sclustertype == "chart":
-                            task = self.k8sclusterhelm.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
-                                                               atomic=True, params=desc_params,
-                                                               db_dict=db_dict, timeout=300)
-                        else:
-                            # TODO I need the juju connector in place
-                            pass
-                        task_list.append(task)
-                        index += 1
+            db_nsr_update = {"_admin.deployed.K8s": []}
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
-            done = None
-            pending = None
-            if len(task_list) > 0:
-                self.logger.debug('Waiting for terminate pending tasks...')
-                done, pending = await asyncio.wait(task_list, timeout=3600)
-                if not pending:
-                    for fut in done:
-                        k8s_instance = fut.result()
-                        k8s_instace_info = {"kdu-instance": k8s_instance, "k8scluster-uuid": cluster_uuid,
-                                            "vnfr-id": vnfr["id"], "k8scluster-type": k8sclustertype,
-                                            "kdu-name": kdur["kdu-name"], "kdu-model": kdumodel}
-                        vnf_update.append(k8s_instace_info)
-                    self.logger.debug('All tasks finished...')
-                else:
-                    self.logger.info('There are pending tasks: {}'.format(pending))
 
-            db_nsr_update["_admin.deployed.K8s"] = vnf_update
+            # Look for all vnfds
+            pending_tasks = {}
+            index = 0
+            for vnfr_data in db_vnfrs.values():
+                for kdur in get_iterable(vnfr_data, "kdur"):
+                    desc_params = self._format_additional_params(kdur.get("additionalParams"))
+                    kdumodel = None
+                    k8sclustertype = None
+                    error_text = None
+                    cluster_uuid = None
+                    if kdur.get("helm-chart"):
+                        kdumodel = kdur["helm-chart"]
+                        k8sclustertype = "chart"
+                        k8sclustertype_full = "helm-chart"
+                    elif kdur.get("juju-bundle"):
+                        kdumodel = kdur["juju-bundle"]
+                        k8sclustertype = "juju"
+                        k8sclustertype_full = "juju-bundle"
+                    else:
+                        error_text = "kdu type is neither helm-chart not juju-bundle. Maybe an old NBI version is" \
+                                     " running"
+                    try:
+                        if not error_text:
+                            cluster_uuid = _get_cluster_id(kdur["k8s-cluster"]["id"], k8sclustertype_full)
+                    except LcmException as e:
+                        error_text = str(e)
+                    step = "Instantiate KDU {} in k8s cluster {}".format(kdur["kdu-name"], cluster_uuid)
+
+                    k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": cluster_uuid,
+                                        "k8scluster-type": k8sclustertype,
+                                        "kdu-name": kdur["kdu-name"], "kdu-model": kdumodel}
+                    if error_text:
+                        k8s_instace_info["detailed-status"] = error_text
+                    db_nsr_update["_admin.deployed.K8s.{}".format(index)] = k8s_instace_info
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
+                    if error_text:
+                        continue
+
+                    db_dict = {"collection": "nsrs", "filter": {"_id": nsr_id}, "path": "_admin.deployed.K8s."
+                                                                                        "{}".format(index)}
+                    if k8sclustertype == "chart":
+                        task = asyncio.ensure_future(
+                            self.k8sclusterhelm.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel, atomic=True,
+                                                        params=desc_params, db_dict=db_dict, timeout=3600)
+                        )
+                    else:
+                        # TODO juju-bundle connector in place
+                        pass
+                    pending_tasks[task] = "_admin.deployed.K8s.{}.".format(index)
+                    index += 1
+            if not pending_tasks:
+                return
+            self.logger.debug(logging_text + 'Waiting for terminate pending tasks...')
+            pending_list = list(pending_tasks.keys())
+            while pending_list:
+                done_list, pending_list = await asyncio.wait(pending_list, timeout=30*60,
+                                                             return_when=asyncio.FIRST_COMPLETED)
+                if not done_list:   # timeout
+                    for task in pending_list:
+                        db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
+                    break
+                for task in done_list:
+                    exc = task.exception()
+                    if exc:
+                        db_nsr_update[pending_tasks[task] + "detailed-status"] = "{}".format(exc)
+                    else:
+                        db_nsr_update[pending_tasks[task] + "kdu-instance"] = task.result()
+
         except Exception as e:
             self.logger.critical(logging_text + "Exit Exception {} while '{}': {}".format(type(e).__name__, step, e))
             raise LcmException("{} Exit Exception {} while '{}': {}".format(logging_text, type(e).__name__, step, e))
@@ -1696,11 +1676,10 @@ class NsLcm(LcmBase):
         return nslcmop
 
     def _format_additional_params(self, params):
-
+        params = params or {}
         for key, value in params.items():
             if str(value).startswith("!!yaml "):
                 params[key] = yaml.safe_load(value[7:])
-
         return params
 
     def _get_terminate_primitive_params(self, seq, vnf_index):
@@ -1994,19 +1973,23 @@ class NsLcm(LcmBase):
                 # Delete from k8scluster
                 step = "delete kdus"
                 self.logger.debug(logging_text + step)
-                print(nsr_deployed)
+                # print(nsr_deployed)
                 if nsr_deployed:
-                    for kdu in nsr_deployed.get("K8s"):
+                    for kdu in nsr_deployed.get("K8s", ()):
+                        kdu_instance = kdu.get("kdu-instance")
+                        if not kdu_instance:
+                            continue
                         if kdu.get("k8scluster-type") == "chart":
-                            task_delete_kdu_instance = asyncio.ensure_future(self.k8sclusterhelm.uninstall(
-                                cluster_uuid=kdu.get("k8scluster-uuid"), kdu_instance=kdu.get("kdu-instance")))
+                            task_delete_kdu_instance = asyncio.ensure_future(
+                                self.k8sclusterhelm.uninstall(cluster_uuid=kdu.get("k8scluster-uuid"),
+                                                              kdu_instance=kdu_instance))
                         elif kdu.get("k8scluster-type") == "juju":
                             # TODO Juju connector needed
-                            pass
+                            continue
                         else:
-                            msg = "k8scluster-type not defined"
-                            raise LcmException(msg)
-
+                            self.error(logging_text + "Unknown k8s deployment type {}".
+                                       format(kdu.get("k8scluster-type")))
+                            continue
                         pending_tasks.append(task_delete_kdu_instance)
             except LcmException as e:
                 msg = "Failed while deleting KDUs from NS: {}".format(e)
@@ -2356,14 +2339,10 @@ class NsLcm(LcmBase):
                                 break
             elif kdu_name:
                 self.logger.debug(logging_text + "Checking actions in KDUs")
-                desc_params = {}
-                if vnf_index:
-                    if db_vnfr.get("additionalParamsForVnf") and db_vnfr["additionalParamsForVnf"].\
-                            get("member-vnf-index") == vnf_index:
-                        desc_params = self._format_additional_params(db_vnfr["additionalParamsForVnf"].
-                                                                     get("additionalParams"))
-                    if primitive_params:
-                        desc_params.update(primitive_params)
+                kdur = next((x for x in db_vnfr["kdur"] if x["kdu_name"] == kdu_name), None)
+                desc_params = self._format_additional_params(kdur.get("additionalParams")) or {}
+                if primitive_params:
+                    desc_params.update(primitive_params)
                 # TODO Check if we will need something at vnf level
                 index = 0
                 for kdu in get_iterable(nsr_deployed, "K8s"):
@@ -2449,10 +2428,14 @@ class NsLcm(LcmBase):
             desc_params = {}
             if vnf_index:
                 if db_vnfr.get("additionalParamsForVnf"):
-                    desc_params.update(db_vnfr["additionalParamsForVnf"])
+                    desc_params = self._format_additional_params(db_vnfr["additionalParamsForVnf"])
+                if vdu_id:
+                    vdur = next((x for x in db_vnfr["vdur"] if x["vdu-id-ref"] == vdu_id), None)
+                    if vdur.get("additionalParams"):
+                        desc_params = self._format_additional_params(vdur["additionalParams"])
             else:
                 if db_nsr.get("additionalParamsForNs"):
-                    desc_params.update(db_nsr["additionalParamsForNs"])
+                    desc_params.update(self._format_additional_params(db_nsr["additionalParamsForNs"]))
 
             # TODO check if ns is in a proper status
             output, detail = await self._ns_execute_primitive(

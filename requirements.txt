@@ -12,7 +12,7 @@
 # under the License.
 ##
 
-pyyaml==3.*
+pyyaml
 aiohttp==0.20.2
 jinja2
 git+https://osm.etsi.org/gerrit/osm/common.git#egg=osm-common
