@@ -23,6 +23,7 @@ import logging.handlers
 from osm_lcm import ROclient
 from osm_lcm.lcm_utils import LcmException, LcmBase, deep_get
 from n2vc.k8s_helm_conn import K8sHelmConnector
+from n2vc.k8s_juju_conn import K8sJujuConnector
 from osm_common.dbbase import DbException
 from copy import deepcopy
 
@@ -933,9 +934,18 @@ class K8sClusterLcm(LcmBase):
         self.fs = fs
         self.db = db
 
-        self.k8scluster = K8sHelmConnector(
+        self.helm_k8scluster = K8sHelmConnector(
             kubectl_command=self.vca_config.get("kubectlpath"),
             helm_command=self.vca_config.get("helmpath"),
+            fs=self.fs,
+            log=self.logger,
+            db=self.db,
+            on_update_db=None
+        )
+
+        self.juju_k8scluster = K8sJujuConnector(
+            kubectl_command=self.vca_config.get("kubectlpath"),
+            juju_command=self.vca_config.get("jujupath"),
             fs=self.fs,
             log=self.logger,
             db=self.db,
@@ -961,6 +971,7 @@ class K8sClusterLcm(LcmBase):
 
         db_k8scluster = None
         db_k8scluster_update = {}
+        db_juju_k8scluster_update = {}
 
         exc = None
         operationState_HA = ''
@@ -971,13 +982,20 @@ class K8sClusterLcm(LcmBase):
             db_k8scluster = self.db.get_one("k8sclusters", {"_id": k8scluster_id})
             self.db.encrypt_decrypt_fields(db_k8scluster.get("credentials"), 'decrypt', ['password', 'secret'],
                                            schema_version=db_k8scluster["schema_version"], salt=db_k8scluster["_id"])
-            # print(db_k8scluster.get("credentials"))
-            # print("\n\n\n    FIN CREDENTIALS")
-            # print(yaml.safe_dump(db_k8scluster.get("credentials")))
-            # print("\n\n\n    FIN OUTPUT")
-            k8s_hc_id, uninstall_sw = await self.k8scluster.init_env(yaml.safe_dump(db_k8scluster.get("credentials")))
+
+            k8s_hc_id, uninstall_sw = await self.helm_k8scluster.init_env(
+                yaml.safe_dump(db_k8scluster.get("credentials"))
+            )
             db_k8scluster_update["_admin.helm-chart.id"] = k8s_hc_id
             db_k8scluster_update["_admin.helm-chart.created"] = uninstall_sw
+
+            # Juju/k8s cluster
+            k8s_jb_id, uninstall_sw = await self.juju_k8scluster.init_env(
+                yaml.safe_dump(db_k8scluster.get("credentials"))
+            )
+            db_k8scluster_update["_admin.juju-bundle.id"] = k8s_jb_id
+            db_k8scluster_update["_admin.juju-bundle.created"] = uninstall_sw
+
             step = "Getting the list of repos"
             self.logger.debug(logging_text + step)
             task_list = []
@@ -985,9 +1003,9 @@ class K8sClusterLcm(LcmBase):
             for repo in db_k8srepo_list:
                 step = "Adding repo {} to cluster: {}".format(repo["name"], k8s_hc_id)
                 self.logger.debug(logging_text + step)
-                task = asyncio.ensure_future(self.k8scluster.repo_add(cluster_uuid=k8s_hc_id,
-                                                                      name=repo["name"], url=repo["url"],
-                                                                      repo_type="chart"))
+                task = asyncio.ensure_future(self.helm_k8scluster.repo_add(cluster_uuid=k8s_hc_id,
+                                             name=repo["name"], url=repo["url"],
+                                             repo_type="chart"))
                 task_list.append(task)
                 if not repo["_admin"].get("cluster-inserted"):
                     repo["_admin"]["cluster-inserted"] = []
@@ -1012,12 +1030,21 @@ class K8sClusterLcm(LcmBase):
             if exc and db_k8scluster:
                 db_k8scluster_update["_admin.operationalState"] = "ERROR"
                 db_k8scluster_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+
+                if db_juju_k8scluster_update:
+                    db_juju_k8scluster_update["_admin.operationalState"] = "ERROR"
+                    db_juju_k8scluster_update["_admin.detailed-status"] = "ERROR {}: {}".format(step, exc)
+
                 # Mark the k8scluster 'create' HA task as erroneous
                 operationState_HA = 'FAILED'
                 detailed_status_HA = "ERROR {}: {}".format(step, exc)
             try:
                 if db_k8scluster_update:
                     self.update_db_2("k8sclusters", k8scluster_id, db_k8scluster_update)
+
+                if db_juju_k8scluster_update:
+                    self.update_db_2("k8sclusters", k8scluster_id, db_juju_k8scluster_update)
+
                 # Register the K8scluster 'create' HA task either
                 # succesful or erroneous, or do nothing (if legacy NBI)
                 self.lcm_tasks.register_HA('k8scluster', 'create', op_id,
@@ -1052,11 +1079,17 @@ class K8sClusterLcm(LcmBase):
             self.logger.debug(logging_text + step)
             db_k8scluster = self.db.get_one("k8sclusters", {"_id": k8scluster_id})
             k8s_hc_id = deep_get(db_k8scluster, ("_admin", "helm-chart", "id"))
+            k8s_jb_id = deep_get(db_k8scluster, ("_admin", "juju-bundle", "id"))
+
             uninstall_sw = deep_get(db_k8scluster, ("_admin", "helm-chart", "created"))
             cluster_removed = True
             if k8s_hc_id:
                 uninstall_sw = uninstall_sw or False
-                cluster_removed = await self.k8scluster.reset(cluster_uuid=k8s_hc_id, uninstall_sw=uninstall_sw)
+                cluster_removed = await self.helm_k8scluster.reset(cluster_uuid=k8s_hc_id, uninstall_sw=uninstall_sw)
+
+            if k8s_jb_id:
+                uninstall_sw = uninstall_sw or False
+                cluster_removed = await self.juju_k8scluster.reset(cluster_uuid=k8s_jb_id, uninstall_sw=uninstall_sw)
 
             if cluster_removed:
                 step = "Removing k8scluster='{}' from db".format(k8scluster_id)

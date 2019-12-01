@@ -26,6 +26,7 @@ from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound,
 from osm_lcm import ROclient
 from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase, deep_get
 from n2vc.k8s_helm_conn import K8sHelmConnector
+from n2vc.k8s_juju_conn import K8sJujuConnector
 
 from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
@@ -119,6 +120,15 @@ class NsLcm(LcmBase):
         self.k8sclusterhelm = K8sHelmConnector(
             kubectl_command=self.vca_config.get("kubectlpath"),
             helm_command=self.vca_config.get("helmpath"),
+            fs=self.fs,
+            log=self.logger,
+            db=self.db,
+            on_update_db=None,
+        )
+
+        self.k8sclusterjuju = K8sJujuConnector(
+            kubectl_command=self.vca_config.get("kubectlpath"),
+            juju_command=self.vca_config.get("jujupath"),
             fs=self.fs,
             log=self.logger,
             db=self.db,
@@ -1540,8 +1550,10 @@ class NsLcm(LcmBase):
                                                         params=desc_params, db_dict=db_dict, timeout=3600)
                         )
                     else:
-                        # TODO juju-bundle connector in place
-                        pass
+                        task = self.k8sclusterjuju.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
+                                                           atomic=True, params=desc_params,
+                                                           db_dict=db_dict, timeout=600)
+
                     pending_tasks[task] = "_admin.deployed.K8s.{}.".format(index)
                     index += 1
             if not pending_tasks:
@@ -1984,8 +1996,9 @@ class NsLcm(LcmBase):
                                 self.k8sclusterhelm.uninstall(cluster_uuid=kdu.get("k8scluster-uuid"),
                                                               kdu_instance=kdu_instance))
                         elif kdu.get("k8scluster-type") == "juju":
-                            # TODO Juju connector needed
-                            continue
+                            task_delete_kdu_instance = asyncio.ensure_future(
+                                self.k8sclusterjuju.uninstall(cluster_uuid=kdu.get("k8scluster-uuid"),
+                                                              kdu_instance=kdu_instance))
                         else:
                             self.error(logging_text + "Unknown k8s deployment type {}".
                                        format(kdu.get("k8scluster-type")))
@@ -2366,8 +2379,12 @@ class NsLcm(LcmBase):
                                                                            params=desc_params, db_dict=db_dict,
                                                                            timeout=300)
                             elif kdu.get("k8scluster-type") == "juju":
-                                # TODO Juju connector needed
-                                pass
+                                output = await self.k8sclusterjuju.upgrade(cluster_uuid=kdu.get("k8scluster-uuid"),
+                                                                           kdu_instance=kdu.get("kdu-instance"),
+                                                                           atomic=True, kdu_model=kdu_model,
+                                                                           params=desc_params, db_dict=db_dict,
+                                                                           timeout=300)
+
                             else:
                                 msg = "k8scluster-type not defined"
                                 raise LcmException(msg)
@@ -2380,8 +2397,9 @@ class NsLcm(LcmBase):
                                                                             kdu_instance=kdu.get("kdu-instance"),
                                                                             db_dict=db_dict)
                             elif kdu.get("k8scluster-type") == "juju":
-                                # TODO Juju connector needed
-                                pass
+                                output = await self.k8sclusterjuju.rollback(cluster_uuid=kdu.get("k8scluster-uuid"),
+                                                                            kdu_instance=kdu.get("kdu-instance"),
+                                                                            db_dict=db_dict)
                             else:
                                 msg = "k8scluster-type not defined"
                                 raise LcmException(msg)
@@ -2391,8 +2409,8 @@ class NsLcm(LcmBase):
                                 output = await self.k8sclusterhelm.status_kdu(cluster_uuid=kdu.get("k8scluster-uuid"),
                                                                               kdu_instance=kdu.get("kdu-instance"))
                             elif kdu.get("k8scluster-type") == "juju":
-                                # TODO Juju connector needed
-                                pass
+                                output = await self.k8sclusterjuju.status_kdu(cluster_uuid=kdu.get("k8scluster-uuid"),
+                                                                              kdu_instance=kdu.get("kdu-instance"))
                             else:
                                 msg = "k8scluster-type not defined"
                                 raise LcmException(msg)
