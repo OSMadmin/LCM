@@ -1098,7 +1098,8 @@ class K8sClusterLcm(LcmBase):
                 for k8srepo in db_k8srepo_list:
                     index = 0
                     for cluster in k8srepo["_admin"]["cluster-inserted"]:
-                        if db_k8scluster.get("cluster-uuid") == cluster:
+                        hc_id = deep_get(db_k8scluster, ("_admin", "helm-chart", "id"))
+                        if hc_id == cluster:
                             del(k8srepo["_admin"]["cluster-inserted"][index])
                             break
                         index += 1
@@ -1189,13 +1190,15 @@ class K8sRepoLcm(LcmBase):
             db_k8srepo_update["_admin.cluster-inserted"] = []
             task_list = []
             for k8scluster in db_k8scluster_list:
-                step = "Adding repo to cluster: {}".format(k8scluster["cluster-uuid"])
-                self.logger.debug(logging_text + step)
-                task = asyncio.ensure_future(self.k8srepo.repo_add(cluster_uuid=k8scluster["cluster-uuid"],
-                                                                   name=db_k8srepo["name"], url=db_k8srepo["url"],
-                                                                   repo_type="chart"))
-                task_list.append(task)
-                db_k8srepo_update["_admin.cluster-inserted"].append(k8scluster["cluster-uuid"])
+                hc_id = deep_get(k8scluster, ("_admin", "helm-chart", "id"))
+                if hc_id:
+                    step = "Adding repo to cluster: {}".format(hc_id)
+                    self.logger.debug(logging_text + step)
+                    task = asyncio.ensure_future(self.k8srepo.repo_add(cluster_uuid=hc_id,
+                                                                       name=db_k8srepo["name"], url=db_k8srepo["url"],
+                                                                       repo_type="chart"))
+                    task_list.append(task)
+                    db_k8srepo_update["_admin.cluster-inserted"].append(hc_id)
 
             done = None
             pending = None
@@ -1258,8 +1261,10 @@ class K8sRepoLcm(LcmBase):
 
             task_list = []
             for k8scluster in db_k8scluster_list:
-                task = asyncio.ensure_future(self.k8srepo.repo_remove(cluster_uuid=k8scluster["cluster-uuid"],
-                                                                      name=db_k8srepo["name"]))
+                hc_id = deep_get(k8scluster, ("_admin", "helm-chart", "id"))
+                if hc_id:
+                    task = asyncio.ensure_future(self.k8srepo.repo_remove(cluster_uuid=hc_id,
+                                                                          name=db_k8srepo["name"]))
                 task_list.append(task)
             done = None
             pending = None
