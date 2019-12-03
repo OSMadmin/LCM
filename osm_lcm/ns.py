@@ -871,8 +871,13 @@ class NsLcm(LcmBase):
         ip_address = None
         nb_tries = 0
         target_vdu_id = None
+        ro_retries = 0
 
         while True:
+
+            ro_retries += 1
+            if ro_retries >= 360:  # 1 hour
+                raise LcmException("Not found _admin.deployed.RO.nsr_id for nsr_id: {}".format(nsr_id))
 
             await asyncio.sleep(10, loop=self.loop)
             # wait until NS is deployed at RO
@@ -885,22 +890,28 @@ class NsLcm(LcmBase):
             # get ip address
             if not target_vdu_id:
                 db_vnfr = self.db.get_one("vnfrs", {"_id": vnfr_id})
-                if not vdu_id:
+
+                if not vdu_id:  # for the VNF case
                     ip_address = db_vnfr.get("ip-address")
                     if not ip_address:
                         continue
-                for vdur in get_iterable(db_vnfr, "vdur"):
-                    if (vdur["vdu-id-ref"] == vdu_id and vdur["count-index"] == vdu_index) or \
-                            (ip_address and vdur.get("ip-address") == ip_address):
-                        if vdur.get("status") == "ACTIVE":
-                            target_vdu_id = vdur["vdu-id-ref"]
-                        elif vdur.get("status") == "ERROR":
-                            raise LcmException("Cannot inject ssh-key because target VM is in error state")
-                        break
-                else:
+                    vdur = next((x for x in get_iterable(db_vnfr, "vdur") if x.get("ip-address") == ip_address), None)
+                else:  # VDU case
+                    vdur = next((x for x in get_iterable(db_vnfr, "vdur")
+                                 if x.get("vdu-id-ref") == vdu_id and x.get("count-index") == vdu_index), None)
+
+                if not vdur:
                     raise LcmException("Not found vnfr_id={}, vdu_index={}, vdu_index={}".format(
                         vnfr_id, vdu_id, vdu_index
                     ))
+
+                if vdur.get("status") == "ACTIVE":
+                    ip_address = vdur.get("ip-address")
+                    if not ip_address:
+                        continue
+                    target_vdu_id = vdur["vdu-id-ref"]
+                elif vdur.get("status") == "ERROR":
+                    raise LcmException("Cannot inject ssh-key because target VM is in error state")
 
             if not target_vdu_id:
                 continue
