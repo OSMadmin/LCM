@@ -989,7 +989,7 @@ class NsLcm(LcmBase):
                     namespace += ".{}-{}".format(vdu_id, vdu_index or 0)
 
             # Get artifact path
-            artifact_path = "/{}/{}/charms/{}".format(
+            artifact_path = "{}/{}/charms/{}".format(
                 base_folder["folder"],
                 base_folder["pkg-dir"],
                 config_descriptor["juju"]["charm"]
