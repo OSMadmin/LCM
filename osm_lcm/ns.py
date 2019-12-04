@@ -32,6 +32,7 @@ from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
 
 from n2vc.n2vc_juju_conn import N2VCJujuConnector
+from n2vc.exceptions import N2VCException
 
 from copy import copy, deepcopy
 from http import HTTPStatus
@@ -1155,6 +1156,7 @@ class NsLcm(LcmBase):
         db_vnfrs = {}     # vnf's info indexed by member-index
         # n2vc_info = {}
         task_instantiation_list = []
+        task_instantiation_info = {}  # from task to info text
         exc = None
         try:
             # wait for any previous tasks in process
@@ -1237,6 +1239,7 @@ class NsLcm(LcmBase):
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDUs", task_kdu)
+            task_instantiation_info[task_kdu] = "Deploy KDUs"
             task_instantiation_list.append(task_kdu)
             # n2vc_redesign STEP 1 Get VCA public ssh-key
             # feature 1429. Add n2vc public key to needed VMs
@@ -1259,6 +1262,7 @@ class NsLcm(LcmBase):
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_RO", task_ro)
+            task_instantiation_info[task_ro] = "Deploy at VIM"
             task_instantiation_list.append(task_ro)
 
             # n2vc_redesign STEP 3 to 6 Deploy N2VC
@@ -1301,7 +1305,8 @@ class NsLcm(LcmBase):
                         deploy_params=deploy_params,
                         descriptor_config=descriptor_config,
                         base_folder=base_folder,
-                        task_instantiation_list=task_instantiation_list
+                        task_instantiation_list=task_instantiation_list,
+                        task_instantiation_info=task_instantiation_info
                     )
 
                 # Deploy charms for each VDU that supports one.
@@ -1342,7 +1347,8 @@ class NsLcm(LcmBase):
                                 deploy_params=deploy_params_vdu,
                                 descriptor_config=descriptor_config,
                                 base_folder=base_folder,
-                                task_instantiation_list=task_instantiation_list
+                                task_instantiation_list=task_instantiation_list,
+                                task_instantiation_info=task_instantiation_info
                             )
                 for kdud in get_iterable(vnfd, 'kdu'):
                     kdu_name = kdud["name"]
@@ -1377,7 +1383,8 @@ class NsLcm(LcmBase):
                             deploy_params=deploy_params,
                             descriptor_config=descriptor_config,
                             base_folder=base_folder,
-                            task_instantiation_list=task_instantiation_list
+                            task_instantiation_list=task_instantiation_list,
+                            task_instantiation_info=task_instantiation_info
                         )
 
             # Check if this NS has a charm configuration
@@ -1412,33 +1419,35 @@ class NsLcm(LcmBase):
                     deploy_params=deploy_params,
                     descriptor_config=descriptor_config,
                     base_folder=base_folder,
-                    task_instantiation_list=task_instantiation_list
+                    task_instantiation_list=task_instantiation_list,
+                    task_instantiation_info=task_instantiation_info
                 )
 
             # Wait until all tasks of "task_instantiation_list" have been finished
 
             # while time() <= start_deploy + self.total_deploy_timeout:
-            error_text = None
+            error_text_list = []
             timeout = 3600  # time() - start_deploy
-            task_instantiation_set = set(task_instantiation_list)    # build a set with tasks
-            done = None
-            pending = None
-            if len(task_instantiation_set) > 0:
-                done, pending = await asyncio.wait(task_instantiation_set, timeout=timeout)
-            if pending:
-                error_text = "timeout"
-            for task in done:
-                if task.cancelled():
-                    if not error_text:
-                        error_text = "cancelled"
-                elif task.done():
-                    exc = task.exception()
-                    if exc:
-                        error_text = str(exc)
+            if task_instantiation_list:
+                done, pending = await asyncio.wait(task_instantiation_list, timeout=timeout)
+                if pending:
+                    for task in pending:
+                        error_text_list.append(task_instantiation_info[task] + ": Timeout")
+                for task in done:
+                    if task.cancelled():
+                        error_text_list.append(task_instantiation_info[task] + ": Cancelled")
+                    elif task.done():
+                        exc = task.exception()
+                        if exc:
+                            if isinstance(exc, (N2VCException, ROclient.ROClientException)):
+                                error_text_list.append(task_instantiation_info[task] + ": {}".format(exc))
+                            else:
+                                error_text_list.append(task_instantiation_info[task] + ": " + "".
+                                                       join(traceback.format_exception(None, exc, exc.__traceback__)))
 
-            if error_text:
+            if error_text_list:
+                error_text = "\n".join(error_text_list)
                 db_nsr_update["config-status"] = "failed"
-                error_text = "fail configuring " + error_text
                 db_nsr_update["detailed-status"] = error_text
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED_TEMP"
                 db_nslcmop_update["detailed-status"] = error_text
@@ -1595,7 +1604,7 @@ class NsLcm(LcmBase):
 
     def _deploy_n2vc(self, logging_text, db_nsr, db_vnfr, nslcmop_id, nsr_id, nsi_id, vnfd_id, vdu_id,
                      kdu_name, member_vnf_index, vdu_index, vdu_name, deploy_params, descriptor_config,
-                     base_folder, task_instantiation_list):
+                     base_folder, task_instantiation_list, task_instantiation_info):
         # launch instantiate_N2VC in a asyncio task and register task object
         # Look where information of this charm is at database <nsrs>._admin.deployed.VCA
         # if not found, create one entry and update database
@@ -1644,6 +1653,7 @@ class NsLcm(LcmBase):
             )
         )
         self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_N2VC-{}".format(vca_index), task_n2vc)
+        task_instantiation_info[task_n2vc] = "Deploy VCA {}.{}".format(member_vnf_index or "", vdu_id or "")
         task_instantiation_list.append(task_n2vc)
 
     # Check if this VNFD has a configured terminate action
