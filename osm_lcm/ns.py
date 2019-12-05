@@ -628,15 +628,16 @@ class NsLcm(LcmBase):
             else:
                 raise LcmException("ns_update_vnfr: Not found member_vnf_index={} from VIM info".format(vnf_index))
 
-    @staticmethod
-    def _get_ns_config_info(vca_deployed_list):
+    def _get_ns_config_info(self, nsr_id):
         """
         Generates a mapping between vnf,vdu elements and the N2VC id
-        :param vca_deployed_list: List of database _admin.deploy.VCA that contains this list
+        :param nsr_id: id of nsr to get last  database _admin.deployed.VCA that contains this list
         :return: a dictionary with {osm-config-mapping: {}} where its element contains:
             "<member-vnf-index>": <N2VC-id>  for a vnf configuration, or
             "<member-vnf-index>.<vdu.id>.<vdu replica(0, 1,..)>": <N2VC-id>  for a vdu configuration
         """
+        db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+        vca_deployed_list = db_nsr["_admin"]["deployed"]["VCA"]
         mapping = {}
         ns_config_info = {"osm-config-mapping": mapping}
         for vca in vca_deployed_list:
@@ -960,6 +961,33 @@ class NsLcm(LcmBase):
 
         return ip_address
 
+    async def _wait_dependent_n2vc(self, nsr_id, vca_deployed_list, vca_index):
+        """
+        Wait until dependent VCA deployments have been finished. NS wait for VNFs and VDUs. VNFs for VDUs
+        """
+        my_vca = vca_deployed_list[vca_index]
+        if my_vca.get("vdu_id") or my_vca.get("kdu_name"):
+            return
+        timeout = 300
+        while timeout >= 0:
+            for index, vca_deployed in enumerate(vca_deployed_list):
+                if index == vca_index:
+                    continue
+                if not my_vca.get("member-vnf-index") or \
+                        (vca_deployed.get("member-vnf-index") == my_vca.get("member-vnf-index")):
+                    if not vca_deployed.get("instantiation"):
+                        break   # wait
+                    if vca_deployed["instantiation"] == "FAILED":
+                        raise LcmException("Configuration aborted because dependent charm/s has failed")
+            else:
+                return
+            await asyncio.sleep(10)
+            timeout -= 1
+            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            vca_deployed_list = db_nsr["_admin"]["deployed"]["VCA"]
+
+        raise LcmException("Configuration aborted because dependent charm/s timeout")
+
     async def instantiate_N2VC(self, logging_text, vca_index, nsi_id, db_nsr, db_vnfr, vdu_id,
                                kdu_name, vdu_index, config_descriptor, deploy_params, base_folder):
         nsr_id = db_nsr["_id"]
@@ -1068,8 +1096,11 @@ class NsLcm(LcmBase):
 
                 # n2vc_redesign STEP 5.1
                 # wait for RO (ip-address) Insert pub_key into VM
-                rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(logging_text, nsr_id, vnfr_id, vdu_id, vdu_index,
-                                                                 user=user, pub_key=pub_key)
+                if vnfr_id:
+                    rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(logging_text, nsr_id, vnfr_id, vdu_id, vdu_index,
+                                                                     user=user, pub_key=pub_key)
+                else:
+                    rw_mgmt_ip = None   # This is for a NS configuration
 
                 self.logger.debug(logging_text + ' VM_ip_address={}'.format(rw_mgmt_ip))
 
@@ -1089,11 +1120,12 @@ class NsLcm(LcmBase):
             # add config if not present for NS charm
             initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
                                                                                     vca_deployed)
-
+            if initial_config_primitive_list:
+                await self._wait_dependent_n2vc(nsr_id, vca_deployed_list, vca_index)
             for initial_config_primitive in initial_config_primitive_list:
                 # adding information on the vca_deployed if it is a NS execution environment
                 if not vca_deployed["member-vnf-index"]:
-                    deploy_params["ns_config_info"] = self._get_ns_config_info(vca_deployed_list)
+                    deploy_params["ns_config_info"] = self._get_ns_config_info(nsr_id)
                 # TODO check if already done
                 primitive_params_ = self._map_primitive_params(initial_config_primitive, {}, deploy_params)
 
@@ -1108,9 +1140,11 @@ class NsLcm(LcmBase):
                 # TODO register in database that primitive is done
 
             step = "instantiated at VCA"
+            self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "COMPLETED"})
             self.logger.debug(logging_text + step)
 
         except Exception as e:  # TODO not use Exception but N2VC exception
+            self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "FAILED"})
             raise Exception("{} {}".format(step, e)) from e
             # TODO raise N2VC exception with 'step' extra information
 

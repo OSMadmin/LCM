@@ -167,6 +167,7 @@ class TestMyNS(asynctest.TestCase):
 
         # Create NsLCM class
         self.my_ns = NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, ro_config, vca_config, self.loop)
+        self.my_ns._wait_dependent_n2vc = asynctest.CoroutineMock()
 
         # Mock logging
         if not getenv("OSMLCMTEST_LOGGING_NOMOCK"):
