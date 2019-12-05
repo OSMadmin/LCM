@@ -1118,6 +1118,20 @@ class NsLcm(LcmBase):
             raise Exception("{} {}".format(step, e)) from e
             # TODO raise N2VC exception with 'step' extra information
 
+    def _write_ns_status(self, nsr_id: str, ns_state: str, current_operation: str, current_operation_id: str,
+                         error_description: str = None, error_detail: str = None):
+        try:
+            db_dict = dict()
+            if ns_state:
+                db_dict["nsState"] = ns_state
+            db_dict["currentOperation"] = current_operation
+            db_dict["currentOperationID"] = current_operation_id
+            db_dict["errorDescription"] = error_description
+            db_dict["errorDetail"] = error_detail
+            self.update_db_2("nsrs", nsr_id, db_dict)
+        except Exception as e:
+            self.logger.warn('Error writing NS status: {}'.format(e))
+
     async def instantiate(self, nsr_id, nslcmop_id):
         """
 
@@ -1164,6 +1178,14 @@ class NsLcm(LcmBase):
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
             # STEP 0: Reading database (nslcmops, nsrs, nsds, vnfrs, vnfds)
+
+            # nsState="BUILDING", currentOperation="INSTANTIATING", currentOperationID=nslcmop_id
+            self._write_ns_status(
+                nsr_id=nsr_id,
+                ns_state="BUILDING",
+                current_operation="INSTANTIATING",
+                current_operation_id=nslcmop_id
+            )
 
             # read from db: operation
             step = "Getting nslcmop={} from db".format(nslcmop_id)
@@ -1427,27 +1449,56 @@ class NsLcm(LcmBase):
 
             # while time() <= start_deploy + self.total_deploy_timeout:
             error_text_list = []
-            timeout = 3600  # time() - start_deploy
+            timeout = 3600
+
+            # let's begin with all OK
+            instantiated_ok = True
+            # let's begin with RO 'running' status (later we can change it)
+            db_nsr_update["operational-status"] = "running"
+            # let's begin with VCA 'configured' status (later we can change it)
+            db_nsr_update["config-status"] = "configured"
+
             if task_instantiation_list:
+                # wait for all tasks completion
                 done, pending = await asyncio.wait(task_instantiation_list, timeout=timeout)
-                if pending:
-                    for task in pending:
-                        error_text_list.append(task_instantiation_info[task] + ": Timeout")
+
+                for task in pending:
+                    instantiated_ok = False
+                    if task == task_ro:
+                        db_nsr_update["operational-status"] = "failed"
+                    else:
+                        db_nsr_update["config-status"] = "failed"
+                    self.logger.error(logging_text + task_instantiation_info[task] + ": Timeout")
+                    error_text_list.append(task_instantiation_info[task] + ": Timeout")
                 for task in done:
                     if task.cancelled():
+                        instantiated_ok = False
+                        if task == task_ro:
+                            db_nsr_update["operational-status"] = "failed"
+                        else:
+                            db_nsr_update["config-status"] = "failed"
+                        self.logger.warn(logging_text + task_instantiation_info[task] + ": Cancelled")
                         error_text_list.append(task_instantiation_info[task] + ": Cancelled")
-                    elif task.done():
+                    else:
                         exc = task.exception()
                         if exc:
+                            instantiated_ok = False
+                            if task == task_ro:
+                                db_nsr_update["operational-status"] = "failed"
+                            else:
+                                db_nsr_update["config-status"] = "failed"
+                            self.logger.error(logging_text + task_instantiation_info[task] + ": Failed")
                             if isinstance(exc, (N2VCException, ROclient.ROClientException)):
                                 error_text_list.append(task_instantiation_info[task] + ": {}".format(exc))
                             else:
-                                error_text_list.append(task_instantiation_info[task] + ": " + "".
-                                                       join(traceback.format_exception(None, exc, exc.__traceback__)))
+                                exc_traceback = "".join(traceback.format_exception(None, exc, exc.__traceback__))
+                                self.logger.error(logging_text + task_instantiation_info[task] + exc_traceback)
+                                error_text_list.append(task_instantiation_info[task] + ": " + exc_traceback)
+                        else:
+                            self.logger.debug(logging_text + task_instantiation_info[task] + ": Done")
 
             if error_text_list:
                 error_text = "\n".join(error_text_list)
-                db_nsr_update["config-status"] = "failed"
                 db_nsr_update["detailed-status"] = error_text
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED_TEMP"
                 db_nslcmop_update["detailed-status"] = error_text
@@ -1457,7 +1508,6 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
                 db_nslcmop_update["statusEnteredTime"] = time()
                 db_nslcmop_update["detailed-status"] = "done"
-                db_nsr_update["config-status"] = "configured"
                 db_nsr_update["detailed-status"] = "done"
 
         except (ROclient.ROClientException, DbException, LcmException) as e:
@@ -1475,6 +1525,7 @@ class NsLcm(LcmBase):
                 if db_nsr:
                     db_nsr_update["detailed-status"] = "ERROR {}: {}".format(step, exc)
                     db_nsr_update["operational-status"] = "failed"
+                    db_nsr_update["config-status"] = "failed"
                 if db_nslcmop:
                     db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                     db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
@@ -1485,6 +1536,26 @@ class NsLcm(LcmBase):
                     db_nsr_update["_admin.current-operation"] = None
                     db_nsr_update["_admin.operation-type"] = None
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
+                    # nsState="READY/BROKEN", currentOperation="IDLE", currentOperationID=None
+                    ns_state = None
+                    error_description = None
+                    error_detail = None
+                    if instantiated_ok:
+                        ns_state = "READY"
+                    else:
+                        ns_state = "BROKEN"
+                        error_description = 'Operation: INSTANTIATING.{}, step: {}'.format(nslcmop_id, step)
+                        error_detail = error_text
+                    self._write_ns_status(
+                        nsr_id=nsr_id,
+                        ns_state=ns_state,
+                        current_operation="IDLE",
+                        current_operation_id=None,
+                        error_description=error_description,
+                        error_detail=error_detail
+                    )
+
                 if db_nslcmop_update:
                     self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
             except DbException as e:
@@ -1972,6 +2043,13 @@ class NsLcm(LcmBase):
             step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA("ns", 'nslcmops', nslcmop_id)
 
+            self._write_ns_status(
+                nsr_id=nsr_id,
+                ns_state="TERMINATING",
+                current_operation="TERMINATING",
+                current_operation_id=nslcmop_id
+            )
+
             step = "Getting nslcmop={} from db".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             step = "Getting nsr={} from db".format(nsr_id)
@@ -2146,6 +2224,7 @@ class NsLcm(LcmBase):
                             self.logger.error(logging_text + failed_detail[-1])
 
             if failed_detail:
+                terminate_ok = False
                 self.logger.error(logging_text + " ;".join(failed_detail))
                 db_nsr_update["operational-status"] = "failed"
                 db_nsr_update["detailed-status"] = "Deletion errors " + "; ".join(failed_detail)
@@ -2153,6 +2232,7 @@ class NsLcm(LcmBase):
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
             else:
+                terminate_ok = True
                 db_nsr_update["operational-status"] = "terminated"
                 db_nsr_update["detailed-status"] = "Done"
                 db_nsr_update["_admin.nsState"] = "NOT_INSTANTIATED"
@@ -2184,6 +2264,25 @@ class NsLcm(LcmBase):
                     db_nsr_update["_admin.current-operation"] = None
                     db_nsr_update["_admin.operation-type"] = None
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
+                    if terminate_ok:
+                        ns_state = "IDLE"
+                        error_description = None
+                        error_detail = None
+                    else:
+                        ns_state = "BROKEN"
+                        error_description = 'Operation: TERMINATING.{}, step: {}'.format(nslcmop_id, step)
+                        error_detail = "; ".join(failed_detail)
+
+                    self._write_ns_status(
+                        nsr_id=nsr_id,
+                        ns_state=ns_state,
+                        current_operation="IDLE",
+                        current_operation_id=None,
+                        error_description=error_description,
+                        error_detail=error_detail
+                    )
+
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             if nslcmop_operation_state:
@@ -2329,6 +2428,13 @@ class NsLcm(LcmBase):
             # wait for any previous tasks in process
             step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
+
+            self._write_ns_status(
+                nsr_id=nsr_id,
+                ns_state=None,
+                current_operation="RUNNING ACTION",
+                current_operation_id=nslcmop_id
+            )
 
             step = "Getting information from database"
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
@@ -2522,6 +2628,12 @@ class NsLcm(LcmBase):
                     db_nsr_update["_admin.nslcmop"] = None
                     db_nsr_update["_admin.current-operation"] = None
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
+                    self._write_ns_status(
+                        nsr_id=nsr_id,
+                        ns_state=None,
+                        current_operation="IDLE",
+                        current_operation_id=None
+                    )
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.logger.debug(logging_text + "Exit")
@@ -2564,6 +2676,13 @@ class NsLcm(LcmBase):
             # wait for any previous tasks in process
             step = "Waiting for previous operations to terminate"
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
+
+            self._write_ns_status(
+                nsr_id=nsr_id,
+                ns_state=None,
+                current_operation="SCALING",
+                current_operation_id=nslcmop_id
+            )
 
             step = "Getting nslcmop from database"
             self.logger.debug(step + " after having waited for previous tasks to be completed")
@@ -2899,7 +3018,7 @@ class NsLcm(LcmBase):
                         # Post-scale reintent check: Check if this sub-operation has been executed before
                         op_index = self._check_or_add_scale_suboperation(
                             db_nslcmop, nslcmop_id, vnf_index, vnf_config_primitive, primitive_params, 'POST-SCALE')
-                        if (op_index == self.SUBOPERATION_STATUS_SKIP):
+                        if op_index == self.SUBOPERATION_STATUS_SKIP:
                             # Skip sub-operation
                             result = 'COMPLETED'
                             result_detail = 'Done'
@@ -2907,7 +3026,7 @@ class NsLcm(LcmBase):
                                               "vnf_config_primitive={} Skipped sub-operation, result {} {}".
                                               format(vnf_config_primitive, result, result_detail))
                         else:
-                            if (op_index == self.SUBOPERATION_STATUS_NEW):
+                            if op_index == self.SUBOPERATION_STATUS_NEW:
                                 # New sub-operation: Get index of this sub-operation
                                 op_index = len(db_nslcmop.get('_admin', {}).get('operations')) - 1
                                 self.logger.debug(logging_text + "vnf_config_primitive={} New sub-operation".
@@ -2978,6 +3097,14 @@ class NsLcm(LcmBase):
                     db_nsr_update["_admin.operation-type"] = None
                     db_nsr_update["_admin.nslcmop"] = None
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
+                    self._write_ns_status(
+                        nsr_id=nsr_id,
+                        ns_state=None,
+                        current_operation="IDLE",
+                        current_operation_id=None
+                    )
+
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             if nslcmop_operation_state:
