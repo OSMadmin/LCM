@@ -230,7 +230,6 @@ class NetsliceLcm(LcmBase):
                                             "external": mgmt_network, "type": "bridge"}]}
 
                 # self.logger.debug(logging_text + step)
-                db_nsir_update["detailed-status"] = "Creating netslice-vld at RO"
                 desc = await RO.create("ns", descriptor=RO_ns_params)
                 db_nsir_update_RO = {}
                 db_nsir_update_RO["netslice_scenario_id"] = desc["uuid"]
@@ -275,7 +274,7 @@ class NetsliceLcm(LcmBase):
                                                             nslcmop_vld.update(vld)
                                                     vld_op_list.append(nslcmop_vld)
             nslcmop["operationParams"]["vld"] = vld_op_list
-            self.update_db_2("nslcmops", nslcmop["_id"], nslcmop)
+            self.update_db_2("nslcmops", nslcmop["_id"], {"operationParams.vld": vld_op_list})
             return nsr_id, nslcmop
 
         try:
@@ -290,17 +289,22 @@ class NetsliceLcm(LcmBase):
             # Empty list to keep track of network service records status in the netslice
             nsir_admin = db_nsir_admin = db_nsir.get("_admin")
 
+            step = "Creating slice operational-status init"
             # Slice status Creating
             db_nsir_update["detailed-status"] = "creating"
             db_nsir_update["operational-status"] = "init"
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
+            step = "Creating netslice VLDs before NS instantiation"
             # Creating netslice VLDs networking before NS instantiation
+            db_nsir_update["detailed-status"] = "Creating netslice-vld at RO"
+            self.update_db_2("nsis", nsir_id, db_nsir_update)
             db_nsir_update["_admin.deployed.RO"] = db_nsir_admin["deployed"]["RO"]
             for vld_item in get_iterable(nsir_admin, "netslice-vld"):
                 await netslice_scenario_create(self, vld_item, nsir_id, db_nsir, db_nsir_admin, db_nsir_update)
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
+            step = "Creating netslice subnets at RO"
             db_nsir_update["detailed-status"] = "Creating netslice subnets at RO"
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
@@ -320,6 +324,7 @@ class NetsliceLcm(LcmBase):
             # TODO: (future improvement) look another way check the tasks instead of keep asking
             # -> https://docs.python.org/3/library/asyncio-task.html#waiting-primitives
             # steps: declare ns_tasks, add task when terminate is called, await asyncio.wait(vca_task_list, timeout=300)
+            step = "Instantiating Netslice Subnets"
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
             nslcmop_ids = db_nsilcmop["operationParams"].get("nslcmops_ids")
             for nslcmop_id in nslcmop_ids:
@@ -355,14 +360,12 @@ class NetsliceLcm(LcmBase):
                                         nsir_status_detailed + "; {}".format(nslcmop.get("detailed-status")),
                                         "instantiated": True})
                             nsrs_detailed_list_new.append(nss)
-                    if status not in ["COMPLETED", "PARTIALLY_COMPLETED", "FAILED", "FAILED_TEMP"]:  
+                    if status not in ["COMPLETED", "PARTIALLY_COMPLETED", "FAILED", "FAILED_TEMP"]:
                         nsi_ready = False
 
                 if nsrs_detailed_list_new != nsrs_detailed_list_old:
-                    nsir_admin["nsrs-detailed-list"] = nsrs_detailed_list_new
                     nsrs_detailed_list_old = nsrs_detailed_list_new
-                    db_nsir_update["_admin"] = nsir_admin
-                    self.update_db_2("nsis", nsir_id, db_nsir_update)
+                    self.update_db_2("nsis", nsir_id, {"_admin.nsrs-detailed-list": nsrs_detailed_list_new})
 
                 if nsi_ready:
                     step = "Network Slice Instance is ready. nsi_id={}".format(nsir_id)
@@ -370,11 +373,11 @@ class NetsliceLcm(LcmBase):
                         if "FAILED" in items.values():
                             raise LcmException("Error deploying NSI: {}".format(nsir_id))
                     break
- 
+
                 # TODO: future improvement due to synchronism -> await asyncio.wait(vca_task_list, timeout=300)
                 await asyncio.sleep(5, loop=self.loop)
                 deployment_timeout -= 5
-            
+
             if deployment_timeout <= 0:
                 raise LcmException("Timeout waiting nsi to be ready. nsi_id={}".format(nsir_id))
 
@@ -464,13 +467,13 @@ class NetsliceLcm(LcmBase):
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
             # Gets the list to keep track of network service records status in the netslice
-            nsir_admin = db_nsir["_admin"]
             nsrs_detailed_list = []
 
             # Iterate over the network services operation ids to terminate NSs
             # TODO: (future improvement) look another way check the tasks instead of keep asking
             # -> https://docs.python.org/3/library/asyncio-task.html#waiting-primitives
             # steps: declare ns_tasks, add task when terminate is called, await asyncio.wait(vca_task_list, timeout=300)
+            step = "Terminating Netslice Subnets"
             nslcmop_ids = db_nsilcmop["operationParams"].get("nslcmops_ids")
             nslcmop_new = []
             for nslcmop_id in nslcmop_ids:
@@ -503,7 +506,6 @@ class NetsliceLcm(LcmBase):
                 # Check ns termination status
                 nsi_ready = True
                 db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
-                nsir_admin = db_nsir["_admin"]
                 nsrs_detailed_list = db_nsir["_admin"].get("nsrs-detailed-list")
                 nsrs_detailed_list_new = []
                 for nslcmop_item in nslcmop_ids:
@@ -520,15 +522,12 @@ class NetsliceLcm(LcmBase):
                         nsi_ready = False
 
                 if nsrs_detailed_list_new != nsrs_detailed_list_old:
-                    nsir_admin["nsrs-detailed-list"] = nsrs_detailed_list_new
                     nsrs_detailed_list_old = nsrs_detailed_list_new
-                    db_nsir_update["_admin"] = nsir_admin
-                    self.update_db_2("nsis", nsir_id, db_nsir_update)
-                    
+                    self.update_db_2("nsis", nsir_id, {"_admin.nsrs-detailed-list": nsrs_detailed_list_new})
+
                 if nsi_ready:
                     # Check if it is the last used nss and mark isinstantiate: False
                     db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
-                    nsir_admin = db_nsir["_admin"]
                     nsrs_detailed_list = db_nsir["_admin"].get("nsrs-detailed-list")
                     for nss in nsrs_detailed_list:
                         _filter = {"_admin.nsrs-detailed-list.ANYINDEX.nsrId": nss["nsrId"],
@@ -537,8 +536,6 @@ class NetsliceLcm(LcmBase):
                         nsis_list = self.db.get_one("nsis", _filter, fail_on_empty=False, fail_on_more=False)
                         if not nsis_list:
                             nss.update({"instantiated": False})
-                    db_nsir_update["_admin"] = nsir_admin
-                    self.update_db_2("nsis", nsir_id, db_nsir_update)
 
                     step = "Network Slice Instance is terminated. nsi_id={}".format(nsir_id)
                     for items in nsrs_detailed_list:
