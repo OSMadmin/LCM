@@ -971,9 +971,6 @@ class NsLcm(LcmBase):
             'filter': {'_id': nsr_id},
             'path': db_update_entry
         }
-        logging_text += "member_vnf_index={} vdu_id={}, vdu_index={} ".format(db_vnfr["member-vnf-index-ref"],
-                                                                              vdu_id, vdu_index)
-
         step = ""
         try:
             vnfr_id = None
@@ -1311,7 +1308,7 @@ class NsLcm(LcmBase):
                 descriptor_config = vnfd.get("vnf-configuration")
                 if descriptor_config and descriptor_config.get("juju"):
                     self._deploy_n2vc(
-                        logging_text=logging_text,
+                        logging_text=logging_text + "member_vnf_index={} ".format(member_vnf_index),
                         db_nsr=db_nsr,
                         db_vnfr=db_vnfr,
                         nslcmop_id=nslcmop_id,
@@ -1353,7 +1350,8 @@ class NsLcm(LcmBase):
                         for vdu_index in range(int(vdud.get("count", 1))):
                             # TODO vnfr_params["rw_mgmt_ip"] = vdur["ip-address"]
                             self._deploy_n2vc(
-                                logging_text=logging_text,
+                                logging_text=logging_text + "member_vnf_index={}, vdu_id={}, vdu_index={} ".format(
+                                    member_vnf_index, vdu_id, vdu_index),
                                 db_nsr=db_nsr,
                                 db_vnfr=db_vnfr,
                                 nslcmop_id=nslcmop_id,
