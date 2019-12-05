@@ -2373,7 +2373,7 @@ class NsLcm(LcmBase):
                                 break
             elif kdu_name:
                 self.logger.debug(logging_text + "Checking actions in KDUs")
-                kdur = next((x for x in db_vnfr["kdur"] if x["kdu_name"] == kdu_name), None)
+                kdur = next((x for x in db_vnfr["kdur"] if x["kdu-name"] == kdu_name), None)
                 desc_params = self._format_additional_params(kdur.get("additionalParams")) or {}
                 if primitive_params:
                     desc_params.update(primitive_params)
