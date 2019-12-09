@@ -21,6 +21,7 @@ import yaml
 import logging
 import logging.handlers
 import traceback
+import json
 from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound, TemplateSyntaxError
 
 from osm_lcm import ROclient
@@ -1125,7 +1126,7 @@ class NsLcm(LcmBase):
             for initial_config_primitive in initial_config_primitive_list:
                 # adding information on the vca_deployed if it is a NS execution environment
                 if not vca_deployed["member-vnf-index"]:
-                    deploy_params["ns_config_info"] = self._get_ns_config_info(nsr_id)
+                    deploy_params["ns_config_info"] = json.dumps(self._get_ns_config_info(nsr_id))
                 # TODO check if already done
                 primitive_params_ = self._map_primitive_params(initial_config_primitive, {}, deploy_params)
 
