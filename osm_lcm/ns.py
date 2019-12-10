@@ -1090,7 +1090,7 @@ class NsLcm(LcmBase):
                     step = "Install configuration Software, getting public ssh key"
                     pub_key = await self.n2vc.get_ee_ssh_public__key(ee_id=ee_id, db_dict=db_dict)
 
-                    step = "Insert public key into VM"
+                    step = "Insert public key into VM user={} ssh_key={}".format(user, pub_key)
                 else:
                     step = "Waiting to VM being up and getting IP address"
                 self.logger.debug(logging_text + step)
