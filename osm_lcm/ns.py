@@ -1976,6 +1976,13 @@ class NsLcm(LcmBase):
             # or op_index (operationState != 'COMPLETED')
             return self._reintent_or_skip_suboperation(db_nslcmop, op_index)
 
+    # Function to return execution_environment id
+
+    def _get_ee_id(self, vnf_index, vdu_id, vca_deployed_list):
+        for vca in vca_deployed_list:
+            if vca["member-vnf-index"] == vnf_index and vca["vdu_id"] == vdu_id:
+                return vca["ee_id"]
+
     # Helper methods for terminate()
 
     async def _terminate_action(self, db_nslcmop, nslcmop_id, nsr_id):
@@ -1983,6 +1990,8 @@ class NsLcm(LcmBase):
             Called from terminate() before deleting instance
             Calls action() to execute the primitive """
         logging_text = "Task ns={} _terminate_action={} ".format(nsr_id, nslcmop_id)
+        db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+        vca_deployed_list = db_nsr["_admin"]["deployed"]["VCA"]
         db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
         db_vnfds = {}
         # Loop over VNFRs
@@ -2034,8 +2043,7 @@ class NsLcm(LcmBase):
                 #         " primitive={} fails with error {}".format(
                 #             vnf_index, seq.get("name"), result_detail))
 
-                # TODO: find ee_id
-                ee_id = None
+                ee_id = self._get_ee_id(vnf_index, vdu_id, vca_deployed_list)
                 try:
                     await self.n2vc.exec_primitive(
                         ee_id=ee_id,
