@@ -121,9 +121,7 @@ class NsLcm(LcmBase):
             url='{}:{}'.format(self.vca_config['host'], self.vca_config['port']),
             username=self.vca_config.get('user', None),
             vca_config=self.vca_config,
-            on_update_db=self._on_update_n2vc_db,
-            # ca_cert=self.vca_config.get('cacert'),
-            # api_proxy=self.vca_config.get('apiproxy'),
+            on_update_db=self._on_update_n2vc_db
         )
 
         self.k8sclusterhelm = K8sHelmConnector(
@@ -147,32 +145,108 @@ class NsLcm(LcmBase):
         # create RO client
         self.RO = ROclient.ROClient(self.loop, **self.ro_config)
 
-    def _on_update_n2vc_db(self, table, filter, path, updated_data):
+    def _on_update_ro_db(self, nsrs_id, ro_descriptor):
 
-        self.logger.debug('_on_update_n2vc_db(table={}, filter={}, path={}, updated_data={}'
-                          .format(table, filter, path, updated_data))
+        # self.logger.debug('_on_update_ro_db(nsrs_id={}'.format(nsrs_id))
+
+        try:
+            # TODO filter RO descriptor fields...
+
+            # write to database
+            db_dict = dict()
+            # db_dict['deploymentStatus'] = yaml.dump(ro_descriptor, default_flow_style=False, indent=2)
+            db_dict['deploymentStatus'] = ro_descriptor
+            self.update_db_2("nsrs", nsrs_id, db_dict)
+
+        except Exception as e:
+            self.logger.warn('Cannot write database RO deployment for ns={} -> {}'.format(nsrs_id, e))
+
+    async def _on_update_n2vc_db(self, table, filter, path, updated_data):
+
+        # self.logger.debug('_on_update_n2vc_db(table={}, filter={}, path={}, updated_data={}'
+        #                   .format(table, filter, path, updated_data))
+
+        try:
+
+            nsr_id = filter.get('_id')
+
+            # read ns record from database
+            nsr = self.db.get_one(table='nsrs', q_filter=filter)
+            current_ns_status = nsr.get('nsState')
+
+            # get vca status for NS
+            # status_dict = await self.n2vc.get_status(namespace='.' + nsr_id, yaml_format=False)
+            # TEMPORAL
+            status_dict = str(await self.n2vc.get_status(namespace='.' + nsr_id))
+
+            # vcaStatus
+            db_dict = dict()
+            db_dict['vcaStatus'] = status_dict
+
+            # update configurationStatus for this VCA
+            try:
+                vca_index = int(path[path.rfind(".")+1:])
+
+                vca_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'VCA'))
+                vca_status = vca_list[vca_index].get('status')
+
+                configuration_status_list = nsr.get('configurationStatus')
+                config_status = configuration_status_list[vca_index].get('status')
+
+                if config_status == 'BROKEN' and vca_status != 'failed':
+                    db_dict['configurationStatus'][vca_index] = 'READY'
+                elif config_status != 'BROKEN' and vca_status == 'failed':
+                    db_dict['configurationStatus'][vca_index] = 'BROKEN'
+            except Exception as e:
+                # not update configurationStatus
+                self.logger.debug('Error updating vca_index (ignore): {}'.format(e))
+
+            # if nsState = 'READY' check if juju is reporting some error => nsState = 'DEGRADED'
+            # if nsState = 'DEGRADED' check if all is OK
+            is_degraded = False
+            if current_ns_status in ('READY', 'DEGRADED'):
+                error_description = ''
+                # check machines
+                if status_dict.get('machines'):
+                    for machine_id in status_dict.get('machines'):
+                        machine = status_dict.get('machines').get(machine_id)
+                        # check machine agent-status
+                        if machine.get('agent-status'):
+                            s = machine.get('agent-status').get('status')
+                            if s != 'started':
+                                is_degraded = True
+                                error_description += 'machine {} agent-status={} ; '.format(machine_id, s)
+                        # check machine instance status
+                        if machine.get('instance-status'):
+                            s = machine.get('instance-status').get('status')
+                            if s != 'running':
+                                is_degraded = True
+                                error_description += 'machine {} instance-status={} ; '.format(machine_id, s)
+                # check applications
+                if status_dict.get('applications'):
+                    for app_id in status_dict.get('applications'):
+                        app = status_dict.get('applications').get(app_id)
+                        # check application status
+                        if app.get('status'):
+                            s = app.get('status').get('status')
+                            if s != 'active':
+                                is_degraded = True
+                                error_description += 'application {} status={} ; '.format(app_id, s)
+
+                if error_description:
+                    db_dict['errorDescription'] = error_description
+                if current_ns_status == 'READY' and is_degraded:
+                    db_dict['nsState'] = 'DEGRADED'
+                if current_ns_status == 'DEGRADED' and not is_degraded:
+                    db_dict['nsState'] = 'READY'
+
+            # write to database
+            self.update_db_2("nsrs", nsr_id, db_dict)
+
+        except Exception as e:
+            self.logger.warn('Error updating NS state for ns={}: {}'.format(nsr_id, e))
 
         return
-        # write NS status to database
-        # try:
-        #     # nsrs_id = filter.get('_id')
-        #     # print(nsrs_id)
-        #     # get ns record
-        #     nsr = self.db.get_one(table=table, q_filter=filter)
-        #     # get VCA deployed list
-        #     vca_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'VCA'))
-        #     # get RO deployed
-        #     # ro_list = deep_get(target_dict=nsr, key_list=('_admin', 'deployed', 'RO'))
-        #     for vca in vca_list:
-        #         # status = vca.get('status')
-        #         # print(status)
-        #         # detailed_status = vca.get('detailed-status')
-        #         # print(detailed_status)
-        #     # for ro in ro_list:
-        #     #    print(ro)
-        #
-        # except Exception as e:
-        #     self.logger.error('Error writing NS status to db: {}'.format(e))
 
     def vnfd2RO(self, vnfd, new_id=None, additionalParams=None, nsrId=None):
         """
@@ -740,7 +814,6 @@ class NsLcm(LcmBase):
             db_nsr_update["_admin.deployed.RO.vnfd.{}".format(index)] = RO_update
             db_nsr["_admin"]["deployed"]["RO"]["vnfd"][index] = RO_update
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
-            self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
 
         # create nsd at RO
         nsd_ref = nsd["id"]
@@ -772,7 +845,6 @@ class NsLcm(LcmBase):
             db_nsr_update["_admin.deployed.RO.nsd_id"] = RO_nsd_uuid = desc["uuid"]
             self.logger.debug(logging_text + "nsd={} created at RO. RO_id={}".format(nsd_ref, RO_nsd_uuid))
         self.update_db_2("nsrs", nsr_id, db_nsr_update)
-        self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
 
         # Crate ns at RO
         # if present use it unless in error status
@@ -782,6 +854,7 @@ class NsLcm(LcmBase):
                 step = db_nsr_update["_admin.deployed.RO.detailed-status"] = "Looking for existing ns at RO"
                 # self.logger.debug(logging_text + step + " RO_ns_id={}".format(RO_nsr_id))
                 desc = await self.RO.show("ns", RO_nsr_id)
+
             except ROclient.ROClientException as e:
                 if e.http_code != HTTPStatus.NOT_FOUND:
                     raise
@@ -827,36 +900,42 @@ class NsLcm(LcmBase):
             db_nsr_update["_admin.deployed.RO.nsr_status"] = "BUILD"
             self.logger.debug(logging_text + "ns created at RO. RO_id={}".format(desc["uuid"]))
         self.update_db_2("nsrs", nsr_id, db_nsr_update)
-        self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
 
         # wait until NS is ready
         step = ns_status_detailed = detailed_status = "Waiting VIM to deploy ns. RO_ns_id={}".format(RO_nsr_id)
         detailed_status_old = None
         self.logger.debug(logging_text + step)
 
+        old_desc = None
         while time() <= start_deploy + self.total_deploy_timeout:
             desc = await self.RO.show("ns", RO_nsr_id)
-            ns_status, ns_status_info = self.RO.check_ns_status(desc)
-            db_nsr_update["_admin.deployed.RO.nsr_status"] = ns_status
-            if ns_status == "ERROR":
-                raise ROclient.ROClientException(ns_status_info)
-            elif ns_status == "BUILD":
-                detailed_status = ns_status_detailed + "; {}".format(ns_status_info)
-            elif ns_status == "ACTIVE":
-                step = detailed_status = "Waiting for management IP address reported by the VIM. Updating VNFRs"
-                try:
-                    if vdu_flag:
-                        self.ns_update_vnfr(db_vnfrs, desc)
-                    break
-                except LcmExceptionNoMgmtIP:
-                    pass
-            else:
-                assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
-            if detailed_status != detailed_status_old:
-                detailed_status_old = db_nsr_update["_admin.deployed.RO.detailed-status"] = detailed_status
-                self.update_db_2("nsrs", nsr_id, db_nsr_update)
-                self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
-            await asyncio.sleep(5, loop=self.loop)
+
+            # deploymentStatus
+            if desc != old_desc:
+                # desc has changed => update db
+                self._on_update_ro_db(nsrs_id=nsr_id, ro_descriptor=desc)
+                old_desc = desc
+
+                ns_status, ns_status_info = self.RO.check_ns_status(desc)
+                db_nsr_update["_admin.deployed.RO.nsr_status"] = ns_status
+                if ns_status == "ERROR":
+                    raise ROclient.ROClientException(ns_status_info)
+                elif ns_status == "BUILD":
+                    detailed_status = ns_status_detailed + "; {}".format(ns_status_info)
+                elif ns_status == "ACTIVE":
+                    step = detailed_status = "Waiting for management IP address reported by the VIM. Updating VNFRs"
+                    try:
+                        if vdu_flag:
+                            self.ns_update_vnfr(db_vnfrs, desc)
+                        break
+                    except LcmExceptionNoMgmtIP:
+                        pass
+                else:
+                    assert False, "ROclient.check_ns_status returns unknown {}".format(ns_status)
+                if detailed_status != detailed_status_old:
+                    detailed_status_old = db_nsr_update["_admin.deployed.RO.detailed-status"] = detailed_status
+                    self.update_db_2("nsrs", nsr_id, db_nsr_update)
+                await asyncio.sleep(5, loop=self.loop)
         else:  # total_deploy_timeout
             raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
@@ -867,7 +946,7 @@ class NsLcm(LcmBase):
         db_nsr["_admin.deployed.RO.detailed-status"] = "Deployed at VIM"
         db_nsr_update["_admin.deployed.RO.detailed-status"] = "Deployed at VIM"
         self.update_db_2("nsrs", nsr_id, db_nsr_update)
-        self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
+        # await self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
 
         step = "Deployed at VIM"
         self.logger.debug(logging_text + step)
@@ -975,29 +1054,36 @@ class NsLcm(LcmBase):
         """
         my_vca = vca_deployed_list[vca_index]
         if my_vca.get("vdu_id") or my_vca.get("kdu_name"):
+            # vdu or kdu: no dependencies
             return
         timeout = 300
         while timeout >= 0:
-            for index, vca_deployed in enumerate(vca_deployed_list):
+            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            vca_deployed_list = db_nsr["_admin"]["deployed"]["VCA"]
+            configuration_status_list = db_nsr["configurationStatus"]
+            for index, vca_deployed in enumerate(configuration_status_list):
                 if index == vca_index:
+                    # myself
                     continue
                 if not my_vca.get("member-vnf-index") or \
                         (vca_deployed.get("member-vnf-index") == my_vca.get("member-vnf-index")):
-                    if not vca_deployed.get("instantiation"):
-                        break   # wait
-                    if vca_deployed["instantiation"] == "FAILED":
+                    internal_status = configuration_status_list[index].get("status")
+                    if internal_status == 'READY':
+                        continue
+                    elif internal_status == 'BROKEN':
                         raise LcmException("Configuration aborted because dependent charm/s has failed")
+                    else:
+                        break
             else:
+                # no dependencies, return
                 return
             await asyncio.sleep(10)
             timeout -= 1
-            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
-            vca_deployed_list = db_nsr["_admin"]["deployed"]["VCA"]
 
         raise LcmException("Configuration aborted because dependent charm/s timeout")
 
-    async def instantiate_N2VC(self, logging_text, vca_index, nsi_id, db_nsr, db_vnfr, vdu_id,
-                               kdu_name, vdu_index, config_descriptor, deploy_params, base_folder):
+    async def instantiate_N2VC(self, logging_text, vca_index, nsi_id, db_nsr, db_vnfr, vdu_id, kdu_name,
+                               vdu_index, config_descriptor, deploy_params, base_folder, nslcmop_id):
         nsr_id = db_nsr["_id"]
         db_update_entry = "_admin.deployed.VCA.{}.".format(vca_index)
         vca_deployed_list = db_nsr["_admin"]["deployed"]["VCA"]
@@ -1009,6 +1095,10 @@ class NsLcm(LcmBase):
         }
         step = ""
         try:
+
+            element_type = 'NS'
+            element_under_configuration = nsr_id
+
             vnfr_id = None
             if db_vnfr:
                 vnfr_id = db_vnfr["_id"]
@@ -1016,10 +1106,15 @@ class NsLcm(LcmBase):
             namespace = "{nsi}.{ns}".format(
                 nsi=nsi_id if nsi_id else "",
                 ns=nsr_id)
+
             if vnfr_id:
+                element_type = 'VNF'
+                element_under_configuration = vnfr_id
                 namespace += "." + vnfr_id
                 if vdu_id:
                     namespace += ".{}-{}".format(vdu_id, vdu_index or 0)
+                    element_type = 'VDU'
+                    element_under_configuration = vdu_id + '-' + vdu_index
 
             # Get artifact path
             artifact_path = "{}/{}/charms/{}".format(
@@ -1039,11 +1134,21 @@ class NsLcm(LcmBase):
 
             # create or register execution environment in VCA
             if is_proxy_charm:
+
+                await self._write_configuration_status(
+                    nsr_id=nsr_id,
+                    vca_index=vca_index,
+                    status='CREATING',
+                    element_under_configuration=element_under_configuration,
+                    element_type=element_type
+                )
+
                 step = "create execution environment"
                 self.logger.debug(logging_text + step)
                 ee_id, credentials = await self.n2vc.create_execution_environment(namespace=namespace,
                                                                                   reuse_ee_id=ee_id,
                                                                                   db_dict=db_dict)
+
             else:
                 step = "Waiting to VM being up and getting IP address"
                 self.logger.debug(logging_text + step)
@@ -1066,6 +1171,14 @@ class NsLcm(LcmBase):
                 credentials["username"] = username
                 # n2vc_redesign STEP 3.2
 
+                await self._write_configuration_status(
+                    nsr_id=nsr_id,
+                    vca_index=vca_index,
+                    status='REGISTERING',
+                    element_under_configuration=element_under_configuration,
+                    element_type=element_type
+                )
+
                 step = "register execution environment {}".format(credentials)
                 self.logger.debug(logging_text + step)
                 ee_id = await self.n2vc.register_execution_environment(credentials=credentials, namespace=namespace,
@@ -1083,6 +1196,15 @@ class NsLcm(LcmBase):
             # n2vc_redesign STEP 3.3
 
             step = "Install configuration Software"
+
+            await self._write_configuration_status(
+                nsr_id=nsr_id,
+                vca_index=vca_index,
+                status='INSTALLING SW',
+                element_under_configuration=element_under_configuration,
+                element_type=element_type
+            )
+
             # TODO check if already done
             self.logger.debug(logging_text + step)
             await self.n2vc.install_configuration_sw(ee_id=ee_id, artifact_path=artifact_path, db_dict=db_dict)
@@ -1128,8 +1250,34 @@ class NsLcm(LcmBase):
             # add config if not present for NS charm
             initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
                                                                                     vca_deployed)
+
+            # wait for dependent primitives execution (NS -> VNF -> VDU)
             if initial_config_primitive_list:
                 await self._wait_dependent_n2vc(nsr_id, vca_deployed_list, vca_index)
+
+            # stage, in function of element type: vdu, kdu, vnf or ns
+            my_vca = vca_deployed_list[vca_index]
+            if my_vca.get("vdu_id") or my_vca.get("kdu_name"):
+                # VDU or KDU
+                stage = 'Stage 3/5: running Day-1 primitives for VDU'
+            elif my_vca.get("member-vnf-index"):
+                # VNF
+                stage = 'Stage 4/5: running Day-1 primitives for VNF'
+            else:
+                # NS
+                stage = 'Stage 5/5: running Day-1 primitives for NS'
+
+            await self._write_configuration_status(
+                nsr_id=nsr_id,
+                vca_index=vca_index,
+                status='EXECUTING PRIMITIVE'
+            )
+
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage=stage
+            )
+
             for initial_config_primitive in initial_config_primitive_list:
                 # adding information on the vca_deployed if it is a NS execution environment
                 if not vca_deployed["member-vnf-index"]:
@@ -1145,19 +1293,30 @@ class NsLcm(LcmBase):
                     params_dict=primitive_params_,
                     db_dict=db_dict
                 )
+
                 # TODO register in database that primitive is done
 
             step = "instantiated at VCA"
-            self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "COMPLETED"})
             self.logger.debug(logging_text + step)
 
+            await self._write_configuration_status(
+                nsr_id=nsr_id,
+                vca_index=vca_index,
+                status='READY'
+            )
+
         except Exception as e:  # TODO not use Exception but N2VC exception
-            self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "FAILED"})
+            # self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "FAILED"})
+            await self._write_configuration_status(
+                nsr_id=nsr_id,
+                vca_index=vca_index,
+                status='BROKEN'
+            )
             raise Exception("{} {}".format(step, e)) from e
             # TODO raise N2VC exception with 'step' extra information
 
     def _write_ns_status(self, nsr_id: str, ns_state: str, current_operation: str, current_operation_id: str,
-                         error_description: str = None, error_detail: str = None):
+                         error_description: str = None):
         try:
             db_dict = dict()
             if ns_state:
@@ -1165,10 +1324,57 @@ class NsLcm(LcmBase):
             db_dict["currentOperation"] = current_operation
             db_dict["currentOperationID"] = current_operation_id
             db_dict["errorDescription"] = error_description
-            db_dict["errorDetail"] = error_detail
             self.update_db_2("nsrs", nsr_id, db_dict)
         except Exception as e:
-            self.logger.warn('Error writing NS status: {}'.format(e))
+            self.logger.warn('Error writing NS status, ns={}: {}'.format(nsr_id, e))
+
+    def _write_op_status(self, op_id: str, stage: str = None, error_message: str = None, queuePosition: int = 0):
+        try:
+            db_dict = dict()
+            db_dict['queuePosition'] = queuePosition
+            db_dict['stage'] = stage
+            if error_message:
+                db_dict['errorMessage'] = error_message
+            self.update_db_2("nslcmops", op_id, db_dict)
+        except Exception as e:
+            self.logger.warn('Error writing OPERATION status for op_id: {} -> {}'.format(op_id, e))
+
+    def _write_all_config_status(self, nsr_id: str, status: str):
+        try:
+            # nsrs record
+            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            # configurationStatus
+            config_status = db_nsr.get('configurationStatus')
+            if config_status:
+                # update status
+                db_dict = dict()
+                db_dict['configurationStatus'] = list()
+                for c in config_status:
+                    c['status'] = status
+                    db_dict['configurationStatus'].append(c)
+                self.update_db_2("nsrs", nsr_id, db_dict)
+
+        except Exception as e:
+            self.logger.warn('Error writing all configuration status, ns={}: {}'.format(nsr_id, e))
+
+    async def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str,
+                                          element_under_configuration: str = None, element_type: str = None):
+
+        # self.logger.debug('_write_configuration_status(): vca_index={}, status={}'
+        #                   .format(vca_index, status))
+
+        try:
+            db_path = 'configurationStatus.{}.'.format(vca_index)
+            db_dict = dict()
+            db_dict[db_path + 'status'] = status
+            if element_under_configuration:
+                db_dict[db_path + 'elementUnderConfiguration'] = element_under_configuration
+            if element_type:
+                db_dict[db_path + 'elementType'] = element_type
+            self.update_db_2("nsrs", nsr_id, db_dict)
+        except Exception as e:
+            self.logger.warn('Error writing configuration status={}, ns={}, vca_index={}: {}'
+                             .format(status, nsr_id, vca_index, e))
 
     async def instantiate(self, nsr_id, nslcmop_id):
         """
@@ -1181,7 +1387,7 @@ class NsLcm(LcmBase):
         # Try to lock HA task here
         task_is_locked_by_me = self.lcm_tasks.lock_HA('ns', 'nslcmops', nslcmop_id)
         if not task_is_locked_by_me:
-            self.logger.debug('instantiate() task is not locked by me')
+            self.logger.debug('instantiate() task is not locked by me, ns={}'.format(nsr_id))
             return
 
         logging_text = "Task ns={} instantiate={} ".format(nsr_id, nslcmop_id)
@@ -1246,6 +1452,12 @@ class NsLcm(LcmBase):
             db_vnfds = {}         # every vnfd data indexed by vnf id
             db_vnfds_index = {}   # every vnfd data indexed by vnf member-index
 
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage='Stage 1/5: preparation of the environment',
+                queuePosition=0
+            )
+
             # for each vnf in ns, read vnfd
             for vnfr in db_vnfrs_list:
                 db_vnfrs[vnfr["member-vnf-index-ref"]] = vnfr   # vnf's dict indexed by member-index: '1', '2', etc
@@ -1269,7 +1481,9 @@ class NsLcm(LcmBase):
                 vca_deployed_list = db_nsr["_admin"]["deployed"].get("VCA")
             if vca_deployed_list is None:
                 vca_deployed_list = []
+                configuration_status_list = []
                 db_nsr_update["_admin.deployed.VCA"] = vca_deployed_list
+                db_nsr_update["configurationStatus"] = configuration_status_list
                 # add _admin.deployed.VCA to db_nsr dictionary, value=vca_deployed_list
                 populate_dict(db_nsr, ("_admin", "deployed", "VCA"), vca_deployed_list)
             elif isinstance(vca_deployed_list, dict):
@@ -1288,6 +1502,14 @@ class NsLcm(LcmBase):
             # set state to INSTANTIATED. When instantiated NBI will not delete directly
             db_nsr_update["_admin.nsState"] = "INSTANTIATED"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
+
+            # n2vc_redesign STEP 2 Deploy Network Scenario
+
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage='Stage 2/5: deployment of VMs and execution environments'
+            )
+
             self.logger.debug(logging_text + "Before deploy_kdus")
             # Call to deploy_kdus in case exists the "vdu:kdu" param
             task_kdu = asyncio.ensure_future(
@@ -1308,7 +1530,6 @@ class NsLcm(LcmBase):
             if self.vca_config.get("public_key"):
                 n2vc_key_list.append(self.vca_config["public_key"])
 
-            # n2vc_redesign STEP 2 Deploy Network Scenario
             task_ro = asyncio.ensure_future(
                 self.instantiate_RO(
                     logging_text=logging_text,
@@ -1504,8 +1725,13 @@ class NsLcm(LcmBase):
                 for task in pending:
                     instantiated_ok = False
                     if task == task_ro:
+                        # RO task is pending
+                        db_nsr_update["operational-status"] = "failed"
+                    elif task == task_kdu:
+                        # KDU task is pending
                         db_nsr_update["operational-status"] = "failed"
                     else:
+                        # A N2VC task is pending
                         db_nsr_update["config-status"] = "failed"
                     self.logger.error(logging_text + task_instantiation_info[task] + ": Timeout")
                     error_text_list.append(task_instantiation_info[task] + ": Timeout")
@@ -1513,8 +1739,13 @@ class NsLcm(LcmBase):
                     if task.cancelled():
                         instantiated_ok = False
                         if task == task_ro:
+                            # RO task was cancelled
+                            db_nsr_update["operational-status"] = "failed"
+                        elif task == task_kdu:
+                            # KDU task was cancelled
                             db_nsr_update["operational-status"] = "failed"
                         else:
+                            # A N2VC was cancelled
                             db_nsr_update["config-status"] = "failed"
                         self.logger.warn(logging_text + task_instantiation_info[task] + ": Cancelled")
                         error_text_list.append(task_instantiation_info[task] + ": Cancelled")
@@ -1523,10 +1754,16 @@ class NsLcm(LcmBase):
                         if exc:
                             instantiated_ok = False
                             if task == task_ro:
+                                # RO task raised an exception
+                                db_nsr_update["operational-status"] = "failed"
+                            elif task == task_kdu:
+                                # KDU task raised an exception
                                 db_nsr_update["operational-status"] = "failed"
                             else:
+                                # A N2VC task raised an exception
                                 db_nsr_update["config-status"] = "failed"
                             self.logger.error(logging_text + task_instantiation_info[task] + ": Failed")
+
                             if isinstance(exc, (N2VCException, ROclient.ROClientException)):
                                 error_text_list.append(task_instantiation_info[task] + ": {}".format(exc))
                             else:
@@ -1579,26 +1816,33 @@ class NsLcm(LcmBase):
                     # nsState="READY/BROKEN", currentOperation="IDLE", currentOperationID=None
                     ns_state = None
                     error_description = None
-                    error_detail = None
                     if instantiated_ok:
                         ns_state = "READY"
                     else:
                         ns_state = "BROKEN"
                         error_description = 'Operation: INSTANTIATING.{}, step: {}'.format(nslcmop_id, step)
-                        error_detail = error_text
+
                     self._write_ns_status(
                         nsr_id=nsr_id,
                         ns_state=ns_state,
                         current_operation="IDLE",
                         current_operation_id=None,
-                        error_description=error_description,
-                        error_detail=error_detail
+                        error_description=error_description
+                    )
+
+                    self._write_op_status(
+                        op_id=nslcmop_id,
+                        error_message=error_description
                     )
 
                 if db_nslcmop_update:
                     self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
+
+                self.logger.debug(logging_text + 'End of instantiation: {}'.format(instantiated_ok))
+
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
+
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "instantiated", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
@@ -1612,6 +1856,8 @@ class NsLcm(LcmBase):
 
     async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs):
         # Launch kdus if present in the descriptor
+
+        deployed_ok = True
 
         k8scluster_id_2_uuic = {"helm-chart": {}, "juju-bundle": {}}
 
@@ -1653,13 +1899,15 @@ class NsLcm(LcmBase):
                         k8sclustertype = "juju"
                         k8sclustertype_full = "juju-bundle"
                     else:
-                        error_text = "kdu type is neither helm-chart not juju-bundle. Maybe an old NBI version is" \
+                        error_text = "kdu type is neither helm-chart nor juju-bundle. Maybe an old NBI version is" \
                                      " running"
                     try:
                         if not error_text:
                             cluster_uuid = _get_cluster_id(kdur["k8s-cluster"]["id"], k8sclustertype_full)
                     except LcmException as e:
                         error_text = str(e)
+                        deployed_ok = False
+
                     step = "Instantiate KDU {} in k8s cluster {}".format(kdur["kdu-name"], cluster_uuid)
 
                     k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": cluster_uuid,
@@ -1698,19 +1946,23 @@ class NsLcm(LcmBase):
                 if not done_list:   # timeout
                     for task in pending_list:
                         db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
+                        deployed_ok = False
                     break
                 for task in done_list:
                     exc = task.exception()
                     if exc:
                         db_nsr_update[pending_tasks[task] + "detailed-status"] = "{}".format(exc)
+                        deployed_ok = False
                     else:
                         db_nsr_update[pending_tasks[task] + "kdu-instance"] = task.result()
+
+            if not deployed_ok:
+                raise LcmException('Cannot deploy KDUs')
 
         except Exception as e:
             self.logger.critical(logging_text + "Exit Exception {} while '{}': {}".format(type(e).__name__, step, e))
             raise LcmException("{} Exit Exception {} while '{}': {}".format(logging_text, type(e).__name__, step, e))
         finally:
-            # TODO Write in data base
             if db_nsr_update:
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
@@ -1745,7 +1997,14 @@ class NsLcm(LcmBase):
                 "vdu_name": vdu_name,
             }
             vca_index += 1
-            self.update_db_2("nsrs", nsr_id, {"_admin.deployed.VCA.{}".format(vca_index): vca_deployed})
+
+            # create VCA and configurationStatus in db
+            db_dict = {
+                "_admin.deployed.VCA.{}".format(vca_index): vca_deployed,
+                "configurationStatus.{}".format(vca_index): dict()
+            }
+            self.update_db_2("nsrs", nsr_id, db_dict)
+
             db_nsr["_admin"]["deployed"]["VCA"].append(vca_deployed)
 
         # Launch task
@@ -1762,6 +2021,7 @@ class NsLcm(LcmBase):
                 deploy_params=deploy_params,
                 config_descriptor=descriptor_config,
                 base_folder=base_folder,
+                nslcmop_id=nslcmop_id
             )
         )
         self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_N2VC-{}".format(vca_index), task_n2vc)
@@ -2066,6 +2326,12 @@ class NsLcm(LcmBase):
                         .format(vnf_index, seq.get("name"), e),
                     )
 
+    async def _delete_N2VC(self, nsr_id: str):
+        self._write_all_config_status(nsr_id=nsr_id, status='TERMINATING')
+        namespace = "." + nsr_id
+        await self.n2vc.delete_namespace(namespace=namespace)
+        self._write_all_config_status(nsr_id=nsr_id, status='DELETED')
+
     async def terminate(self, nsr_id, nslcmop_id):
 
         # Try to lock HA task here
@@ -2098,6 +2364,10 @@ class NsLcm(LcmBase):
                 current_operation="TERMINATING",
                 current_operation_id=nslcmop_id
             )
+            self._write_op_status(
+                op_id=nslcmop_id,
+                queuePosition=0
+            )
 
             step = "Getting nslcmop={} from db".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
@@ -2122,10 +2392,12 @@ class NsLcm(LcmBase):
                 step = "delete execution environment"
                 self.logger.debug(logging_text + step)
 
-                task_delete_ee = asyncio.ensure_future(self.n2vc.delete_namespace(namespace="." + nsr_id))
+                task_delete_ee = asyncio.ensure_future(self._delete_N2VC(nsr_id=nsr_id))
+                # task_delete_ee = asyncio.ensure_future(self.n2vc.delete_namespace(namespace="." + nsr_id))
+
                 pending_tasks.append(task_delete_ee)
             except Exception as e:
-                msg = "Failed while deleting NS in VCA: {}".format(e)
+                msg = "Failed while deleting ns={} in VCA: {}".format(nsr_id, e)
                 self.logger.error(msg)
                 failed_detail.append(msg)
 
@@ -2153,7 +2425,7 @@ class NsLcm(LcmBase):
                             continue
                         pending_tasks.append(task_delete_kdu_instance)
             except LcmException as e:
-                msg = "Failed while deleting KDUs from NS: {}".format(e)
+                msg = "Failed while deleting KDUs from ns={}: {}".format(nsr_id, e)
                 self.logger.error(msg)
                 failed_detail.append(msg)
 
@@ -2191,6 +2463,10 @@ class NsLcm(LcmBase):
                             item_id_name=RO_nsr_id,
                             extra_item="action",
                             extra_item_id=RO_delete_action)
+
+                        # deploymentStatus
+                        self._on_update_ro_db(nsrs_id=nsr_id, ro_descriptor=desc)
+
                         ns_status, ns_status_info = self.RO.check_action_status(desc)
                         if ns_status == "ERROR":
                             raise ROclient.ROClientException(ns_status_info)
@@ -2320,16 +2596,21 @@ class NsLcm(LcmBase):
                         error_detail = None
                     else:
                         ns_state = "BROKEN"
-                        error_description = 'Operation: TERMINATING.{}, step: {}'.format(nslcmop_id, step)
                         error_detail = "; ".join(failed_detail)
+                        error_description = 'Operation: TERMINATING.{}, step: {}. Detail: {}'\
+                            .format(nslcmop_id, step, error_detail)
 
                     self._write_ns_status(
                         nsr_id=nsr_id,
                         ns_state=ns_state,
                         current_operation="IDLE",
                         current_operation_id=None,
-                        error_description=error_description,
-                        error_detail=error_detail
+                        error_description=error_description
+                    )
+
+                    self._write_op_status(
+                        op_id=nslcmop_id,
+                        error_message=error_description
                     )
 
             except DbException as e:
@@ -2683,6 +2964,11 @@ class NsLcm(LcmBase):
                         current_operation="IDLE",
                         current_operation_id=None
                     )
+                    if exc:
+                        self._write_op_status(
+                            op_id=nslcmop_id,
+                            error_message=nslcmop_operation_state_detail
+                        )
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.logger.debug(logging_text + "Exit")
@@ -2966,6 +3252,10 @@ class NsLcm(LcmBase):
                         if not RO_task_done:
                             desc = await self.RO.show("ns", item_id_name=RO_nsr_id, extra_item="action",
                                                       extra_item_id=RO_nslcmop_id)
+
+                            # deploymentStatus
+                            self._on_update_ro_db(nsrs_id=nsr_id, ro_descriptor=desc)
+
                             ns_status, ns_status_info = self.RO.check_action_status(desc)
                             if ns_status == "ERROR":
                                 raise ROclient.ROClientException(ns_status_info)
@@ -2991,6 +3281,10 @@ class NsLcm(LcmBase):
                                     vnfr_scaled = True
                                 try:
                                     desc = await self.RO.show("ns", RO_nsr_id)
+
+                                    # deploymentStatus
+                                    self._on_update_ro_db(nsrs_id=nsr_id, ro_descriptor=desc)
+
                                     # nsr_deployed["nsr_ip"] = RO.get_ns_vnf_info(desc)
                                     self.ns_update_vnfr({db_vnfr["member-vnf-index-ref"]: db_vnfr}, desc)
                                     break
@@ -3121,6 +3415,12 @@ class NsLcm(LcmBase):
             exc = traceback.format_exc()
             self.logger.critical(logging_text + "Exit Exception {} {}".format(type(e).__name__, e), exc_info=True)
         finally:
+            self._write_ns_status(
+                nsr_id=nsr_id,
+                ns_state=None,
+                current_operation="IDLE",
+                current_operation_id=None
+            )
             if exc:
                 if db_nslcmop:
                     db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)

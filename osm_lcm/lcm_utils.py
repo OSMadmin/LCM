@@ -433,7 +433,7 @@ class TaskRegistry(LcmBase):
                 q_filter = {'_id': _id}
                 # NS/NSI
                 if self._is_service_type_HA(topic):
-                    update_dict = {'detailed-status': step}
+                    update_dict = {'detailed-status': step, 'queuePosition': new_num_related_tasks}
                 # VIM/WIM/SDN
                 elif self._is_account_type_HA(topic):
                     _, op_index = self._get_account_and_op_HA(op_id)
