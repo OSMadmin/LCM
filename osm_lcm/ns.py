@@ -1673,9 +1673,11 @@ class NsLcm(LcmBase):
                                                         params=desc_params, db_dict=db_dict, timeout=3600)
                         )
                     else:
-                        task = self.k8sclusterjuju.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
-                                                           atomic=True, params=desc_params,
-                                                           db_dict=db_dict, timeout=600)
+                        task = asyncio.ensure_future(
+                            self.k8sclusterjuju.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
+                                                        atomic=True, params=desc_params,
+                                                        db_dict=db_dict, timeout=600)
+                        )
 
                     pending_tasks[task] = "_admin.deployed.K8s.{}.".format(index)
                     index += 1
