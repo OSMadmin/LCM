@@ -69,11 +69,13 @@ ENV OSMLCM_RO_TENANT       osm
 
 # VCA
 ENV OSMLCM_VCA_HOST        vca
-ENV OSMLCM_VCA_PORT:       17070
-ENV OSMLCM_VCA_USER:       admin
-ENV OSMLCM_VCA_SECRET:     secret
-# ENV OSMLCM_VCA_PUBKEY:     pubkey
-# ENV OSMLCM_VCA_CACERT:     cacert
+ENV OSMLCM_VCA_PORT        17070
+ENV OSMLCM_VCA_USER        admin
+ENV OSMLCM_VCA_SECRET      secret
+# ENV OSMLCM_VCA_ENABLEOSUPGRADE false
+# ENV OSMLCM_VCA_APTMIRROR  http://archive.ubuntu.com/ubuntu/
+# ENV OSMLCM_VCA_PUBKEY     pubkey
+# ENV OSMLCM_VCA_CACERT     cacert
 
 # database
 ENV OSMLCM_DATABASE_DRIVER mongo

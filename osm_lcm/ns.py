@@ -104,6 +104,13 @@ class NsLcm(LcmBase):
             self.vca_config['ca_cert'] = self.vca_config['cacert']
         if 'apiproxy' in self.vca_config:
             self.vca_config['api_proxy'] = self.vca_config['apiproxy']
+        if 'enableosupgrade' in self.vca_config:
+            if self.vca_config['enableosupgrade'].lower() == 'false':
+                self.vca_config['enable_os_upgrade'] = False
+            elif self.vca_config['enableosupgrade'].lower() == 'true':
+                self.vca_config['enable_os_upgrade'] = True
+        if 'aptmirror' in self.vca_config:
+            self.vca_config['apt_mirror'] = self.vca_config['aptmirror']
 
         # create N2VC connector
         self.n2vc = N2VCJujuConnector(
