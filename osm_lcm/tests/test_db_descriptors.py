@@ -428,6 +428,8 @@ db_ro_ns_text = """
 datacenter_tenant_id: dc5c67fa-c7f2-11e9-b9c0-02420aff0004
 description: null
 name: ALF
+classifications: []
+sdn_nets: []
 nets:
 -   created: false
     datacenter_id: dc51ce6c-c7f2-11e9-b9c0-02420aff0004

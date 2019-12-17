@@ -112,7 +112,7 @@ class ROClient:
         'wim': ("name", "wim_url"),
         'vim_account': (),
         'wim_account': (),
-        'sdn': ("name", "port", 'ip', 'dpid', 'type'),
+        'sdn': ("name", 'type'),
     }
     timeout_large = 120
     timeout_short = 30
@@ -280,13 +280,12 @@ class ROClient:
         :param ns_descriptor: instance descriptor obtained with self.show("ns", )
         :return: status, message: status can be BUILD,ACTIVE,ERROR, message is a text message
         """
-        net_total = 0
-        vm_total = 0
-        net_done = 0
-        vm_done = 0
+        error_list = []
+        total = {"VMs": 0, "networks": 0, "SDN_networks": 0}
+        done = {"VMs": 0, "networks": 0, "SDN_networks": 0}
 
-        def _get_ref(desc):  # return an identification for the network or vm. Try vim_id if exist, if not descriptor id
-            # for net
+        def _get_ref(desc):
+            # return an identification for the network or vm. Try vim_id if exist, if not descriptor id for net
             if desc.get("vim_net_id"):
                 return "'vim-id={}'".format(desc["vim_net_id"])
             elif desc.get("ns_net_osm_id"):
@@ -301,24 +300,45 @@ class ROClient:
             else:
                 return ""
 
-        for net in ns_descriptor["nets"]:
-            net_total += 1
-            if net["status"] in ("ERROR", "VIM_ERROR"):
-                return "ERROR", "VIM network ({}) on error: {}".format(_get_ref(net), net["error_msg"])
-            elif net["status"] == "ACTIVE":
-                net_done += 1
-        for vnf in ns_descriptor["vnfs"]:
-            for vm in vnf["vms"]:
-                vm_total += 1
-                if vm["status"] in ("ERROR", "VIM_ERROR"):
-                    return "ERROR", "VIM VM ({}) on error: {}".format(_get_ref(vm), vm["error_msg"])
-                elif vm["status"] == "ACTIVE":
-                    vm_done += 1
+        def _get_sdn_ref(sce_net_id):
+            # look for the network associated to the SDN network and obtain the identification
+            net = next((x for x in ns_descriptor["nets"] if x.get("sce_net_id") == sce_net_id), None)
+            if not sce_net_id or not net:
+                return ""
+            return _get_ref(net)
 
-        if net_total == net_done and vm_total == vm_done:
-            return "ACTIVE", "VMs {}, networks: {}".format(vm_total, net_total)
-        else:
-            return "BUILD", "VMs: {}/{}, networks: {}/{}".format(vm_done, vm_total, net_done, net_total)
+        try:
+            total["networks"] = len(ns_descriptor["nets"])
+            for net in ns_descriptor["nets"]:
+                if net["status"] in ("ERROR", "VIM_ERROR"):
+                    error_list.append("VIM network ({}) on error: {}".format(_get_ref(net), net["error_msg"]))
+                elif net["status"] == "ACTIVE":
+                    done["networks"] += 1
+
+            total["SDN_networks"] = len(ns_descriptor["sdn_nets"])
+            for sdn_net in ns_descriptor["sdn_nets"]:
+                if sdn_net["status"] in ("ERROR", "VIM_ERROR", "WIM_ERROR"):
+                    error_list.append("SDN network ({}) on error: {}".format(_get_sdn_ref(sdn_net.get("sce_net_id")),
+                                                                             sdn_net["error_msg"]))
+                elif sdn_net["status"] == "ACTIVE":
+                    done["SDN_networks"] += 1
+
+            for vnf in ns_descriptor["vnfs"]:
+                for vm in vnf["vms"]:
+                    total["VMs"] += 1
+                    if vm["status"] in ("ERROR", "VIM_ERROR"):
+                        error_list.append("VIM VM ({}) on error: {}".format(_get_ref(vm), vm["error_msg"]))
+                    elif vm["status"] == "ACTIVE":
+                        done["VMs"] += 1
+            if error_list:
+                return "ERROR", "; ".join(error_list)
+            if all(total[x] == done[x] for x in total):  # DONE == TOTAL for all items
+                return "ACTIVE", str({x: total[x] for x in total if total[x]})  # print only those which value is not 0
+            else:
+                return "BUILD", str({x: "{}/{}".format(done[x], total[x]) for x in total if total[x]})
+                # print done/total for each item if total is not 0
+        except Exception as e:
+            raise ROClientException("Unexpected RO ns descriptor. Wrong version? {}".format(e)) from e
 
     @staticmethod
     def check_action_status(action_descriptor):
