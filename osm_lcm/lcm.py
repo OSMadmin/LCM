@@ -36,7 +36,7 @@ from osm_lcm import ROclient
 
 from time import time, sleep
 from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
-from osm_lcm import version as _lcm_version, version_date as lcm_version_date
+from osm_lcm import version as lcm_version, version_date as lcm_version_date
 
 from osm_common import dbmemory, dbmongo, fslocal, fsmongo, msglocal, msgkafka
 from osm_common import version as common_version
@@ -56,7 +56,6 @@ min_RO_version = "6.0.2"
 min_n2vc_version = "0.0.2"
 
 min_common_version = "0.1.19"
-lcm_version = _lcm_version
 health_check_file = path.expanduser("~") + "/time_last_ping"   # TODO find better location for this file
 
 
@@ -71,7 +70,6 @@ class Lcm:
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
         :return: None
         """
-        global lcm_version
         self.db = None
         self.msg = None
         self.msg_admin = None
@@ -222,7 +220,6 @@ class Lcm:
         self.logger.debug("Starting/Ending test task: {}".format(param))
 
     async def kafka_ping(self):
-        global lcm_version
         self.logger.debug("Task kafka_ping Enter")
         consecutive_errors = 0
         first_start = True
@@ -597,18 +594,6 @@ class Lcm:
         return ''.join(random_choice("0123456789abcdef") for _ in range(12))
 
 
-def _get_version():
-    """
-    Try to get version from package using pkg_resources (available with setuptools)
-    """
-    global lcm_version
-    try:
-        from pkg_resources import get_distribution
-        lcm_version = get_distribution("osm_lcm").version
-    except Exception:
-        pass
-
-
 def usage():
     print("""Usage: {} [options]
         -c|--config [configuration_file]: loads the configuration file (default: ./lcm.cfg)
@@ -677,8 +662,6 @@ if __name__ == '__main__':
             else:
                 print("No configuration file 'lcm.cfg' found neither at local folder nor at /etc/osm/", file=sys.stderr)
                 exit(1)
-        # get version from package and upate global lcm_version
-        _get_version()
         lcm = Lcm(config_file)
         lcm.start()
     except (LcmException, getopt.GetoptError) as e:

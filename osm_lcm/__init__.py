@@ -13,5 +13,12 @@
 ##
 
 # version moved to lcm.py. uncomment if LCM is installed as library and installed
-version = '7.0.0.post1'
-version_date = '2019-12-10'
+version = '7.0.0.post10'
+version_date = '2020-01-14'
+
+# Try to get version from package using pkg_resources (available with setuptools)
+try:
+    from pkg_resources import get_distribution
+    version = get_distribution("osm_lcm").version
+except Exception:
+    pass
