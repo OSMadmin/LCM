@@ -1112,11 +1112,11 @@ class NsLcm(LcmBase):
             if vnfr_id:
                 element_type = 'VNF'
                 element_under_configuration = vnfr_id
-                namespace += "." + vnfr_id
+                namespace += ".{}".format(vnfr_id)
                 if vdu_id:
                     namespace += ".{}-{}".format(vdu_id, vdu_index or 0)
                     element_type = 'VDU'
-                    element_under_configuration = vdu_id + '-' + vdu_index
+                    element_under_configuration = "{}-{}".format(vdu_id, vdu_index or 0)
 
             # Get artifact path
             artifact_path = "{}/{}/charms/{}".format(
