@@ -163,6 +163,10 @@ class NsLcm(LcmBase):
 
     async def _on_update_n2vc_db(self, table, filter, path, updated_data):
 
+        # remove last dot from path (if exists)
+        if path.endswith('.'):
+            path = path[:-1]
+
         # self.logger.debug('_on_update_n2vc_db(table={}, filter={}, path={}, updated_data={}'
         #                   .format(table, filter, path, updated_data))
 
@@ -175,9 +179,7 @@ class NsLcm(LcmBase):
             current_ns_status = nsr.get('nsState')
 
             # get vca status for NS
-            # status_dict = await self.n2vc.get_status(namespace='.' + nsr_id, yaml_format=False)
-            # TEMPORAL
-            status_dict = str(await self.n2vc.get_status(namespace='.' + nsr_id))
+            status_dict = await self.n2vc.get_status(namespace='.' + nsr_id, yaml_format=False)
 
             # vcaStatus
             db_dict = dict()
