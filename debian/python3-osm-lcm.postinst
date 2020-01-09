@@ -20,8 +20,8 @@
 echo "POST INSTALL OSM-LCM"
 # Currently it is not needed pip3 installation
 # echo "Installing python dependencies via pip..."
-# pip3 install pip==9.0.3
-# pip3 install --user aiokafka
+# python3 -m pip install -U pip
+# python3 -m pip install --user aiokafka
 
 #Creation of log folder
 mkdir -p /var/log/osm

@@ -13,12 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM ubuntu:16.04
+FROM ubuntu:18.04
 
 # Set the working directory to /app
 WORKDIR /app/LCM
 
-RUN apt-get update && apt-get install -y curl xz-utils \
+RUN apt-get update && apt-get install -y curl xz-utils gnupg2 \
     && apt-get update && apt-get install -y apt-transport-https \
     && curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - \
     && echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" | tee -a /etc/apt/sources.list.d/kubernetes.list \
@@ -34,9 +34,9 @@ RUN curl -L https://launchpad.net/juju/2.7/2.7.0/+download/juju-2.7.0-k8s.tar.xz
     && mv juju /usr/local/bin/juju
 
 RUN apt-get update && apt-get install -y git tox python3 \
-    python3-pip python3-aiohttp python3-jinja2 \
+    python3-pip python3-jinja2 \
     && python3 -m pip install pip --upgrade  \
-    && python3 -m pip install -U 'PyYAML==3.*' 'aiohttp==0.20.2' flake8
+    && python3 -m pip install -U 'PyYAML' 'aiohttp>=2.3.10' flake8
 
 RUN git -C /app clone https://osm.etsi.org/gerrit/osm/N2VC.git \
     && python3 -m pip install -e /app/N2VC \

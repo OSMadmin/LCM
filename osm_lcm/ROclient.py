@@ -441,16 +441,16 @@ class ROClient:
         elif item_id_name and item_id_name.startswith("'") and item_id_name.endswith("'"):
             item_id_name = item_id_name[1:-1]
         self.logger.debug("RO GET %s", url)
-        with aiohttp.Timeout(self.timeout_short):
-            async with session.get(url, headers=self.headers_req) as response:
-                response_text = await response.read()
-                self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
-                if response.status == 404:  # NOT_FOUND
-                    raise ROClientException("No {} found with id '{}'".format(item[:-1], item_id_name),
-                                            http_code=404)
-                if response.status >= 300:
-                    raise ROClientException(response_text, http_code=response.status)
-            content = self._parse_yaml(response_text, response=True)
+        # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
+        async with session.get(url, headers=self.headers_req) as response:
+            response_text = await response.read()
+            self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
+            if response.status == 404:  # NOT_FOUND
+                raise ROClientException("No {} found with id '{}'".format(item[:-1], item_id_name),
+                                        http_code=404)
+            if response.status >= 300:
+                raise ROClientException(response_text, http_code=response.status)
+        content = self._parse_yaml(response_text, response=True)
 
         if item_id:
             return item_id
@@ -491,12 +491,12 @@ class ROClient:
             if extra_item_id:
                 url += "/" + extra_item_id
         self.logger.debug("GET %s", url)
-        with aiohttp.Timeout(self.timeout_short):
-            async with session.get(url, headers=self.headers_req) as response:
-                response_text = await response.read()
-                self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
-                if response.status >= 300:
-                    raise ROClientException(response_text, http_code=response.status)
+        # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
+        async with session.get(url, headers=self.headers_req) as response:
+            response_text = await response.read()
+            self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
+            if response.status >= 300:
+                raise ROClientException(response_text, http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -550,12 +550,12 @@ class ROClient:
         url = "{}{apiver}{tenant}/{item}{id}{action}".format(self.endpoint_url, apiver=api_version_text,
                                                              tenant=tenant_text, item=item, id=uuid, action=action)
         self.logger.debug("RO POST %s %s", url, payload_req)
-        with aiohttp.Timeout(self.timeout_large):
-            async with session.post(url, headers=self.headers_req, data=payload_req) as response:
-                response_text = await response.read()
-                self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
-                if response.status >= 300:
-                    raise ROClientException(response_text, http_code=response.status)
+        # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
+        async with session.post(url, headers=self.headers_req, data=payload_req) as response:
+            response_text = await response.read()
+            self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
+            if response.status >= 300:
+                raise ROClientException(response_text, http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -579,12 +579,13 @@ class ROClient:
 
         url = "{}{}/{}/{}".format(self.endpoint_url, tenant_text, item, uuid)
         self.logger.debug("DELETE %s", url)
-        with aiohttp.Timeout(self.timeout_short):
-            async with session.delete(url, headers=self.headers_req) as response:
-                response_text = await response.read()
-                self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
-                if response.status >= 300:
-                    raise ROClientException(response_text, http_code=response.status)
+        # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
+        async with session.delete(url, headers=self.headers_req) as response:
+            response_text = await response.read()
+            self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
+            if response.status >= 300:
+                raise ROClientException(response_text, http_code=response.status)
+
         return self._parse_yaml(response_text, response=True)
 
     async def _list_item(self, session, item, all_tenants=False, filter_dict=None):
@@ -604,12 +605,13 @@ class ROClient:
                 url += separator + quote(str(k)) + "=" + quote(str(filter_dict[k]))
                 separator = "&"
         self.logger.debug("RO GET %s", url)
-        with aiohttp.Timeout(self.timeout_short):
-            async with session.get(url, headers=self.headers_req) as response:
-                response_text = await response.read()
-                self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
-                if response.status >= 300:
-                    raise ROClientException(response_text, http_code=response.status)
+        # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
+        async with session.get(url, headers=self.headers_req) as response:
+            response_text = await response.read()
+            self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
+            if response.status >= 300:
+                raise ROClientException(response_text, http_code=response.status)
+
         return self._parse_yaml(response_text, response=True)
 
     async def _edit_item(self, session, item, item_id, descriptor, all_tenants=False):
@@ -627,12 +629,13 @@ class ROClient:
         # print payload_req
         url = "{}{}/{}/{}".format(self.endpoint_url, tenant_text, item, item_id)
         self.logger.debug("RO PUT %s %s", url, payload_req)
-        with aiohttp.Timeout(self.timeout_large):
-            async with session.put(url, headers=self.headers_req, data=payload_req) as response:
-                response_text = await response.read()
-                self.logger.debug("PUT {} [{}] {}".format(url, response.status, response_text[:100]))
-                if response.status >= 300:
-                    raise ROClientException(response_text, http_code=response.status)
+        # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
+        async with session.put(url, headers=self.headers_req, data=payload_req) as response:
+            response_text = await response.read()
+            self.logger.debug("PUT {} [{}] {}".format(url, response.status, response_text[:100]))
+            if response.status >= 300:
+                raise ROClientException(response_text, http_code=response.status)
+
         return self._parse_yaml(response_text, response=True)
 
     async def get_version(self):
@@ -641,21 +644,22 @@ class ROClient:
         :return: a list with integers ["major", "minor", "release"]. Raises ROClientException on Error,
         """
         try:
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 url = "{}/version".format(self.endpoint_url)
                 self.logger.debug("RO GET %s", url)
-                with aiohttp.Timeout(self.timeout_short):
-                    async with session.get(url, headers=self.headers_req) as response:
-                        response_text = await response.read()
-                        self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
-                        if response.status >= 300:
-                            raise ROClientException(response_text, http_code=response.status)
+                # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
+                async with session.get(url, headers=self.headers_req) as response:
+                    response_text = await response.read()
+                    self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
+                    if response.status >= 300:
+                        raise ROClientException(response_text, http_code=response.status)
+
                 for word in str(response_text).split(" "):
                     if "." in word:
                         version_text, _, _ = word.partition("-")
                         return version_text
                 raise ROClientException("Got invalid version text: '{}'".format(response_text), http_code=500)
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -676,7 +680,7 @@ class ROClient:
                 raise ROClientException("Invalid item {}".format(item))
             if item == 'tenant':
                 all_tenants = None
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 content = await self._list_item(session, self.client_to_RO[item], all_tenants=all_tenants,
                                                 filter_dict=filter_by)
             if isinstance(content, dict):
@@ -687,7 +691,7 @@ class ROClient:
                 else:
                     raise ROClientException("Output not a list neither dict with len equal 1", http_code=500)
                 return content
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -713,11 +717,11 @@ class ROClient:
             elif item == 'vim_account':
                 all_tenants = False
 
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 content = await self._get_item(session, self.client_to_RO[item], item_id_name, extra_item=extra_item,
                                                extra_item_id=extra_item_id, all_tenants=all_tenants)
                 return remove_envelop(item, content)
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -736,7 +740,7 @@ class ROClient:
             if item in ('tenant', 'vim', 'wim'):
                 all_tenants = None
 
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 result = await self._del_item(session, self.client_to_RO[item], item_id_name, all_tenants=all_tenants)
                 # in case of ns delete, get the action_id embeded in text
                 if item == "ns" and result.get("result"):
@@ -745,7 +749,7 @@ class ROClient:
                     if action_id:
                         result["action_id"] = action_id
                 return result
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -781,7 +785,7 @@ class ROClient:
 
             create_desc = self._create_envelop(item, desc)
 
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 _all_tenants = all_tenants
                 if item == 'vim':
                     _all_tenants = True
@@ -793,7 +797,7 @@ class ROClient:
                 outdata = await self._edit_item(session, self.client_to_RO[item], item_id, create_desc,
                                                 all_tenants=_all_tenants)
                 return remove_envelop(item, outdata)
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -834,11 +838,11 @@ class ROClient:
 
             create_desc = self._create_envelop(item, desc)
 
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 outdata = await self._create_item(session, self.client_to_RO[item], create_desc,
                                                   all_tenants=all_tenants)
                 return remove_envelop(item, outdata)
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -883,7 +887,7 @@ class ROClient:
             # create_desc = self._create_envelop(item, desc)
             create_desc = desc
 
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 _all_tenants = all_tenants
                 if item == 'vim':
                     _all_tenants = True
@@ -893,7 +897,7 @@ class ROClient:
                                                   item_id_name=item_id_name,  # item_id_name=item_id
                                                   action=action, all_tenants=_all_tenants)
                 return remove_envelop(item, outdata)
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -933,7 +937,7 @@ class ROClient:
                                         format(item))
             create_desc = self._create_envelop(item, desc)
             payload_req = yaml.safe_dump(create_desc)
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 # check that exist
                 item_id = await self._get_item_uuid(session, self.client_to_RO[item], item_id_name, all_tenants=True)
                 await self._get_tenant(session)
@@ -941,17 +945,17 @@ class ROClient:
                 url = "{}/{tenant}/{item}/{item_id}".format(self.endpoint_url, tenant=self.tenant,
                                                             item=self.client_to_RO[item], item_id=item_id)
                 self.logger.debug("RO POST %s %s", url, payload_req)
-                with aiohttp.Timeout(self.timeout_large):
-                    async with session.post(url, headers=self.headers_req, data=payload_req) as response:
-                        response_text = await response.read()
-                        self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
-                        if response.status >= 300:
-                            raise ROClientException(response_text, http_code=response.status)
+                # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
+                async with session.post(url, headers=self.headers_req, data=payload_req) as response:
+                    response_text = await response.read()
+                    self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
+                    if response.status >= 300:
+                        raise ROClientException(response_text, http_code=response.status)
 
                 response_desc = self._parse_yaml(response_text, response=True)
                 desc = remove_envelop(item, response_desc)
                 return desc
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -959,7 +963,7 @@ class ROClient:
     async def detach(self, item, item_id_name=None):
         # TODO replace the code with delete_item(vim_account,...)
         try:
-            with aiohttp.ClientSession(loop=self.loop) as session:
+            async with aiohttp.ClientSession(loop=self.loop) as session:
                 # check that exist
                 item_id = await self._get_item_uuid(session, self.client_to_RO[item], item_id_name, all_tenants=False)
                 tenant = await self._get_tenant(session)
@@ -967,17 +971,21 @@ class ROClient:
                 url = "{}/{tenant}/{item}/{datacenter}".format(self.endpoint_url, tenant=tenant,
                                                                item=self.client_to_RO[item], datacenter=item_id)
                 self.logger.debug("RO DELETE %s", url)
-                with aiohttp.Timeout(self.timeout_large):
-                    async with session.delete(url, headers=self.headers_req) as response:
-                        response_text = await response.read()
-                        self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
+               
+                # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
+                async with session.delete(url, headers=self.headers_req) as response:
+                    response_text = await response.read()
+                    self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
+                    if response.status >= 300:
+                        raise ROClientException(response_text, http_code=response.status)
+ 
                         if response.status >= 300:
                             raise ROClientException(response_text, http_code=response.status)
 
                 response_desc = self._parse_yaml(response_text, response=True)
                 desc = remove_envelop(item, response_desc)
                 return desc
-        except aiohttp.errors.ClientOSError as e:
+        except aiohttp.ClientOSError as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
