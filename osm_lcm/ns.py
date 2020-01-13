@@ -25,7 +25,7 @@ import json
 from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound, TemplateSyntaxError
 
 from osm_lcm import ROclient
-from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase, deep_get
+from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase, deep_get, get_iterable, populate_dict
 from n2vc.k8s_helm_conn import K8sHelmConnector
 from n2vc.k8s_juju_conn import K8sJujuConnector
 
@@ -43,37 +43,9 @@ from uuid import uuid4
 __author__ = "Alfonso Tierno"
 
 
-def get_iterable(in_dict, in_key):
-    """
-    Similar to <dict>.get(), but if value is None, False, ..., An empty tuple is returned instead
-    :param in_dict: a dictionary
-    :param in_key: the key to look for at in_dict
-    :return: in_dict[in_var] or () if it is None or not present
-    """
-    if not in_dict.get(in_key):
-        return ()
-    return in_dict[in_key]
-
-
-def populate_dict(target_dict, key_list, value):
-    """
-    Update target_dict creating nested dictionaries with the key_list. Last key_list item is asigned the value.
-    Example target_dict={K: J}; key_list=[a,b,c];  target_dict will be {K: J, a: {b: {c: value}}}
-    :param target_dict: dictionary to be changed
-    :param key_list: list of keys to insert at target_dict
-    :param value:
-    :return: None
-    """
-    for key in key_list[0:-1]:
-        if key not in target_dict:
-            target_dict[key] = {}
-        target_dict = target_dict[key]
-    target_dict[key_list[-1]] = value
-
-
 class NsLcm(LcmBase):
     timeout_vca_on_error = 5 * 60   # Time for charm from first time at blocked,error status to mark as failed
-    total_deploy_timeout = 2 * 3600   # global timeout for deployment
+    timeout_ns_deploy = 2 * 3600   # default global timeout for deployment a ns
     timeout_charm_delete = 10 * 60
     timeout_primitive = 10 * 60  # timeout for primitive execution
 
@@ -81,7 +53,7 @@ class NsLcm(LcmBase):
     SUBOPERATION_STATUS_NEW = -2
     SUBOPERATION_STATUS_SKIP = -3
 
-    def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -96,21 +68,9 @@ class NsLcm(LcmBase):
 
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.ro_config = ro_config
-        self.vca_config = vca_config
-        if 'pubkey' in self.vca_config:
-            self.vca_config['public_key'] = self.vca_config['pubkey']
-        if 'cacert' in self.vca_config:
-            self.vca_config['ca_cert'] = self.vca_config['cacert']
-        if 'apiproxy' in self.vca_config:
-            self.vca_config['api_proxy'] = self.vca_config['apiproxy']
-        if 'enableosupgrade' in self.vca_config:
-            if self.vca_config['enableosupgrade'].lower() == 'false':
-                self.vca_config['enable_os_upgrade'] = False
-            elif self.vca_config['enableosupgrade'].lower() == 'true':
-                self.vca_config['enable_os_upgrade'] = True
-        if 'aptmirror' in self.vca_config:
-            self.vca_config['apt_mirror'] = self.vca_config['aptmirror']
+        self.timeout = config["timeout"]
+        self.ro_config = config["ro_config"]
+        self.vca_config = config["VCA"].copy()
 
         # create N2VC connector
         self.n2vc = N2VCJujuConnector(
@@ -773,6 +733,10 @@ class NsLcm(LcmBase):
         start_deploy = time()
         vdu_flag = False  # If any of the VNFDs has VDUs
         ns_params = db_nslcmop.get("operationParams")
+        if ns_params and ns_params.get("timeout_ns_deploy"):
+            timeout_ns_deploy = ns_params["timeout_ns_deploy"]
+        else:
+            timeout_ns_deploy = self.timeout.get("ns_deploy", self.timeout_ns_deploy)
 
         # deploy RO
 
@@ -909,7 +873,7 @@ class NsLcm(LcmBase):
         self.logger.debug(logging_text + step)
 
         old_desc = None
-        while time() <= start_deploy + self.total_deploy_timeout:
+        while time() <= start_deploy + timeout_ns_deploy:
             desc = await self.RO.show("ns", RO_nsr_id)
 
             # deploymentStatus
@@ -938,7 +902,7 @@ class NsLcm(LcmBase):
                     detailed_status_old = db_nsr_update["_admin.deployed.RO.detailed-status"] = detailed_status
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
                 await asyncio.sleep(5, loop=self.loop)
-        else:  # total_deploy_timeout
+        else:  # timeout_ns_deploy
             raise ROclient.ROClientException("Timeout waiting ns to be ready")
 
         step = "Updating NSR"
@@ -1436,6 +1400,11 @@ class NsLcm(LcmBase):
             # read from db: operation
             step = "Getting nslcmop={} from db".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
+            ns_params = db_nslcmop.get("operationParams")
+            if ns_params and ns_params.get("timeout_ns_deploy"):
+                timeout_ns_deploy = ns_params["timeout_ns_deploy"]
+            else:
+                timeout_ns_deploy = self.timeout.get("ns_deploy", self.timeout_ns_deploy)
 
             # read from db: ns
             step = "Getting nsr={} from db".format(nsr_id)
@@ -1709,9 +1678,7 @@ class NsLcm(LcmBase):
 
             # Wait until all tasks of "task_instantiation_list" have been finished
 
-            # while time() <= start_deploy + self.total_deploy_timeout:
             error_text_list = []
-            timeout = 3600
 
             # let's begin with all OK
             instantiated_ok = True
@@ -1722,7 +1689,7 @@ class NsLcm(LcmBase):
 
             if task_instantiation_list:
                 # wait for all tasks completion
-                done, pending = await asyncio.wait(task_instantiation_list, timeout=timeout)
+                done, pending = await asyncio.wait(task_instantiation_list, timeout=timeout_ns_deploy)
 
                 for task in pending:
                     instantiated_ok = False

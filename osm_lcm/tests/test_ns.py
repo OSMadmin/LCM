@@ -51,21 +51,23 @@ It allows, if some testing ENV are supplied, testing without mocking some extern
     OSMLCM_RO_XXX: configuration of RO
 """
 
-
-vca_config = {   # TODO replace with os.get_env to get other configurations
-    "host": getenv("OSMLCM_VCA_HOST", "vca"),
-    "port": getenv("OSMLCM_VCA_PORT", 17070),
-    "user": getenv("OSMLCM_VCA_USER", "admin"),
-    "secret": getenv("OSMLCM_VCA_SECRET", "vca"),
-    "pubkey": getenv("OSMLCM_VCA_PUBKEY", None),
-    'cacert': getenv("OSMLCM_VCA_CACERT", None)
-}
-
-ro_config = {
-    "endpoint_url": "http://{}:{}/openmano".format(getenv("OSMLCM_RO_HOST", "ro"), getenv("OSMLCM_RO_PORT", "9090")),
-    "tenant": getenv("OSMLCM_RO_TENANT", "osm"),
-    "logger_name": "lcm.ROclient",
-    "loglevel": "DEBUG",
+lcm_config = {
+    "timeout": {},
+    "VCA": {   # TODO replace with os.get_env to get other configurations
+        "host": getenv("OSMLCM_VCA_HOST", "vca"),
+        "port": getenv("OSMLCM_VCA_PORT", 17070),
+        "user": getenv("OSMLCM_VCA_USER", "admin"),
+        "secret": getenv("OSMLCM_VCA_SECRET", "vca"),
+        "public_key": getenv("OSMLCM_VCA_PUBKEY", None),
+        'ca_cert': getenv("OSMLCM_VCA_CACERT", None)
+    },
+    "ro_config": {
+        "endpoint_url": "http://{}:{}/openmano".format(getenv("OSMLCM_RO_HOST", "ro"),
+                                                       getenv("OSMLCM_RO_PORT", "9090")),
+        "tenant": getenv("OSMLCM_RO_TENANT", "osm"),
+        "logger_name": "lcm.ROclient",
+        "loglevel": "DEBUG",
+    }
 }
 
 
@@ -166,7 +168,7 @@ class TestMyNS(asynctest.TestCase):
         self.lcm_tasks.lookfor_related.return_value = ("", [])
 
         # Create NsLCM class
-        self.my_ns = NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, ro_config, vca_config, self.loop)
+        self.my_ns = NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, lcm_config, self.loop)
         self.my_ns._wait_dependent_n2vc = asynctest.CoroutineMock()
 
         # Mock logging
@@ -199,7 +201,7 @@ class TestMyNS(asynctest.TestCase):
 
         # Mock RO
         if not getenv("OSMLCMTEST_RO_NOMOCK"):
-            # self.my_ns.RO = asynctest.Mock(ROclient.ROClient(self.loop, **ro_config))
+            # self.my_ns.RO = asynctest.Mock(ROclient.ROClient(self.loop, **lcm_config["ro_config"]))
             # TODO first time should be empty list, following should return a dict
             self.my_ns.RO.get_list = asynctest.CoroutineMock(self.my_ns.RO.get_list, return_value=[])
             self.my_ns.RO.create = asynctest.CoroutineMock(self.my_ns.RO.create, side_effect=self._ro_create())

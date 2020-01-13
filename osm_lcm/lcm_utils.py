@@ -49,22 +49,50 @@ def versiontuple(v):
     return tuple(filled)
 
 
-def deep_get(target_dict, key_list):
+def deep_get(target_dict, key_list, default_value=None):
     """
     Get a value from target_dict entering in the nested keys. If keys does not exist, it returns None
     Example target_dict={a: {b: 5}}; key_list=[a,b] returns 5; both key_list=[a,b,c] and key_list=[f,h] return None
     :param target_dict: dictionary to be read
     :param key_list: list of keys to read from  target_dict
+    :param default_value: value to return if key is not present in the nested dictionary
     :return: The wanted value if exist, None otherwise
     """
     for key in key_list:
         if not isinstance(target_dict, dict) or key not in target_dict:
-            return None
+            return default_value
         target_dict = target_dict[key]
     return target_dict
 
 
-# LcmBase must be listed before TaskRegistry, as it is a dependency.
+def get_iterable(in_dict, in_key):
+    """
+    Similar to <dict>.get(), but if value is None, False, ..., An empty tuple is returned instead
+    :param in_dict: a dictionary
+    :param in_key: the key to look for at in_dict
+    :return: in_dict[in_var] or () if it is None or not present
+    """
+    if not in_dict.get(in_key):
+        return ()
+    return in_dict[in_key]
+
+
+def populate_dict(target_dict, key_list, value):
+    """
+    Update target_dict creating nested dictionaries with the key_list. Last key_list item is asigned the value.
+    Example target_dict={K: J}; key_list=[a,b,c];  target_dict will be {K: J, a: {b: {c: value}}}
+    :param target_dict: dictionary to be changed
+    :param key_list: list of keys to insert at target_dict
+    :param value:
+    :return: None
+    """
+    for key in key_list[0:-1]:
+        if key not in target_dict:
+            target_dict[key] = {}
+        target_dict = target_dict[key]
+    target_dict[key_list[-1]] = value
+
+
 class LcmBase:
 
     def __init__(self, db, msg, fs, logger):

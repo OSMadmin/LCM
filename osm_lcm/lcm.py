@@ -87,14 +87,12 @@ class Lcm:
         # load configuration
         config = self.read_config_file(config_file)
         self.config = config
-        self.ro_config = {
+        self.config["ro_config"] = {
             "endpoint_url": "http://{}:{}/openmano".format(config["RO"]["host"], config["RO"]["port"]),
             "tenant": config.get("tenant", "osm"),
             "logger_name": "lcm.ROclient",
             "loglevel": "ERROR",
         }
-
-        self.vca_config = config["VCA"]
 
         self.loop = loop or asyncio.get_event_loop()
 
@@ -188,21 +186,20 @@ class Lcm:
         # contains created tasks/futures to be able to cancel
         self.lcm_tasks = TaskRegistry(self.worker_id, self.db, self.logger)
 
-        self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.vca_config, self.loop)
-        self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, 
-                                             self.vca_config, self.loop)
-        self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
-        self.wim = vim_sdn.WimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
-        self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.ro_config, self.loop)
-        self.k8scluster = vim_sdn.K8sClusterLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.vca_config, self.loop)
-        self.k8srepo = vim_sdn.K8sRepoLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.vca_config, self.loop)
+        self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        self.wim = vim_sdn.WimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        self.k8scluster = vim_sdn.K8sClusterLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        self.k8srepo = vim_sdn.K8sRepoLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
 
     async def check_RO_version(self):
         tries = 14
         last_error = None
         while True:
             try:
-                ro_server = ROclient.ROClient(self.loop, **self.ro_config)
+                ro_server = ROclient.ROClient(self.loop, **self.config["ro_config"])
                 ro_version = await ro_server.get_version()
                 if versiontuple(ro_version) < versiontuple(min_RO_version):
                     raise LcmException("Not compatible osm/RO version '{}'. Needed '{}' or higher".format(
@@ -211,7 +208,8 @@ class Lcm:
                 return
             except ROclient.ROClientException as e:
                 tries -= 1
-                error_text = "Error while connecting to RO on {}: {}".format(self.ro_config["endpoint_url"], e)
+                error_text = "Error while connecting to RO on {}: {}".format(self.config["ro_config"]["endpoint_url"],
+                                                                             e)
                 if tries <= 0:
                     self.logger.critical(error_text)
                     raise LcmException(error_text)
@@ -527,27 +525,51 @@ class Lcm:
         # the configparser library is not suitable, because it does not admit comments at the end of line,
         # and not parse integer or boolean
         try:
+            # read file as yaml format
             with open(config_file) as f:
                 conf = yaml.load(f, Loader=yaml.Loader)
+            # Ensure all sections are not empty
+            for k in ("global", "timeout", "RO", "VCA", "database", "storage", "message"):
+                if not conf.get(k):
+                    conf[k] = {}
+
+            # read all environ that starts with OSMLCM_
             for k, v in environ.items():
                 if not k.startswith("OSMLCM_"):
                     continue
-                k_items = k.lower().split("_")
-                if len(k_items) < 3:
+                subject, _, item = k[7:].lower().partition("_")
+                if not item:
                     continue
-                if k_items[1] in ("ro", "vca"):
+                if subject in ("ro", "vca"):
                     # put in capital letter
-                    k_items[1] = k_items[1].upper()
-                c = conf
+                    subject = subject.upper()
                 try:
-                    for k_item in k_items[1:-1]:
-                        c = c[k_item]
-                    if k_items[-1] == "port":
-                        c[k_items[-1]] = int(v)
+                    if item == "port" or subject == "timeout":
+                        conf[subject][item] = int(v)
                     else:
-                        c[k_items[-1]] = v
+                        conf[subject][item] = v
                 except Exception as e:
-                    self.logger.warn("skipping environ '{}' on exception '{}'".format(k, e))
+                    self.logger.warning("skipping environ '{}' on exception '{}'".format(k, e))
+
+            # backward compatibility of VCA parameters
+
+            if 'pubkey' in conf["VCA"]:
+                conf["VCA"]['public_key'] = conf["VCA"].pop('pubkey')
+            if 'cacert' in conf["VCA"]:
+                conf["VCA"]['ca_cert'] = conf["VCA"].pop('cacert')
+            if 'apiproxy' in conf["VCA"]:
+                conf["VCA"]['api_proxy'] = conf["VCA"].pop('apiproxy')
+
+            if 'enableosupgrade' in conf["VCA"]:
+                conf["VCA"]['enable_os_upgrade'] = conf["VCA"].pop('enableosupgrade')
+            if isinstance(conf["VCA"].get('enable_os_upgrade'), str):
+                if conf["VCA"]['enable_os_upgrade'].lower() == 'false':
+                    conf["VCA"]['enable_os_upgrade'] = False
+                elif conf["VCA"]['enable_os_upgrade'].lower() == 'true':
+                    conf["VCA"]['enable_os_upgrade'] = True
+
+            if 'aptmirror' in conf["VCA"]:
+                conf["VCA"]['apt_mirror'] = conf["VCA"].pop('aptmirror')
 
             return conf
         except Exception as e:

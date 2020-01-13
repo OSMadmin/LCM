@@ -36,7 +36,7 @@ class VimLcm(LcmBase):
     vim_config_encrypted = {"1.1": ("admin_password", "nsx_password", "vcenter_password"),
                             "default": ("admin_password", "nsx_password", "vcenter_password", "vrops_password")}
 
-    def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -46,7 +46,7 @@ class VimLcm(LcmBase):
         self.logger = logging.getLogger('lcm.vim')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.ro_config = ro_config
+        self.ro_config = config["ro_config"]
 
         super().__init__(db, msg, fs, self.logger)
 
@@ -386,7 +386,7 @@ class WimLcm(LcmBase):
     # values that are encrypted at wim config because they are passwords
     wim_config_encrypted = ()
 
-    def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -396,7 +396,7 @@ class WimLcm(LcmBase):
         self.logger = logging.getLogger('lcm.vim')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.ro_config = ro_config
+        self.ro_config = config["ro_config"]
 
         super().__init__(db, msg, fs, self.logger)
 
@@ -689,7 +689,7 @@ class WimLcm(LcmBase):
 
 class SdnLcm(LcmBase):
 
-    def __init__(self, db, msg, fs, lcm_tasks, ro_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -699,7 +699,7 @@ class SdnLcm(LcmBase):
         self.logger = logging.getLogger('lcm.sdn')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.ro_config = ro_config
+        self.ro_config = config["ro_config"]
 
         super().__init__(db, msg, fs, self.logger)
 
@@ -921,7 +921,7 @@ class SdnLcm(LcmBase):
 
 class K8sClusterLcm(LcmBase):
 
-    def __init__(self, db, msg, fs, lcm_tasks, vca_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -931,7 +931,7 @@ class K8sClusterLcm(LcmBase):
         self.logger = logging.getLogger('lcm.k8scluster')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.vca_config = vca_config
+        self.vca_config = config["VCA"]
         self.fs = fs
         self.db = db
 
@@ -1144,7 +1144,7 @@ class K8sClusterLcm(LcmBase):
 
 class K8sRepoLcm(LcmBase):
 
-    def __init__(self, db, msg, fs, lcm_tasks, vca_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -1154,7 +1154,7 @@ class K8sRepoLcm(LcmBase):
         self.logger = logging.getLogger('lcm.k8srepo')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.vca_config = vca_config
+        self.vca_config = config["VCA"]
         self.fs = fs
         self.db = db
 

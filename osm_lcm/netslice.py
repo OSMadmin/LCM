@@ -17,9 +17,8 @@ import asyncio
 import logging
 import logging.handlers
 import traceback
-from osm_lcm.ns import populate_dict as populate_dict
 from osm_lcm import ROclient, ns
-from osm_lcm.lcm_utils import LcmException, LcmBase
+from osm_lcm.lcm_utils import LcmException, LcmBase, populate_dict, get_iterable, deep_get
 from osm_common.dbbase import DbException
 from time import time
 from copy import deepcopy
@@ -28,23 +27,11 @@ from copy import deepcopy
 __author__ = "Felipe Vicens, Pol Alemany, Alfonso Tierno"
 
 
-def get_iterable(in_dict, in_key):
-    """
-    Similar to <dict>.get(), but if value is None, False, ..., An empty tuple is returned instead
-    :param in_dict: a dictionary
-    :param in_key: the key to look for at in_dict
-    :return: in_dict[in_var] or () if it is None or not present
-    """
-    if not in_dict.get(in_key):
-        return ()
-    return in_dict[in_key]
-
-
 class NetsliceLcm(LcmBase):
 
-    total_deploy_timeout = 2 * 3600   # global timeout for deployment
+    timeout_nsi_deploy = 2 * 3600  # default global timeout for deployment a nsi
 
-    def __init__(self, db, msg, fs, lcm_tasks, ro_config, vca_config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -54,8 +41,9 @@ class NetsliceLcm(LcmBase):
         self.logger = logging.getLogger('lcm.netslice')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.ns = ns.NsLcm(db, msg, fs, lcm_tasks, ro_config, vca_config, loop)
-        self.ro_config = ro_config
+        self.ns = ns.NsLcm(db, msg, fs, lcm_tasks, config, loop)
+        self.ro_config = config["ro_config"]
+        self.timeout = config["timeout"]
 
         super().__init__(db, msg, fs, self.logger)
 
@@ -160,7 +148,7 @@ class NetsliceLcm(LcmBase):
                     break
 
             # Creating netslice-vld at RO
-            RO_nsir = db_nsir["_admin"].get("deployed", {}).get("RO", [])
+            RO_nsir = deep_get(db_nsir, ("_admin", "deployed", "RO"), [])
 
             if vld_id in RO_nsir:
                 db_nsir_update["_admin.deployed.RO"] = RO_nsir
@@ -286,6 +274,13 @@ class NetsliceLcm(LcmBase):
             step = "Getting nsilcmop={} from db".format(nsilcmop_id)
             db_nsilcmop = self.db.get_one("nsilcmops", {"_id": nsilcmop_id})
 
+            start_deploy = time()
+            nsi_params = db_nsilcmop.get("operationParams")
+            if nsi_params and nsi_params.get("timeout_nsi_deploy"):
+                timeout_nsi_deploy = nsi_params["timeout_nsi_deploy"]
+            else:
+                timeout_nsi_deploy = self.timeout.get("nsi_deploy", self.timeout_nsi_deploy)
+
             # Empty list to keep track of network service records status in the netslice
             nsir_admin = db_nsir_admin = db_nsir.get("_admin")
 
@@ -341,8 +336,7 @@ class NetsliceLcm(LcmBase):
             self.logger.debug(logging_text + step)
 
             # TODO: substitute while for await (all task to be done or not)
-            deployment_timeout = 2 * 3600   # Two hours
-            while deployment_timeout > 0:
+            while time() <= start_deploy + timeout_nsi_deploy:
                 # Check ns instantiation status
                 nsi_ready = True
                 nsir = self.db.get_one("nsis", {"_id": nsir_id})
@@ -376,9 +370,8 @@ class NetsliceLcm(LcmBase):
 
                 # TODO: future improvement due to synchronism -> await asyncio.wait(vca_task_list, timeout=300)
                 await asyncio.sleep(5, loop=self.loop)
-                deployment_timeout -= 5
 
-            if deployment_timeout <= 0:
+            else:   # timeout_nsi_deploy reached:
                 raise LcmException("Timeout waiting nsi to be ready. nsi_id={}".format(nsir_id))
 
             db_nsir_update["operational-status"] = "running"

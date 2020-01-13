@@ -77,6 +77,11 @@ ENV OSMLCM_VCA_SECRET      secret
 # ENV OSMLCM_VCA_PUBKEY     pubkey
 # ENV OSMLCM_VCA_CACERT     cacert
 
+# VCA - k8s
+ENV OSMLCM_VCA_HELMPATH    /usr/local/bin/helm
+ENV OSMLCM_VCA_KUBECTLPATH /usr/bin/kubectl
+ENV OSMLCM_VCA_JUJUPATH    /usr/local/bin/juju
+
 # database
 ENV OSMLCM_DATABASE_DRIVER mongo
 ENV OSMLCM_DATABASE_URI mongodb://mongo:27017
@@ -96,14 +101,14 @@ ENV OSMLCM_MESSAGE_DRIVER  kafka
 ENV OSMLCM_MESSAGE_HOST    kafka
 ENV OSMLCM_MESSAGE_PORT    9092
 
-# k8s
-ENV OSMLCM_VCA_HELMPATH    /usr/local/bin/helm
-ENV OSMLCM_VCA_KUBECTLPATH /usr/bin/kubectl
-ENV OSMLCM_VCA_JUJUPATH    /usr/local/bin/juju
 
 # logs
 # ENV OSMLCM_GLOBAL_LOGFILE  /app/log/lcm.log
 ENV OSMLCM_GLOBAL_LOGLEVEL DEBUG
+
+# timeouts
+# ENV OSMLCM_TIMEOUT_NS_DEPLOY 7200
+# ENV OSMLCM_TIMEOUT_NSI_DEPLOY 7200
 
 # Copy the current directory contents into the container at /app/LCM
 ADD . /app/LCM
