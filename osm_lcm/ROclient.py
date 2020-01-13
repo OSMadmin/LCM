@@ -659,7 +659,7 @@ class ROClient:
                         version_text, _, _ = word.partition("-")
                         return version_text
                 raise ROClientException("Got invalid version text: '{}'".format(response_text), http_code=500)
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -691,7 +691,7 @@ class ROClient:
                 else:
                     raise ROClientException("Output not a list neither dict with len equal 1", http_code=500)
                 return content
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -721,7 +721,7 @@ class ROClient:
                 content = await self._get_item(session, self.client_to_RO[item], item_id_name, extra_item=extra_item,
                                                extra_item_id=extra_item_id, all_tenants=all_tenants)
                 return remove_envelop(item, content)
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -749,7 +749,7 @@ class ROClient:
                     if action_id:
                         result["action_id"] = action_id
                 return result
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -797,7 +797,7 @@ class ROClient:
                 outdata = await self._edit_item(session, self.client_to_RO[item], item_id, create_desc,
                                                 all_tenants=_all_tenants)
                 return remove_envelop(item, outdata)
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -842,7 +842,7 @@ class ROClient:
                 outdata = await self._create_item(session, self.client_to_RO[item], create_desc,
                                                   all_tenants=all_tenants)
                 return remove_envelop(item, outdata)
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -897,7 +897,7 @@ class ROClient:
                                                   item_id_name=item_id_name,  # item_id_name=item_id
                                                   action=action, all_tenants=_all_tenants)
                 return remove_envelop(item, outdata)
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -955,7 +955,7 @@ class ROClient:
                 response_desc = self._parse_yaml(response_text, response=True)
                 desc = remove_envelop(item, response_desc)
                 return desc
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)
@@ -979,13 +979,10 @@ class ROClient:
                     if response.status >= 300:
                         raise ROClientException(response_text, http_code=response.status)
  
-                        if response.status >= 300:
-                            raise ROClientException(response_text, http_code=response.status)
-
                 response_desc = self._parse_yaml(response_text, response=True)
                 desc = remove_envelop(item, response_desc)
                 return desc
-        except aiohttp.ClientOSError as e:
+        except (aiohttp.ClientOSError, aiohttp.ClientError) as e:
             raise ROClientException(e, http_code=504)
         except asyncio.TimeoutError:
             raise ROClientException("Timeout", http_code=504)

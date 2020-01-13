@@ -52,7 +52,7 @@ setup(
     install_requires=[
         # 'pymongo',
         'PyYAML',
-        'aiohttp==3.*',
+        'aiohttp>=2.3.10',
         'osm-common',
         'n2vc',
         'jinja2',
