@@ -1176,6 +1176,12 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + step)
             await self.n2vc.install_configuration_sw(ee_id=ee_id, artifact_path=artifact_path, db_dict=db_dict)
 
+            # write in db flag of configuration_sw already installed
+            self.update_db_2("nsrs", nsr_id, {db_update_entry + "config_sw_installed": True})
+
+            # add relations for this VCA (wait for other peers related with this VCA)
+            await self._add_vca_relations(logging_text=logging_text, nsr_id=nsr_id, vca_index=vca_index)
+
             # if SSH access is required, then get execution environment SSH public
             if is_proxy_charm:  # if native charm we have waited already to VM be UP
                 pub_key = None
@@ -1209,10 +1215,13 @@ class NsLcm(LcmBase):
             initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
 
             # sort initial config primitives by 'seq'
-            try:
-                initial_config_primitive_list.sort(key=lambda val: int(val['seq']))
-            except Exception as e:
-                self.logger.error(logging_text + step + ": " + str(e))
+            if initial_config_primitive_list:
+                try:
+                    initial_config_primitive_list.sort(key=lambda val: int(val['seq']))
+                except Exception as e:
+                    self.logger.error(logging_text + step + ": " + str(e))
+            else:
+                self.logger.debug(logging_text + step + ": No initial-config-primitive")
 
             # add config if not present for NS charm
             initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
@@ -1324,7 +1333,7 @@ class NsLcm(LcmBase):
         except Exception as e:
             self.logger.warn('Error writing all configuration status, ns={}: {}'.format(nsr_id, e))
 
-    def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str,
+    def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str = None,
                                     element_under_configuration: str = None, element_type: str = None):
 
         # self.logger.debug('_write_configuration_status(): vca_index={}, status={}'
@@ -1333,7 +1342,8 @@ class NsLcm(LcmBase):
         try:
             db_path = 'configurationStatus.{}.'.format(vca_index)
             db_dict = dict()
-            db_dict[db_path + 'status'] = status
+            if status:
+                db_dict[db_path + 'status'] = status
             if element_under_configuration:
                 db_dict[db_path + 'elementUnderConfiguration'] = element_under_configuration
             if element_type:
@@ -1437,7 +1447,7 @@ class NsLcm(LcmBase):
                 vnfd_ref = vnfr["vnfd-ref"]                     # vnfd name for this vnf
                 # if we haven't this vnfd, read it from db
                 if vnfd_id not in db_vnfds:
-                    # read from cb
+                    # read from db
                     step = "Getting vnfd={} id='{}' from db".format(vnfd_id, vnfd_ref)
                     self.logger.debug(logging_text + step)
                     vnfd = self.db.get_one("vnfds", {"_id": vnfd_id})
@@ -1815,6 +1825,166 @@ class NsLcm(LcmBase):
 
             self.logger.debug(logging_text + "Exit")
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_instantiate")
+
+    async def _add_vca_relations(self, logging_text, nsr_id, vca_index: int, timeout: int = 3600) -> bool:
+
+        # steps:
+        # 1. find all relations for this VCA
+        # 2. wait for other peers related
+        # 3. add relations
+
+        try:
+
+            # STEP 1: find all relations for this VCA
+
+            # read nsr record
+            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+
+            # this VCA data
+            my_vca = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))[vca_index]
+
+            # read all ns-configuration relations
+            ns_relations = list()
+            db_ns_relations = deep_get(db_nsr, ('nsd', 'ns-configuration', 'relation'))
+            if db_ns_relations:
+                for r in db_ns_relations:
+                    # check if this VCA is in the relation
+                    if my_vca.get('member-vnf-index') in\
+                            (r.get('entities')[0].get('id'), r.get('entities')[1].get('id')):
+                        ns_relations.append(r)
+
+            # read all vnf-configuration relations
+            vnf_relations = list()
+            db_vnfd_list = db_nsr.get('vnfd-id')
+            if db_vnfd_list:
+                for vnfd in db_vnfd_list:
+                    db_vnfd = self.db.get_one("vnfds", {"_id": vnfd})
+                    db_vnf_relations = deep_get(db_vnfd, ('vnf-configuration', 'relation'))
+                    if db_vnf_relations:
+                        for r in db_vnf_relations:
+                            # check if this VCA is in the relation
+                            if my_vca.get('vdu_id') in (r.get('entities')[0].get('id'), r.get('entities')[1].get('id')):
+                                vnf_relations.append(r)
+
+            # if no relations, terminate
+            if not ns_relations and not vnf_relations:
+                self.logger.debug(logging_text + ' No relations')
+                return True
+
+            self.logger.debug(logging_text + ' adding relations\n    {}\n    {}'.format(ns_relations, vnf_relations))
+
+            # add all relations
+            start = time()
+            while True:
+                # check timeout
+                now = time()
+                if now - start >= timeout:
+                    self.logger.error(logging_text + ' : timeout adding relations')
+                    return False
+
+                # reload nsr from database (we need to update record: _admin.deloyed.VCA)
+                db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+
+                # for each defined NS relation, find the VCA's related
+                for r in ns_relations:
+                    from_vca_ee_id = None
+                    to_vca_ee_id = None
+                    from_vca_endpoint = None
+                    to_vca_endpoint = None
+                    vca_list = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))
+                    for vca in vca_list:
+                        if vca.get('member-vnf-index') == r.get('entities')[0].get('id') \
+                                and vca.get('config_sw_installed'):
+                            from_vca_ee_id = vca.get('ee_id')
+                            from_vca_endpoint = r.get('entities')[0].get('endpoint')
+                        if vca.get('member-vnf-index') == r.get('entities')[1].get('id') \
+                                and vca.get('config_sw_installed'):
+                            to_vca_ee_id = vca.get('ee_id')
+                            to_vca_endpoint = r.get('entities')[1].get('endpoint')
+                    if from_vca_ee_id and to_vca_ee_id:
+                        # add relation
+                        await self.n2vc.add_relation(
+                            ee_id_1=from_vca_ee_id,
+                            ee_id_2=to_vca_ee_id,
+                            endpoint_1=from_vca_endpoint,
+                            endpoint_2=to_vca_endpoint)
+                        # remove entry from relations list
+                        ns_relations.remove(r)
+                    else:
+                        # check failed peers
+                        try:
+                            vca_status_list = db_nsr.get('configurationStatus')
+                            if vca_status_list:
+                                for i in range(len(vca_list)):
+                                    vca = vca_list[i]
+                                    vca_status = vca_status_list[i]
+                                    if vca.get('member-vnf-index') == r.get('entities')[0].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                                    if vca.get('member-vnf-index') == r.get('entities')[1].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                        except Exception:
+                            # ignore
+                            pass
+
+                # for each defined VNF relation, find the VCA's related
+                for r in vnf_relations:
+                    from_vca_ee_id = None
+                    to_vca_ee_id = None
+                    from_vca_endpoint = None
+                    to_vca_endpoint = None
+                    vca_list = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))
+                    for vca in vca_list:
+                        if vca.get('vdu_id') == r.get('entities')[0].get('id') and vca.get('config_sw_installed'):
+                            from_vca_ee_id = vca.get('ee_id')
+                            from_vca_endpoint = r.get('entities')[0].get('endpoint')
+                        if vca.get('vdu_id') == r.get('entities')[1].get('id') and vca.get('config_sw_installed'):
+                            to_vca_ee_id = vca.get('ee_id')
+                            to_vca_endpoint = r.get('entities')[1].get('endpoint')
+                    if from_vca_ee_id and to_vca_ee_id:
+                        # add relation
+                        await self.n2vc.add_relation(
+                            ee_id_1=from_vca_ee_id,
+                            ee_id_2=to_vca_ee_id,
+                            endpoint_1=from_vca_endpoint,
+                            endpoint_2=to_vca_endpoint)
+                        # remove entry from relations list
+                        vnf_relations.remove(r)
+                    else:
+                        # check failed peers
+                        try:
+                            vca_status_list = db_nsr.get('configurationStatus')
+                            if vca_status_list:
+                                for i in range(len(vca_list)):
+                                    vca = vca_list[i]
+                                    vca_status = vca_status_list[i]
+                                    if vca.get('vdu_id') == r.get('entities')[0].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                                    if vca.get('vdu_id') == r.get('entities')[1].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                        except Exception:
+                            # ignore
+                            pass
+
+                # wait for next try
+                await asyncio.sleep(5.0)
+
+                if not ns_relations and not vnf_relations:
+                    self.logger.debug('Relations added')
+                    break
+
+            return True
+
+        except Exception as e:
+            self.logger.warn(logging_text + ' ERROR adding relations: {}'.format(e))
+            return False
 
     async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs):
         # Launch kdus if present in the descriptor
