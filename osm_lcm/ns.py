@@ -1083,6 +1083,7 @@ class NsLcm(LcmBase):
                     element_under_configuration = "{}-{}".format(vdu_id, vdu_index or 0)
 
             # Get artifact path
+            self.fs.sync()  # Sync from FSMongo
             artifact_path = "{}/{}/charms/{}".format(
                 base_folder["folder"],
                 base_folder["pkg-dir"],
