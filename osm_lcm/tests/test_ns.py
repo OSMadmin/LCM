@@ -12,7 +12,7 @@
 # under the License.
 #
 # For those usages not covered by the Apache License, Version 2.0 please
-# contact: esousa@whitestack.com or alfonso.tiernosepulveda@telefonica.com
+# contact: alfonso.tiernosepulveda@telefonica.com
 ##
 
 

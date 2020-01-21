@@ -644,6 +644,7 @@ class ROClient:
         :return: a list with integers ["major", "minor", "release"]. Raises ROClientException on Error,
         """
         try:
+            response_text = ""
             async with aiohttp.ClientSession(loop=self.loop) as session:
                 url = "{}/version".format(self.endpoint_url)
                 self.logger.debug("RO GET %s", url)

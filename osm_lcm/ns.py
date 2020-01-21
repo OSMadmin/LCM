@@ -1102,7 +1102,7 @@ class NsLcm(LcmBase):
             # create or register execution environment in VCA
             if is_proxy_charm:
 
-                await self._write_configuration_status(
+                self._write_configuration_status(
                     nsr_id=nsr_id,
                     vca_index=vca_index,
                     status='CREATING',
@@ -1138,7 +1138,7 @@ class NsLcm(LcmBase):
                 credentials["username"] = username
                 # n2vc_redesign STEP 3.2
 
-                await self._write_configuration_status(
+                self._write_configuration_status(
                     nsr_id=nsr_id,
                     vca_index=vca_index,
                     status='REGISTERING',
@@ -1164,7 +1164,7 @@ class NsLcm(LcmBase):
 
             step = "Install configuration Software"
 
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='INSTALLING SW',
@@ -1234,7 +1234,7 @@ class NsLcm(LcmBase):
                 # NS
                 stage = 'Stage 5/5: running Day-1 primitives for NS'
 
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='EXECUTING PRIMITIVE'
@@ -1266,7 +1266,7 @@ class NsLcm(LcmBase):
             step = "instantiated at VCA"
             self.logger.debug(logging_text + step)
 
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='READY'
@@ -1274,7 +1274,7 @@ class NsLcm(LcmBase):
 
         except Exception as e:  # TODO not use Exception but N2VC exception
             # self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "FAILED"})
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='BROKEN'
@@ -1324,8 +1324,8 @@ class NsLcm(LcmBase):
         except Exception as e:
             self.logger.warn('Error writing all configuration status, ns={}: {}'.format(nsr_id, e))
 
-    async def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str,
-                                          element_under_configuration: str = None, element_type: str = None):
+    def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str,
+                                    element_under_configuration: str = None, element_type: str = None):
 
         # self.logger.debug('_write_configuration_status(): vca_index={}, status={}'
         #                   .format(vca_index, status))
@@ -1519,7 +1519,7 @@ class NsLcm(LcmBase):
             task_instantiation_list.append(task_ro)
 
             # n2vc_redesign STEP 3 to 6 Deploy N2VC
-            step = "Looking for needed vnfd to configure with proxy charm"
+            step = "Deploying proxy and native charms"
             self.logger.debug(logging_text + step)
 
             nsi_id = None  # TODO put nsi_id when this nsr belongs to a NSI
@@ -1688,17 +1688,15 @@ class NsLcm(LcmBase):
             # let's begin with VCA 'configured' status (later we can change it)
             db_nsr_update["config-status"] = "configured"
 
+            step = "Waiting for tasks to be finished"
             if task_instantiation_list:
                 # wait for all tasks completion
                 done, pending = await asyncio.wait(task_instantiation_list, timeout=timeout_ns_deploy)
 
                 for task in pending:
                     instantiated_ok = False
-                    if task == task_ro:
-                        # RO task is pending
-                        db_nsr_update["operational-status"] = "failed"
-                    elif task == task_kdu:
-                        # KDU task is pending
+                    if task in (task_ro, task_kdu):
+                        # RO or KDU task is pending
                         db_nsr_update["operational-status"] = "failed"
                     else:
                         # A N2VC task is pending
@@ -1708,11 +1706,8 @@ class NsLcm(LcmBase):
                 for task in done:
                     if task.cancelled():
                         instantiated_ok = False
-                        if task == task_ro:
-                            # RO task was cancelled
-                            db_nsr_update["operational-status"] = "failed"
-                        elif task == task_kdu:
-                            # KDU task was cancelled
+                        if task in (task_ro, task_kdu):
+                            # RO or KDU task was cancelled
                             db_nsr_update["operational-status"] = "failed"
                         else:
                             # A N2VC was cancelled
@@ -1723,11 +1718,8 @@ class NsLcm(LcmBase):
                         exc = task.exception()
                         if exc:
                             instantiated_ok = False
-                            if task == task_ro:
-                                # RO task raised an exception
-                                db_nsr_update["operational-status"] = "failed"
-                            elif task == task_kdu:
-                                # KDU task raised an exception
+                            if task in (task_ro, task_kdu):
+                                # RO or KDU task raised an exception
                                 db_nsr_update["operational-status"] = "failed"
                             else:
                                 # A N2VC task raised an exception
@@ -1746,15 +1738,15 @@ class NsLcm(LcmBase):
             if error_text_list:
                 error_text = "\n".join(error_text_list)
                 db_nsr_update["detailed-status"] = error_text
-                db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED_TEMP"
                 db_nslcmop_update["detailed-status"] = error_text
+                db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
             else:
                 # all is done
+                db_nsr_update["detailed-status"] = "done"
+                db_nslcmop_update["detailed-status"] = "done"
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
                 db_nslcmop_update["statusEnteredTime"] = time()
-                db_nslcmop_update["detailed-status"] = "done"
-                db_nsr_update["detailed-status"] = "done"
 
         except (ROclient.ROClientException, DbException, LcmException) as e:
             self.logger.error(logging_text + "Exit Exception while '{}': {}".format(step, e))
