@@ -738,6 +738,9 @@ class NsLcm(LcmBase):
         else:
             timeout_ns_deploy = self.timeout.get("ns_deploy", self.timeout_ns_deploy)
 
+        # Check for and optionally request placement optimization. Database will be updated if placement activated
+        await self.do_placement(logging_text, db_nslcmop, db_vnfrs)
+
         # deploy RO
 
         # get vnfds, instantiate at RO
@@ -1352,6 +1355,37 @@ class NsLcm(LcmBase):
         except Exception as e:
             self.logger.warn('Error writing configuration status={}, ns={}, vca_index={}: {}'
                              .format(status, nsr_id, vca_index, e))
+
+    async def do_placement(self, logging_text, db_nslcmop, db_vnfrs):
+        placement_engine = deep_get(db_nslcmop, ('operationParams', 'placement-engine'))
+        if placement_engine == "PLA":
+            self.logger.debug(logging_text + "Invoke placement optimization for nslcmopId={}".format(db_nslcmop['id']))
+            await self.msg.aiowrite("pla", "get_placement", {'nslcmopId': db_nslcmop['_id']}, loop=self.loop)
+            db_poll_interval = 5
+            wait = db_poll_interval * 4
+            pla_result = None
+            while not pla_result and wait >= 0:
+                await asyncio.sleep(db_poll_interval)
+                wait -= db_poll_interval
+                db_nslcmop = self.db.get_one("nslcmops", {"_id": db_nslcmop["_id"]})
+                pla_result = deep_get(db_nslcmop, ('_admin', 'pla'))
+
+            if not pla_result:
+                raise LcmException("Placement timeout for nslcmopId={}".format(db_nslcmop['id']))
+
+            for pla_vnf in pla_result['vnf']:
+                vnfr = db_vnfrs.get(pla_vnf['member-vnf-index'])
+                if not pla_vnf.get('vimAccountId') or not vnfr:
+                    continue
+                self.db.set_one("vnfrs", {"_id": vnfr["_id"]}, {"vim-account-id": pla_vnf['vimAccountId']})
+        return
+
+    def update_nsrs_with_pla_result(self, params):
+        try:
+            nslcmop_id = deep_get(params, ('placement', 'nslcmopId'))
+            self.update_db_2("nslcmops", nslcmop_id, {"_admin.pla": params.get('placement')})
+        except Exception as e:
+            self.logger.warn('Update failed for nslcmop_id={}:{}'.format(nslcmop_id, e))
 
     async def instantiate(self, nsr_id, nslcmop_id):
         """

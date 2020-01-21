@@ -286,6 +286,10 @@ class Lcm:
                 except Exception as e:
                     self.logger.error("Cannot write into '{}' for healthcheck: {}".format(health_check_file, e))
             return
+        elif topic == "pla":
+            if command == "placement":
+                self.ns.update_nsrs_with_pla_result(params)
+            return
         elif topic == "k8scluster":
             if command == "create" or command == "created":
                 k8scluster_id = params.get("_id")
@@ -463,7 +467,7 @@ class Lcm:
         self.first_start = True
         while self.consecutive_errors < 10:
             try:
-                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi", "k8scluster", "k8srepo")
+                topics = ("ns", "vim_account", "wim_account", "sdn", "nsi", "k8scluster", "k8srepo", "pla")
                 topics_admin = ("admin", )
                 await asyncio.gather(
                     self.msg.aioread(topics, self.loop, self.kafka_read_callback),
