@@ -2080,32 +2080,33 @@ class NsLcm(LcmBase):
 
                     pending_tasks[task] = "_admin.deployed.K8s.{}.".format(index)
                     index += 1
-            if not pending_tasks:
-                return
-            self.logger.debug(logging_text + 'Waiting for terminate pending tasks...')
-            pending_list = list(pending_tasks.keys())
-            while pending_list:
-                done_list, pending_list = await asyncio.wait(pending_list, timeout=30*60,
-                                                             return_when=asyncio.FIRST_COMPLETED)
-                if not done_list:   # timeout
-                    for task in pending_list:
-                        db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
-                        deployed_ok = False
-                    break
-                for task in done_list:
-                    exc = task.exception()
-                    if exc:
-                        db_nsr_update[pending_tasks[task] + "detailed-status"] = "{}".format(exc)
-                        deployed_ok = False
-                    else:
-                        db_nsr_update[pending_tasks[task] + "kdu-instance"] = task.result()
+
+            if pending_tasks:
+                self.logger.debug(logging_text + 'Waiting for terminate pending tasks...')
+                pending_list = list(pending_tasks.keys())
+                while pending_list:
+                    done_list, pending_list = await asyncio.wait(pending_list, timeout=30*60,
+                                                                 return_when=asyncio.FIRST_COMPLETED)
+                    if not done_list:   # timeout
+                        for task in pending_list:
+                            db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
+                            deployed_ok = False
+                        break
+                    for task in done_list:
+                        exc = task.exception()
+                        if exc:
+                            db_nsr_update[pending_tasks[task] + "detailed-status"] = "{}".format(exc)
+                            deployed_ok = False
+                        else:
+                            db_nsr_update[pending_tasks[task] + "kdu-instance"] = task.result()
 
             if not deployed_ok:
                 raise LcmException('Cannot deploy KDUs')
 
         except Exception as e:
-            self.logger.critical(logging_text + "Exit Exception {} while '{}': {}".format(type(e).__name__, step, e))
-            raise LcmException("{} Exit Exception {} while '{}': {}".format(logging_text, type(e).__name__, step, e))
+            msg = "{} Exit Exception {} while '{}': {}".format(logging_text, type(e).__name__, step, e)
+            self.logger.error(msg)
+            raise LcmException(msg)
         finally:
             if db_nsr_update:
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
