@@ -475,11 +475,13 @@ class TestMyNS(asynctest.TestCase):
         db_nsr = self.db.get_list("nsrs")[1]
         db_vnfr = self.db.get_list("vnfrs")[2]
         db_vnfrs = {"multikdu": db_vnfr}
+        db_vnfd = self.db.get_list("vnfds")[1]
+        db_vnfds = {db_vnfd["_id"]: db_vnfd}
         nsr_id = db_nsr["_id"]
         # nslcmop_id = self.db.get_list("nslcmops")[1]["_id"]
         logging_text = "KDU"
         self.my_ns.k8sclusterhelm.install = asynctest.CoroutineMock(return_value="k8s_id")
-        await self.my_ns.deploy_kdus(logging_text, nsr_id, db_nsr, db_vnfrs)
+        await self.my_ns.deploy_kdus(logging_text, nsr_id, db_nsr, db_vnfrs, db_vnfds)
         db_nsr = self.db.get_list("nsrs")[1]
         self.assertIn("K8s", db_nsr["_admin"]["deployed"], "K8s entry not created at '_admin.deployed'")
         self.assertIsInstance(db_nsr["_admin"]["deployed"]["K8s"], list, "K8s entry is not of type list")

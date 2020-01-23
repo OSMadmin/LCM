@@ -1500,6 +1500,7 @@ class NsLcm(LcmBase):
                     nsr_id=nsr_id,
                     db_nsr=db_nsr,
                     db_vnfrs=db_vnfrs,
+                    db_vnfds=db_vnfds
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDUs", task_kdu)
@@ -1986,7 +1987,7 @@ class NsLcm(LcmBase):
             self.logger.warn(logging_text + ' ERROR adding relations: {}'.format(e))
             return False
 
-    async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs):
+    async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs, db_vnfds):
         # Launch kdus if present in the descriptor
 
         deployed_ok = True
@@ -2022,6 +2023,8 @@ class NsLcm(LcmBase):
                     k8sclustertype = None
                     error_text = None
                     cluster_uuid = None
+                    vnfd_id = vnfr_data.get('vnfd-id')
+                    pkgdir = deep_get(db_vnfds.get(vnfd_id), ('_admin', 'storage', 'pkg-dir'))
                     if kdur.get("helm-chart"):
                         kdumodel = kdur["helm-chart"]
                         k8sclustertype = "chart"
@@ -2033,6 +2036,15 @@ class NsLcm(LcmBase):
                     else:
                         error_text = "kdu type is neither helm-chart nor juju-bundle. Maybe an old NBI version is" \
                                      " running"
+                    # check if kdumodel is a file and exists
+                    try:
+                        # path format: /vnfdid/pkkdir/kdumodel
+                        filename = '{}/{}/{}s/{}'.format(vnfd_id, pkgdir, k8sclustertype_full, kdumodel)
+                        if self.fs.file_exists(filename, mode='file') or self.fs.file_exists(filename, mode='dir'):
+                            kdumodel = self.fs.path + filename
+                    except Exception:
+                        # it is not a file
+                        pass
                     try:
                         if not error_text:
                             cluster_uuid = _get_cluster_id(kdur["k8s-cluster"]["id"], k8sclustertype_full)
