@@ -1102,7 +1102,7 @@ class NsLcm(LcmBase):
             # create or register execution environment in VCA
             if is_proxy_charm:
 
-                await self._write_configuration_status(
+                self._write_configuration_status(
                     nsr_id=nsr_id,
                     vca_index=vca_index,
                     status='CREATING',
@@ -1138,7 +1138,7 @@ class NsLcm(LcmBase):
                 credentials["username"] = username
                 # n2vc_redesign STEP 3.2
 
-                await self._write_configuration_status(
+                self._write_configuration_status(
                     nsr_id=nsr_id,
                     vca_index=vca_index,
                     status='REGISTERING',
@@ -1164,7 +1164,7 @@ class NsLcm(LcmBase):
 
             step = "Install configuration Software"
 
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='INSTALLING SW',
@@ -1175,6 +1175,12 @@ class NsLcm(LcmBase):
             # TODO check if already done
             self.logger.debug(logging_text + step)
             await self.n2vc.install_configuration_sw(ee_id=ee_id, artifact_path=artifact_path, db_dict=db_dict)
+
+            # write in db flag of configuration_sw already installed
+            self.update_db_2("nsrs", nsr_id, {db_update_entry + "config_sw_installed": True})
+
+            # add relations for this VCA (wait for other peers related with this VCA)
+            await self._add_vca_relations(logging_text=logging_text, nsr_id=nsr_id, vca_index=vca_index)
 
             # if SSH access is required, then get execution environment SSH public
             if is_proxy_charm:  # if native charm we have waited already to VM be UP
@@ -1209,10 +1215,13 @@ class NsLcm(LcmBase):
             initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
 
             # sort initial config primitives by 'seq'
-            try:
-                initial_config_primitive_list.sort(key=lambda val: int(val['seq']))
-            except Exception as e:
-                self.logger.error(logging_text + step + ": " + str(e))
+            if initial_config_primitive_list:
+                try:
+                    initial_config_primitive_list.sort(key=lambda val: int(val['seq']))
+                except Exception as e:
+                    self.logger.error(logging_text + step + ": " + str(e))
+            else:
+                self.logger.debug(logging_text + step + ": No initial-config-primitive")
 
             # add config if not present for NS charm
             initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
@@ -1234,7 +1243,7 @@ class NsLcm(LcmBase):
                 # NS
                 stage = 'Stage 5/5: running Day-1 primitives for NS'
 
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='EXECUTING PRIMITIVE'
@@ -1266,7 +1275,7 @@ class NsLcm(LcmBase):
             step = "instantiated at VCA"
             self.logger.debug(logging_text + step)
 
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='READY'
@@ -1274,7 +1283,7 @@ class NsLcm(LcmBase):
 
         except Exception as e:  # TODO not use Exception but N2VC exception
             # self.update_db_2("nsrs", nsr_id, {db_update_entry + "instantiation": "FAILED"})
-            await self._write_configuration_status(
+            self._write_configuration_status(
                 nsr_id=nsr_id,
                 vca_index=vca_index,
                 status='BROKEN'
@@ -1324,8 +1333,8 @@ class NsLcm(LcmBase):
         except Exception as e:
             self.logger.warn('Error writing all configuration status, ns={}: {}'.format(nsr_id, e))
 
-    async def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str,
-                                          element_under_configuration: str = None, element_type: str = None):
+    def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str = None,
+                                    element_under_configuration: str = None, element_type: str = None):
 
         # self.logger.debug('_write_configuration_status(): vca_index={}, status={}'
         #                   .format(vca_index, status))
@@ -1333,7 +1342,8 @@ class NsLcm(LcmBase):
         try:
             db_path = 'configurationStatus.{}.'.format(vca_index)
             db_dict = dict()
-            db_dict[db_path + 'status'] = status
+            if status:
+                db_dict[db_path + 'status'] = status
             if element_under_configuration:
                 db_dict[db_path + 'elementUnderConfiguration'] = element_under_configuration
             if element_type:
@@ -1437,7 +1447,7 @@ class NsLcm(LcmBase):
                 vnfd_ref = vnfr["vnfd-ref"]                     # vnfd name for this vnf
                 # if we haven't this vnfd, read it from db
                 if vnfd_id not in db_vnfds:
-                    # read from cb
+                    # read from db
                     step = "Getting vnfd={} id='{}' from db".format(vnfd_id, vnfd_ref)
                     self.logger.debug(logging_text + step)
                     vnfd = self.db.get_one("vnfds", {"_id": vnfd_id})
@@ -1490,6 +1500,7 @@ class NsLcm(LcmBase):
                     nsr_id=nsr_id,
                     db_nsr=db_nsr,
                     db_vnfrs=db_vnfrs,
+                    db_vnfds=db_vnfds
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDUs", task_kdu)
@@ -1519,7 +1530,7 @@ class NsLcm(LcmBase):
             task_instantiation_list.append(task_ro)
 
             # n2vc_redesign STEP 3 to 6 Deploy N2VC
-            step = "Looking for needed vnfd to configure with proxy charm"
+            step = "Deploying proxy and native charms"
             self.logger.debug(logging_text + step)
 
             nsi_id = None  # TODO put nsi_id when this nsr belongs to a NSI
@@ -1688,17 +1699,15 @@ class NsLcm(LcmBase):
             # let's begin with VCA 'configured' status (later we can change it)
             db_nsr_update["config-status"] = "configured"
 
+            step = "Waiting for tasks to be finished"
             if task_instantiation_list:
                 # wait for all tasks completion
                 done, pending = await asyncio.wait(task_instantiation_list, timeout=timeout_ns_deploy)
 
                 for task in pending:
                     instantiated_ok = False
-                    if task == task_ro:
-                        # RO task is pending
-                        db_nsr_update["operational-status"] = "failed"
-                    elif task == task_kdu:
-                        # KDU task is pending
+                    if task in (task_ro, task_kdu):
+                        # RO or KDU task is pending
                         db_nsr_update["operational-status"] = "failed"
                     else:
                         # A N2VC task is pending
@@ -1708,11 +1717,8 @@ class NsLcm(LcmBase):
                 for task in done:
                     if task.cancelled():
                         instantiated_ok = False
-                        if task == task_ro:
-                            # RO task was cancelled
-                            db_nsr_update["operational-status"] = "failed"
-                        elif task == task_kdu:
-                            # KDU task was cancelled
+                        if task in (task_ro, task_kdu):
+                            # RO or KDU task was cancelled
                             db_nsr_update["operational-status"] = "failed"
                         else:
                             # A N2VC was cancelled
@@ -1723,11 +1729,8 @@ class NsLcm(LcmBase):
                         exc = task.exception()
                         if exc:
                             instantiated_ok = False
-                            if task == task_ro:
-                                # RO task raised an exception
-                                db_nsr_update["operational-status"] = "failed"
-                            elif task == task_kdu:
-                                # KDU task raised an exception
+                            if task in (task_ro, task_kdu):
+                                # RO or KDU task raised an exception
                                 db_nsr_update["operational-status"] = "failed"
                             else:
                                 # A N2VC task raised an exception
@@ -1746,15 +1749,15 @@ class NsLcm(LcmBase):
             if error_text_list:
                 error_text = "\n".join(error_text_list)
                 db_nsr_update["detailed-status"] = error_text
-                db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED_TEMP"
                 db_nslcmop_update["detailed-status"] = error_text
+                db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
                 db_nslcmop_update["statusEnteredTime"] = time()
             else:
                 # all is done
+                db_nsr_update["detailed-status"] = "done"
+                db_nslcmop_update["detailed-status"] = "done"
                 db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
                 db_nslcmop_update["statusEnteredTime"] = time()
-                db_nslcmop_update["detailed-status"] = "done"
-                db_nsr_update["detailed-status"] = "done"
 
         except (ROclient.ROClientException, DbException, LcmException) as e:
             self.logger.error(logging_text + "Exit Exception while '{}': {}".format(step, e))
@@ -1824,7 +1827,167 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + "Exit")
             self.lcm_tasks.remove("ns", nsr_id, nslcmop_id, "ns_instantiate")
 
-    async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs):
+    async def _add_vca_relations(self, logging_text, nsr_id, vca_index: int, timeout: int = 3600) -> bool:
+
+        # steps:
+        # 1. find all relations for this VCA
+        # 2. wait for other peers related
+        # 3. add relations
+
+        try:
+
+            # STEP 1: find all relations for this VCA
+
+            # read nsr record
+            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+
+            # this VCA data
+            my_vca = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))[vca_index]
+
+            # read all ns-configuration relations
+            ns_relations = list()
+            db_ns_relations = deep_get(db_nsr, ('nsd', 'ns-configuration', 'relation'))
+            if db_ns_relations:
+                for r in db_ns_relations:
+                    # check if this VCA is in the relation
+                    if my_vca.get('member-vnf-index') in\
+                            (r.get('entities')[0].get('id'), r.get('entities')[1].get('id')):
+                        ns_relations.append(r)
+
+            # read all vnf-configuration relations
+            vnf_relations = list()
+            db_vnfd_list = db_nsr.get('vnfd-id')
+            if db_vnfd_list:
+                for vnfd in db_vnfd_list:
+                    db_vnfd = self.db.get_one("vnfds", {"_id": vnfd})
+                    db_vnf_relations = deep_get(db_vnfd, ('vnf-configuration', 'relation'))
+                    if db_vnf_relations:
+                        for r in db_vnf_relations:
+                            # check if this VCA is in the relation
+                            if my_vca.get('vdu_id') in (r.get('entities')[0].get('id'), r.get('entities')[1].get('id')):
+                                vnf_relations.append(r)
+
+            # if no relations, terminate
+            if not ns_relations and not vnf_relations:
+                self.logger.debug(logging_text + ' No relations')
+                return True
+
+            self.logger.debug(logging_text + ' adding relations\n    {}\n    {}'.format(ns_relations, vnf_relations))
+
+            # add all relations
+            start = time()
+            while True:
+                # check timeout
+                now = time()
+                if now - start >= timeout:
+                    self.logger.error(logging_text + ' : timeout adding relations')
+                    return False
+
+                # reload nsr from database (we need to update record: _admin.deloyed.VCA)
+                db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+
+                # for each defined NS relation, find the VCA's related
+                for r in ns_relations:
+                    from_vca_ee_id = None
+                    to_vca_ee_id = None
+                    from_vca_endpoint = None
+                    to_vca_endpoint = None
+                    vca_list = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))
+                    for vca in vca_list:
+                        if vca.get('member-vnf-index') == r.get('entities')[0].get('id') \
+                                and vca.get('config_sw_installed'):
+                            from_vca_ee_id = vca.get('ee_id')
+                            from_vca_endpoint = r.get('entities')[0].get('endpoint')
+                        if vca.get('member-vnf-index') == r.get('entities')[1].get('id') \
+                                and vca.get('config_sw_installed'):
+                            to_vca_ee_id = vca.get('ee_id')
+                            to_vca_endpoint = r.get('entities')[1].get('endpoint')
+                    if from_vca_ee_id and to_vca_ee_id:
+                        # add relation
+                        await self.n2vc.add_relation(
+                            ee_id_1=from_vca_ee_id,
+                            ee_id_2=to_vca_ee_id,
+                            endpoint_1=from_vca_endpoint,
+                            endpoint_2=to_vca_endpoint)
+                        # remove entry from relations list
+                        ns_relations.remove(r)
+                    else:
+                        # check failed peers
+                        try:
+                            vca_status_list = db_nsr.get('configurationStatus')
+                            if vca_status_list:
+                                for i in range(len(vca_list)):
+                                    vca = vca_list[i]
+                                    vca_status = vca_status_list[i]
+                                    if vca.get('member-vnf-index') == r.get('entities')[0].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                                    if vca.get('member-vnf-index') == r.get('entities')[1].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                        except Exception:
+                            # ignore
+                            pass
+
+                # for each defined VNF relation, find the VCA's related
+                for r in vnf_relations:
+                    from_vca_ee_id = None
+                    to_vca_ee_id = None
+                    from_vca_endpoint = None
+                    to_vca_endpoint = None
+                    vca_list = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))
+                    for vca in vca_list:
+                        if vca.get('vdu_id') == r.get('entities')[0].get('id') and vca.get('config_sw_installed'):
+                            from_vca_ee_id = vca.get('ee_id')
+                            from_vca_endpoint = r.get('entities')[0].get('endpoint')
+                        if vca.get('vdu_id') == r.get('entities')[1].get('id') and vca.get('config_sw_installed'):
+                            to_vca_ee_id = vca.get('ee_id')
+                            to_vca_endpoint = r.get('entities')[1].get('endpoint')
+                    if from_vca_ee_id and to_vca_ee_id:
+                        # add relation
+                        await self.n2vc.add_relation(
+                            ee_id_1=from_vca_ee_id,
+                            ee_id_2=to_vca_ee_id,
+                            endpoint_1=from_vca_endpoint,
+                            endpoint_2=to_vca_endpoint)
+                        # remove entry from relations list
+                        vnf_relations.remove(r)
+                    else:
+                        # check failed peers
+                        try:
+                            vca_status_list = db_nsr.get('configurationStatus')
+                            if vca_status_list:
+                                for i in range(len(vca_list)):
+                                    vca = vca_list[i]
+                                    vca_status = vca_status_list[i]
+                                    if vca.get('vdu_id') == r.get('entities')[0].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                                    if vca.get('vdu_id') == r.get('entities')[1].get('id'):
+                                        if vca_status.get('status') == 'BROKEN':
+                                            # peer broken: remove relation from list
+                                            ns_relations.remove(r)
+                        except Exception:
+                            # ignore
+                            pass
+
+                # wait for next try
+                await asyncio.sleep(5.0)
+
+                if not ns_relations and not vnf_relations:
+                    self.logger.debug('Relations added')
+                    break
+
+            return True
+
+        except Exception as e:
+            self.logger.warn(logging_text + ' ERROR adding relations: {}'.format(e))
+            return False
+
+    async def deploy_kdus(self, logging_text, nsr_id, db_nsr, db_vnfrs, db_vnfds):
         # Launch kdus if present in the descriptor
 
         deployed_ok = True
@@ -1860,6 +2023,8 @@ class NsLcm(LcmBase):
                     k8sclustertype = None
                     error_text = None
                     cluster_uuid = None
+                    vnfd_id = vnfr_data.get('vnfd-id')
+                    pkgdir = deep_get(db_vnfds.get(vnfd_id), ('_admin', 'storage', 'pkg-dir'))
                     if kdur.get("helm-chart"):
                         kdumodel = kdur["helm-chart"]
                         k8sclustertype = "chart"
@@ -1871,6 +2036,15 @@ class NsLcm(LcmBase):
                     else:
                         error_text = "kdu type is neither helm-chart nor juju-bundle. Maybe an old NBI version is" \
                                      " running"
+                    # check if kdumodel is a file and exists
+                    try:
+                        # path format: /vnfdid/pkkdir/kdumodel
+                        filename = '{}/{}/{}s/{}'.format(vnfd_id, pkgdir, k8sclustertype_full, kdumodel)
+                        if self.fs.file_exists(filename, mode='file') or self.fs.file_exists(filename, mode='dir'):
+                            kdumodel = self.fs.path + filename
+                    except Exception:
+                        # it is not a file
+                        pass
                     try:
                         if not error_text:
                             cluster_uuid = _get_cluster_id(kdur["k8s-cluster"]["id"], k8sclustertype_full)
@@ -1906,32 +2080,33 @@ class NsLcm(LcmBase):
 
                     pending_tasks[task] = "_admin.deployed.K8s.{}.".format(index)
                     index += 1
-            if not pending_tasks:
-                return
-            self.logger.debug(logging_text + 'Waiting for terminate pending tasks...')
-            pending_list = list(pending_tasks.keys())
-            while pending_list:
-                done_list, pending_list = await asyncio.wait(pending_list, timeout=30*60,
-                                                             return_when=asyncio.FIRST_COMPLETED)
-                if not done_list:   # timeout
-                    for task in pending_list:
-                        db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
-                        deployed_ok = False
-                    break
-                for task in done_list:
-                    exc = task.exception()
-                    if exc:
-                        db_nsr_update[pending_tasks[task] + "detailed-status"] = "{}".format(exc)
-                        deployed_ok = False
-                    else:
-                        db_nsr_update[pending_tasks[task] + "kdu-instance"] = task.result()
+
+            if pending_tasks:
+                self.logger.debug(logging_text + 'Waiting for terminate pending tasks...')
+                pending_list = list(pending_tasks.keys())
+                while pending_list:
+                    done_list, pending_list = await asyncio.wait(pending_list, timeout=30*60,
+                                                                 return_when=asyncio.FIRST_COMPLETED)
+                    if not done_list:   # timeout
+                        for task in pending_list:
+                            db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
+                            deployed_ok = False
+                        break
+                    for task in done_list:
+                        exc = task.exception()
+                        if exc:
+                            db_nsr_update[pending_tasks[task] + "detailed-status"] = "{}".format(exc)
+                            deployed_ok = False
+                        else:
+                            db_nsr_update[pending_tasks[task] + "kdu-instance"] = task.result()
 
             if not deployed_ok:
                 raise LcmException('Cannot deploy KDUs')
 
         except Exception as e:
-            self.logger.critical(logging_text + "Exit Exception {} while '{}': {}".format(type(e).__name__, step, e))
-            raise LcmException("{} Exit Exception {} while '{}': {}".format(logging_text, type(e).__name__, step, e))
+            msg = "{} Exit Exception {} while '{}': {}".format(logging_text, type(e).__name__, step, e)
+            self.logger.error(msg)
+            raise LcmException(msg)
         finally:
             if db_nsr_update:
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
