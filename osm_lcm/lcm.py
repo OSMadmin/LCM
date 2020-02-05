@@ -612,7 +612,7 @@ def health_check():
             with open(health_check_file, "r") as f:
                 last_received_ping = f.read()
 
-            if time() - float(last_received_ping) < Lcm.ping_interval_pace + 10:
+            if time() - float(last_received_ping) < 2 * Lcm.ping_interval_pace:  # allow one ping not received every two
                 exit(0)
         except Exception:
             pass
@@ -624,7 +624,7 @@ def health_check():
 if __name__ == '__main__':
 
     try:
-        print("SYS.PATH='{}'".format(sys.path))
+        # print("SYS.PATH='{}'".format(sys.path))
         # load parameters and configuration
         # -h
         # -c value
