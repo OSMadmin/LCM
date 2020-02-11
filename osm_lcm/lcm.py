@@ -34,7 +34,7 @@ from osm_lcm import vim_sdn
 from osm_lcm import netslice
 from osm_lcm import ROclient
 
-from time import time, sleep
+from time import time
 from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
 from osm_lcm import version as lcm_version, version_date as lcm_version_date
 
@@ -608,23 +608,6 @@ def usage():
     # --log-socket-port PORT: send logs using this port (default: 9022)")
 
 
-def health_check():
-    retry = 2
-    while retry:
-        retry -= 1
-        try:
-            with open(health_check_file, "r") as f:
-                last_received_ping = f.read()
-
-            if time() - float(last_received_ping) < 2 * Lcm.ping_interval_pace:  # allow one ping not received every two
-                exit(0)
-        except Exception:
-            pass
-        if retry:
-            sleep(6)
-    exit(1)
-
-
 if __name__ == '__main__':
 
     try:
@@ -645,7 +628,8 @@ if __name__ == '__main__':
             elif o in ("-c", "--config"):
                 config_file = a
             elif o == "--health-check":
-                health_check()
+                from osm_lcm.lcm_hc import health_check
+                health_check(health_check_file, Lcm.ping_interval_pace)
             # elif o == "--log-socket-port":
             #     log_socket_port = a
             # elif o == "--log-socket-host":
