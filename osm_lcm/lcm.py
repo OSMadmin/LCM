@@ -314,7 +314,7 @@ class Lcm:
                 self.lcm_tasks.register("k8srepo", k8srepo_id, order_id, "k8srepo_delete", task)
                 return
         elif topic == "ns":
-            if command == "instantiate" or command == "instantiated":
+            if command == "instantiate":
                 # self.logger.debug("Deploying NS {}".format(nsr_id))
                 nslcmop = params
                 nslcmop_id = nslcmop["_id"]
@@ -322,7 +322,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.ns.instantiate(nsr_id, nslcmop_id))
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
                 return
-            elif command == "terminate" or command == "terminated":
+            elif command == "terminate":
                 # self.logger.debug("Deleting NS {}".format(nsr_id))
                 nslcmop = params
                 nslcmop_id = nslcmop["_id"]
@@ -365,7 +365,7 @@ class Lcm:
             elif command in ("terminated", "instantiated", "scaled", "actioned"):  # "scaled-cooldown-time"
                 return
         elif topic == "nsi":  # netslice LCM processes (instantiate, terminate, etc)
-            if command == "instantiate" or command == "instantiated":
+            if command == "instantiate":
                 # self.logger.debug("Instantiating Network Slice {}".format(nsilcmop["netsliceInstanceId"]))
                 nsilcmop = params
                 nsilcmop_id = nsilcmop["_id"]  # slice operation id
@@ -373,7 +373,7 @@ class Lcm:
                 task = asyncio.ensure_future(self.netslice.instantiate(nsir_id, nsilcmop_id))
                 self.lcm_tasks.register("nsi", nsir_id, nsilcmop_id, "nsi_instantiate", task)
                 return
-            elif command == "terminate" or command == "terminated":
+            elif command == "terminate":
                 # self.logger.debug("Terminating Network Slice NS {}".format(nsilcmop["netsliceInstanceId"]))
                 nsilcmop = params
                 nsilcmop_id = nsilcmop["_id"]  # slice operation id
@@ -616,7 +616,7 @@ def health_check():
             with open(health_check_file, "r") as f:
                 last_received_ping = f.read()
 
-            if time() - float(last_received_ping) < Lcm.ping_interval_pace + 10:
+            if time() - float(last_received_ping) < 2 * Lcm.ping_interval_pace:  # allow one ping not received every two
                 exit(0)
         except Exception:
             pass
@@ -628,7 +628,7 @@ def health_check():
 if __name__ == '__main__':
 
     try:
-        print("SYS.PATH='{}'".format(sys.path))
+        # print("SYS.PATH='{}'".format(sys.path))
         # load parameters and configuration
         # -h
         # -c value
