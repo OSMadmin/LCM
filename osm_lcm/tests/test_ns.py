@@ -25,7 +25,7 @@ from osm_common.dbmemory import DbMemory
 from osm_common.msgkafka import MsgKafka
 from osm_common.fslocal import FsLocal
 from osm_lcm.lcm_utils import TaskRegistry
-# from osm_lcm.ROclient import ROClient
+from osm_lcm.ROclient import ROClient
 from uuid import uuid4
 # from asynctest.mock import patch
 
@@ -200,6 +200,7 @@ class TestMyNS(asynctest.TestCase):
             self.my_ns.n2vc.GetPrimitiveStatus = asynctest.CoroutineMock(return_value="completed")
             self.my_ns.n2vc.GetPrimitiveOutput = asynctest.CoroutineMock(return_value={"result": "ok",
                                                                                        "pubkey": pub_key})
+            self.my_ns.n2vc.delete_execution_environment = asynctest.CoroutineMock(return_value=None)
             self.my_ns.n2vc.get_public_key = asynctest.CoroutineMock(
                 return_value=getenv("OSMLCM_VCA_PUBKEY", "public_key"))
             self.my_ns.n2vc.delete_namespace = asynctest.CoroutineMock(return_value=None)
@@ -484,22 +485,24 @@ class TestMyNS(asynctest.TestCase):
 
     async def test_deploy_kdus(self):
         nsr_id = descriptors.test_ids["TEST-KDU"]["ns"]
-        # nslcmop_id = descriptors.test_ids["TEST-KDU"]["instantiate"]
+        nslcmop_id = descriptors.test_ids["TEST-KDU"]["instantiate"]
         db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
         db_vnfr = self.db.get_one("vnfrs", {"nsr-id-ref": nsr_id, "member-vnf-index-ref": "multikdu"})
         db_vnfrs = {"multikdu": db_vnfr}
         db_vnfd = self.db.get_one("vnfds", {"_id": db_vnfr["vnfd-id"]})
         db_vnfds = {db_vnfd["_id"]: db_vnfd}
+        task_register = {}
         logging_text = "KDU"
         self.my_ns.k8sclusterhelm.install = asynctest.CoroutineMock(return_value="k8s_id")
         self.my_ns.k8sclusterhelm.synchronize_repos = asynctest.CoroutineMock(return_value=("", ""))
-        await self.my_ns.deploy_kdus(logging_text, nsr_id, db_nsr, db_vnfrs, db_vnfds)
+        await self.my_ns.deploy_kdus(logging_text, nsr_id, nslcmop_id, db_vnfrs, db_vnfds, task_register)
+        await asyncio.wait(list(task_register.keys()), timeout=100)
         db_nsr = self.db.get_list("nsrs")[1]
         self.assertIn("K8s", db_nsr["_admin"]["deployed"], "K8s entry not created at '_admin.deployed'")
         self.assertIsInstance(db_nsr["_admin"]["deployed"]["K8s"], list, "K8s entry is not of type list")
         self.assertEqual(len(db_nsr["_admin"]["deployed"]["K8s"]), 2, "K8s entry is not of type list")
-        k8s_instace_info = {"kdu-instance": "k8s_id", "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
-                            "k8scluster-type": "chart",
+        k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
+                            "k8scluster-type": "helm-chart",
                             "kdu-name": "ldap", "kdu-model": "stable/openldap:1.2.1"}
 
         self.assertEqual(db_nsr["_admin"]["deployed"]["K8s"][0], k8s_instace_info)
@@ -529,6 +532,58 @@ class TestMyNS(asynctest.TestCase):
         await self.my_ns.instantiate(nsr_id, nslcmop_id)
         db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
         self.assertEqual(db_nsr.get("nsState"), "READY", str(db_nsr.get("errorDescription ")))
+        self.assertEqual(db_nsr.get("currentOperation"), "IDLE", "currentOperation different than 'IDLE'")
+        self.assertEqual(db_nsr.get("currentOperationID"), None, "currentOperationID different than None")
+        self.assertEqual(db_nsr.get("errorDescription "), None, "errorDescription different than None")
+        self.assertEqual(db_nsr.get("errorDetail"), None, "errorDetail different than None")
+
+    @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
+    async def test_terminate_without_configuration(self):
+        nsr_id = descriptors.test_ids["TEST-A"]["ns"]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["terminate"]
+        # set instantiation task as completed
+        self.db.set_list("nslcmops", {"nsInstanceId": nsr_id, "_id.ne": nslcmop_id},
+                         update_dict={"operationState": "COMPLETED"})
+        self.my_ns.RO.show = asynctest.CoroutineMock(ROClient.show, side_effect=self._ro_show(delete=nslcmop_id))
+        self.db.set_one("nsrs", {"_id": nsr_id},
+                        update_dict={"_admin.deployed.VCA.0": None, "_admin.deployed.VCA.1": None})
+
+        await self.my_ns.terminate(nsr_id, nslcmop_id)
+        db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
+        self.assertEqual(db_nslcmop.get("operationState"), 'COMPLETED', db_nslcmop.get("detailed-status"))
+        db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+        self.assertEqual(db_nsr.get("nsState"), "NOT_INSTANTIATED", str(db_nsr.get("errorDescription ")))
+        self.assertEqual(db_nsr["_admin"].get("nsState"), "NOT_INSTANTIATED", str(db_nsr.get("errorDescription ")))
+        self.assertEqual(db_nsr.get("currentOperation"), "IDLE", "currentOperation different than 'IDLE'")
+        self.assertEqual(db_nsr.get("currentOperationID"), None, "currentOperationID different than None")
+        self.assertEqual(db_nsr.get("errorDescription "), None, "errorDescription different than None")
+        self.assertEqual(db_nsr.get("errorDetail"), None, "errorDetail different than None")
+
+    @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
+    async def test_terminate_primitive(self):
+        nsr_id = descriptors.test_ids["TEST-A"]["ns"]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["terminate"]
+        self.my_ns.RO.show = asynctest.CoroutineMock(ROClient.show, side_effect=self._ro_show(delete=nslcmop_id))
+        # set instantiation task as completed
+        self.db.set_list("nslcmops", {"nsInstanceId": nsr_id, "_id.ne": nslcmop_id},
+                         update_dict={"operationState": "COMPLETED"})
+
+        # modify vnfd descriptor to include terminate_primitive
+        terminate_primitive = [{
+            "name": "touch",
+            "parameter": [{"name": "filename", "value": "terminate_filename"}],
+            "seq": '1'
+        }]
+        db_vnfr = self.db.get_one("vnfrs", {"nsr-id-ref": nsr_id, "member-vnf-index-ref": "1"})
+        self.db.set_one("vnfds", {"_id": db_vnfr["vnfd-id"]},
+                        {"vnf-configuration.terminate-config-primitive": terminate_primitive})
+
+        await self.my_ns.terminate(nsr_id, nslcmop_id)
+        db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
+        self.assertEqual(db_nslcmop.get("operationState"), 'COMPLETED', db_nslcmop.get("detailed-status"))
+        db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+        self.assertEqual(db_nsr.get("nsState"), "NOT_INSTANTIATED", str(db_nsr.get("errorDescription ")))
+        self.assertEqual(db_nsr["_admin"].get("nsState"), "NOT_INSTANTIATED", str(db_nsr.get("errorDescription ")))
         self.assertEqual(db_nsr.get("currentOperation"), "IDLE", "currentOperation different than 'IDLE'")
         self.assertEqual(db_nsr.get("currentOperationID"), None, "currentOperationID different than None")
         self.assertEqual(db_nsr.get("errorDescription "), None, "errorDescription different than None")

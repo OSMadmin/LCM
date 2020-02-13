@@ -237,6 +237,8 @@ db_nsrs_text = """
                     member-vnf-index: '2'
             VCA:
             -   application: alf-b-aa
+                ee_id: f48163a6-c807-47bc-9682-f72caef5af85.alf-b-aa
+                needed_terminate: True
                 detailed-status: Ready!
                 member-vnf-index: '1'
                 model: f48163a6-c807-47bc-9682-f72caef5af85
@@ -249,6 +251,8 @@ db_nsrs_text = """
                 vdu_name: null
                 vnfd_id: hackfest3charmed-vnf
             -   application: alf-c-ab
+                ee_id: f48163a6-c807-47bc-9682-f72caef5af85.alf-c-ab
+                needed_terminate: True
                 detailed-status: Ready!
                 member-vnf-index: '2'
                 model: f48163a6-c807-47bc-9682-f72caef5af85
