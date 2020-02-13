@@ -170,6 +170,24 @@ db_nslcmops_text = """
     operationState: FAILED
     startTime: 1566823354.414689
     statusEnteredTime: 1566824534.5112448
+
+-   _admin:
+        created: 1600000000.0000000
+        modified: 1600000000.0000000
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        worker: 86434c2948e2
+    _id: a639fac7-e0bb-4225-ffff-c1f8efcc125e
+    detailed-status: None
+    lcmOperationType: terminate
+    nsInstanceId: f48163a6-c807-47bc-9682-f72caef5af85
+    operationParams: {}
+    operationState: PROCESSING
+    startTime: 1600000000.0000000
+    statusEnteredTime: 1600000000.0000000
+    
 -   _admin:
         created: 1575034637.044651
         modified: 1575034637.044651
@@ -424,7 +442,7 @@ db_nsrs_text = """
     - 7ab0d10d-8ce2-4c68-aef6-cc5a437a9c62
 """
 
-db_ro_ns_text = """
+ro_ns_text = """
 datacenter_tenant_id: dc5c67fa-c7f2-11e9-b9c0-02420aff0004
 description: null
 name: ALF
@@ -675,6 +693,36 @@ vnfs:
     vnf_id: 0de348e3-c201-4f6a-91cc-7f957e2d5504
     vnf_name: hackfest3charmed-vnf.2
     vnfd_osm_id: f48163a6-c807-47bc-9682-f72caef5af85.1.2
+"""
+
+ro_delete_action_text = """
+actions:
+-   created_at: 1580140763.1099188
+    description: DELETE
+    instance_id: c9fe9908-3180-430d-b633-fca2f68db008
+    modified_at: 1580140763.253148
+    number_done: 1
+    number_failed: 0
+    number_tasks: 1
+    tenant_id: 0ea38bd0-2729-47a9-ae07-c6ce76115eb2
+    uuid: delete
+    vim_wim_actions:
+    -   action: DELETE
+        created_at: 1580140763.1099188
+        datacenter_vim_id: dc5c67fa-c7f2-11e9-b9c0-02420aff0004
+        error_msg: null
+        extra: '{params: [9b6a2ac4-767e-4ec9-9497-8ba63084c77f, null]}'
+        instance_action_id: ACTION-1580140763.054037
+        item: instance_nets
+        item_id: 8cb06b72-c71d-4b58-b419-95025fa651d3
+        modified_at: 1580140763.1099188
+        related: 8cb06b72-c71d-4b58-b419-95025fa651d3
+        status: SUPERSEDED
+        task_index: 0
+        vim_id: null
+        wim_account_id: null
+        wim_internal_id: null
+        worker: null
 """
 
 db_vim_accounts_text = """
@@ -1212,3 +1260,17 @@ db_nslcmops_scale_text = """
     operationState: COMPLETED
     detailed-status: done
 """
+
+test_ids = {
+    # contains the ids of ns and operations of every test
+    "TEST-A": {
+        "ns": "f48163a6-c807-47bc-9682-f72caef5af85",
+        "instantiate": "a639fac7-e0bb-4225-8ecb-c1f8efcc125e",
+        "terminate": "a639fac7-e0bb-4225-ffff-c1f8efcc125e",
+    },
+    "TEST-KDU": {
+        "ns": "0bcb701c-ee4d-41ab-8ee6-f4156f7f114d",
+        "instantiate": "cf3aa178-7640-4174-b921-2330e6f2aad6",
+        "terminate": None,
+    }
+}

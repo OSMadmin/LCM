@@ -19,17 +19,15 @@
 import asynctest   # pip3 install asynctest --user
 import asyncio
 import yaml
-# import logging
 from os import getenv
-from osm_lcm.ns import NsLcm
+from osm_lcm import ns
 from osm_common.dbmemory import DbMemory
 from osm_common.msgkafka import MsgKafka
 from osm_common.fslocal import FsLocal
 from osm_lcm.lcm_utils import TaskRegistry
-from n2vc.vnf import N2VC
-# from n2vc.k8s_helm_conn import K8sHelmConnector
+# from osm_lcm.ROclient import ROClient
 from uuid import uuid4
-from asynctest.mock import patch
+# from asynctest.mock import patch
 
 from osm_lcm.tests import test_db_descriptors as descriptors
 
@@ -99,7 +97,12 @@ class TestMyNS(asynctest.TestCase):
         return ee_id, {}
 
     def _ro_show(self, *args, **kwargs):
-        ro_ns_desc = yaml.load(descriptors.db_ro_ns_text, Loader=yaml.Loader)
+        if kwargs.get("delete"):
+            ro_ns_desc = yaml.load(descriptors.ro_delete_action_text, Loader=yaml.Loader)
+            while True:
+                yield ro_ns_desc
+
+        ro_ns_desc = yaml.load(descriptors.ro_ns_text, Loader=yaml.Loader)
 
         # if ip address provided, replace descriptor
         ip_addresses = getenv("OSMLCMTEST_NS_IPADDRESS", "")
@@ -134,9 +137,8 @@ class TestMyNS(asynctest.TestCase):
     def _return_uuid(self, *args, **kwargs):
         return str(uuid4())
 
-    @patch("osm_lcm.ns.N2VCJujuConnector")
-    @patch("osm_lcm.ns.K8sHelmConnector")
-    async def setUp(self, k8s_mock, n2vc_mock):
+    async def setUp(self):
+
         # Mock DB
         if not getenv("OSMLCMTEST_DB_NOMOCK"):
             self.db = DbMemory()
@@ -147,7 +149,6 @@ class TestMyNS(asynctest.TestCase):
             self.db.create_list("k8sclusters", yaml.load(descriptors.db_k8sclusters_text, Loader=yaml.Loader))
             self.db.create_list("nslcmops", yaml.load(descriptors.db_nslcmops_text, Loader=yaml.Loader))
             self.db.create_list("vnfrs", yaml.load(descriptors.db_vnfrs_text, Loader=yaml.Loader))
-
             self.db_vim_accounts = yaml.load(descriptors.db_vim_accounts_text, Loader=yaml.Loader)
 
         # Mock kafka
@@ -167,8 +168,16 @@ class TestMyNS(asynctest.TestCase):
         self.lcm_tasks.waitfor_related_HA.return_value = None
         self.lcm_tasks.lookfor_related.return_value = ("", [])
 
+        # Mock VCA - K8s
+        if not getenv("OSMLCMTEST_VCA_K8s_NOMOCK"):
+            ns.K8sJujuConnector = asynctest.MagicMock(ns.K8sJujuConnector)
+            ns.K8sHelmConnector = asynctest.MagicMock(ns.K8sHelmConnector)
+
+        if not getenv("OSMLCMTEST_VCA_NOMOCK"):
+            ns.N2VCJujuConnector = asynctest.MagicMock(ns.N2VCJujuConnector)
+
         # Create NsLCM class
-        self.my_ns = NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, lcm_config, self.loop)
+        self.my_ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, lcm_config, self.loop)
         self.my_ns._wait_dependent_n2vc = asynctest.CoroutineMock()
 
         # Mock logging
@@ -178,7 +187,7 @@ class TestMyNS(asynctest.TestCase):
         # Mock VCA - N2VC
         if not getenv("OSMLCMTEST_VCA_NOMOCK"):
             pub_key = getenv("OSMLCMTEST_NS_PUBKEY", "ssh-rsa test-pub-key t@osm.com")
-            self.my_ns.n2vc = asynctest.Mock(N2VC())
+            # self.my_ns.n2vc = asynctest.Mock(N2VC())
             self.my_ns.n2vc.GetPublicKey.return_value = getenv("OSMLCM_VCA_PUBKEY", "public_key")
             # allow several versions of n2vc
             self.my_ns.n2vc.FormatApplicationName = asynctest.Mock(side_effect=self._n2vc_FormatApplicationName())
@@ -193,11 +202,7 @@ class TestMyNS(asynctest.TestCase):
                                                                                        "pubkey": pub_key})
             self.my_ns.n2vc.get_public_key = asynctest.CoroutineMock(
                 return_value=getenv("OSMLCM_VCA_PUBKEY", "public_key"))
-
-        # # Mock VCA - K8s
-        # if not getenv("OSMLCMTEST_VCA_K8s_NOMOCK"):
-        #     pub_key = getenv("OSMLCMTEST_NS_PUBKEY", "ssh-rsa test-pub-key t@osm.com")
-        #     self.my_ns.k8sclusterhelm = asynctest.Mock(K8sHelmConnector())
+            self.my_ns.n2vc.delete_namespace = asynctest.CoroutineMock(return_value=None)
 
         # Mock RO
         if not getenv("OSMLCMTEST_RO_NOMOCK"):
@@ -209,13 +214,14 @@ class TestMyNS(asynctest.TestCase):
             self.my_ns.RO.create_action = asynctest.CoroutineMock(self.my_ns.RO.create_action,
                                                                   return_value={"vm-id": {"vim_result": 200,
                                                                                           "description": "done"}})
+            self.my_ns.RO.delete = asynctest.CoroutineMock(self.my_ns.RO.delete, return_value={"action_id": "del"})
             # self.my_ns.wait_vm_up_insert_key_ro = asynctest.CoroutineMock(return_value="ip-address")
 
     @asynctest.fail_on(active_handles=True)   # all async tasks must be completed
     async def test_instantiate(self):
         self.db.set_one = asynctest.Mock()
-        nsr_id = self.db.get_list("nsrs")[0]["_id"]
-        nslcmop_id = self.db.get_list("nslcmops")[0]["_id"]
+        nsr_id = descriptors.test_ids["TEST-A"]["ns"]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
         # print("Test instantiate started")
 
         # delete deployed information of database
@@ -288,8 +294,8 @@ class TestMyNS(asynctest.TestCase):
         # scale-out/scale-in operations with success/error result
 
         # Test scale() with missing 'scaleVnfData', should return operationState = 'FAILED'
-        nsr_id = self.db.get_list("nsrs")[0]["_id"]
-        nslcmop_id = self.db.get_list("nslcmops")[0]["_id"]
+        nsr_id = descriptors.test_ids["TEST-A"]["ns"]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
         await self.my_ns.scale(nsr_id, nslcmop_id)
         expected_value = 'FAILED'
         return_value = self.db.get_one("nslcmops", {"_id": nslcmop_id}).get("operationState")
@@ -302,7 +308,8 @@ class TestMyNS(asynctest.TestCase):
     # - if marked as anything but 'COMPLETED', the suboperation index is expected
     def test_scale_reintent_or_skip_suboperation(self):
         # Load an alternative 'nslcmops' YAML for this test
-        db_nslcmop = self.db.get_list('nslcmops')[0]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
+        db_nslcmop = self.db.get_one('nslcmops', {"_id": nslcmop_id})
         op_index = 2
         # Test when 'operationState' is 'COMPLETED'
         db_nslcmop['_admin']['operations'][op_index]['operationState'] = 'COMPLETED'
@@ -319,7 +326,8 @@ class TestMyNS(asynctest.TestCase):
     # Expected result: index of the found sub-operation, or SUBOPERATION_STATUS_NOT_FOUND if not found
     def test_scale_find_suboperation(self):
         # Load an alternative 'nslcmops' YAML for this test
-        db_nslcmop = self.db.get_list('nslcmops')[0]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
+        db_nslcmop = self.db.get_one('nslcmops', {"_id": nslcmop_id})
         # Find this sub-operation
         op_index = 2
         vnf_index = db_nslcmop['_admin']['operations'][op_index]['member_vnf_index']
@@ -348,7 +356,8 @@ class TestMyNS(asynctest.TestCase):
     # Test _update_suboperation_status()
     def test_scale_update_suboperation_status(self):
         self.db.set_one = asynctest.Mock()
-        db_nslcmop = self.db.get_list('nslcmops')[0]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
+        db_nslcmop = self.db.get_one('nslcmops', {"_id": nslcmop_id})
         op_index = 0
         # Force the initial values to be distinct from the updated ones
         q_filter = {"_id": db_nslcmop["_id"]}
@@ -363,7 +372,8 @@ class TestMyNS(asynctest.TestCase):
                                                 fail_on_empty=False)
 
     def test_scale_add_suboperation(self):
-        db_nslcmop = self.db.get_list('nslcmops')[0]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
+        db_nslcmop = self.db.get_one('nslcmops', {"_id": nslcmop_id})
         vnf_index = '1'
         num_ops_before = len(db_nslcmop.get('_admin', {}).get('operations', [])) - 1
         vdu_id = None
@@ -414,7 +424,8 @@ class TestMyNS(asynctest.TestCase):
     # - op_index (non-negative number): This is an existing sub-operation, operationState != 'COMPLETED'
     # - SUBOPERATION_STATUS_SKIP: This is an existing sub-operation, operationState == 'COMPLETED'
     def test_scale_check_or_add_scale_suboperation(self):
-        db_nslcmop = self.db.get_list('nslcmops')[0]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
+        db_nslcmop = self.db.get_one('nslcmops', {"_id": nslcmop_id})
         operationType = 'PRE-SCALE'
         vnf_index = '1'
         primitive = 'touch'
@@ -472,13 +483,13 @@ class TestMyNS(asynctest.TestCase):
         self.assertEqual(op_index_skip_RO, self.my_ns.SUBOPERATION_STATUS_SKIP)
 
     async def test_deploy_kdus(self):
-        db_nsr = self.db.get_list("nsrs")[1]
-        db_vnfr = self.db.get_list("vnfrs")[2]
+        nsr_id = descriptors.test_ids["TEST-KDU"]["ns"]
+        # nslcmop_id = descriptors.test_ids["TEST-KDU"]["instantiate"]
+        db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+        db_vnfr = self.db.get_one("vnfrs", {"nsr-id-ref": nsr_id, "member-vnf-index-ref": "multikdu"})
         db_vnfrs = {"multikdu": db_vnfr}
-        db_vnfd = self.db.get_list("vnfds")[1]
+        db_vnfd = self.db.get_one("vnfds", {"_id": db_vnfr["vnfd-id"]})
         db_vnfds = {db_vnfd["_id"]: db_vnfd}
-        nsr_id = db_nsr["_id"]
-        # nslcmop_id = self.db.get_list("nslcmops")[1]["_id"]
         logging_text = "KDU"
         self.my_ns.k8sclusterhelm.install = asynctest.CoroutineMock(return_value="k8s_id")
         await self.my_ns.deploy_kdus(logging_text, nsr_id, db_nsr, db_vnfrs, db_vnfds)
