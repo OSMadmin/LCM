@@ -48,3 +48,9 @@ dist
 *.egg-info
 .eggs
 
+# Unit test / coverage reports
+.coverage
+cover
+coverage.xml
+nosetests.xml
+
