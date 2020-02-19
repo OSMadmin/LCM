@@ -615,7 +615,8 @@ class NsLcm(LcmBase):
                 if vnf_RO.get("ip_address"):
                     db_vnfr["ip-address"] = vnfr_update["ip-address"] = vnf_RO["ip_address"].split(";")[0]
                 elif not db_vnfr.get("ip-address"):
-                    raise LcmExceptionNoMgmtIP("ns member_vnf_index '{}' has no IP address".format(vnf_index))
+                    if db_vnfr.get("vdur"):   # if not VDUs, there is not ip_address
+                        raise LcmExceptionNoMgmtIP("ns member_vnf_index '{}' has no IP address".format(vnf_index))
 
                 for vdu_index, vdur in enumerate(get_iterable(db_vnfr, "vdur")):
                     vdur_RO_count_index = 0
@@ -731,7 +732,6 @@ class NsLcm(LcmBase):
         RO_descriptor_number = 0   # number of descriptors created at RO
         vnf_index_2_RO_id = {}    # map between vnfd/nsd id to the id used at RO
         start_deploy = time()
-        vdu_flag = False  # If any of the VNFDs has VDUs
         ns_params = db_nslcmop.get("operationParams")
         if ns_params and ns_params.get("timeout_ns_deploy"):
             timeout_ns_deploy = ns_params["timeout_ns_deploy"]
@@ -748,8 +748,6 @@ class NsLcm(LcmBase):
         for c_vnf in nsd.get("constituent-vnfd", ()):
             member_vnf_index = c_vnf["member-vnf-index"]
             vnfd = db_vnfds_ref[c_vnf['vnfd-id-ref']]
-            if vnfd.get("vdu"):
-                vdu_flag = True
             vnfd_ref = vnfd["id"]
             step = db_nsr_update["_admin.deployed.RO.detailed-status"] = "Creating vnfd='{}' member_vnf_index='{}' at" \
                                                                          " RO".format(vnfd_ref, member_vnf_index)
@@ -894,8 +892,7 @@ class NsLcm(LcmBase):
                 elif ns_status == "ACTIVE":
                     step = detailed_status = "Waiting for management IP address reported by the VIM. Updating VNFRs"
                     try:
-                        if vdu_flag:
-                            self.ns_update_vnfr(db_vnfrs, desc)
+                        self.ns_update_vnfr(db_vnfrs, desc)
                         break
                     except LcmExceptionNoMgmtIP:
                         pass
@@ -2124,7 +2121,7 @@ class NsLcm(LcmBase):
                                                                  return_when=asyncio.FIRST_COMPLETED)
                     if not done_list:   # timeout
                         for task in pending_list:
-                            db_nsr_update[pending_tasks(task) + "detailed-status"] = "Timeout"
+                            db_nsr_update[pending_tasks[task] + "detailed-status"] = "Timeout"
                             deployed_ok = False
                         break
                     for task in done_list:

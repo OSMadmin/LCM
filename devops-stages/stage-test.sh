@@ -13,5 +13,5 @@
 # License for the specific language governing permissions and limitations
 # under the License.
 ##
-
+rm -f nosetests.xml
 tox   # flake8 unittest
