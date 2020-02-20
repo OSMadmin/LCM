@@ -492,6 +492,7 @@ class TestMyNS(asynctest.TestCase):
         db_vnfds = {db_vnfd["_id"]: db_vnfd}
         logging_text = "KDU"
         self.my_ns.k8sclusterhelm.install = asynctest.CoroutineMock(return_value="k8s_id")
+        self.my_ns.k8sclusterhelm.synchronize_repos = asynctest.CoroutineMock(return_value=("", ""))
         await self.my_ns.deploy_kdus(logging_text, nsr_id, db_nsr, db_vnfrs, db_vnfds)
         db_nsr = self.db.get_list("nsrs")[1]
         self.assertIn("K8s", db_nsr["_admin"]["deployed"], "K8s entry not created at '_admin.deployed'")

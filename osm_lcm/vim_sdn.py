@@ -16,7 +16,6 @@
 # under the License.
 ##
 
-import asyncio
 import yaml
 import logging
 import logging.handlers
@@ -1012,32 +1011,12 @@ class K8sClusterLcm(LcmBase):
                 else:
                     self.logger.error(logging_text + "Failing init juju-bundle: {}".format(e), exc_info=True)
 
-            step = "Getting the list of repos"
-            if k8s_hc_id:
-                self.logger.debug(logging_text + step)
-                task_list = []
-                db_k8srepo_list = self.db.get_list("k8srepos", {"type": "helm-chart"})
-                for repo in db_k8srepo_list:
-                    step = "Adding repo {} to cluster: {}".format(repo["name"], k8s_hc_id)
-                    self.logger.debug(logging_text + step)
-                    task = asyncio.ensure_future(self.helm_k8scluster.repo_add(cluster_uuid=k8s_hc_id,
-                                                 name=repo["name"], url=repo["url"],
-                                                 repo_type="chart"))
-                    task_list.append(task)
-                    repo_k8scluster_list = deep_get(repo, ("_admin", "cluster-inserted")) or []
-                    repo_k8scluster_list.append(k8s_hc_id)
-                    self.update_db_2("k8srepos", repo["_id"], {"_admin.cluster-inserted": repo_k8scluster_list})
-
-                if task_list:
-                    self.logger.debug(logging_text + 'Waiting for terminate tasks of repo_add')
-                    done, pending = await asyncio.wait(task_list, timeout=3600)
-                    if pending:
-                        self.logger.error(logging_text + 'There are pending tasks: {}'.format(pending))
-
             # mark as an error if both helm-chart and juju-bundle have been failed
             if k8s_hc_id or k8s_jb_id:
+                self.logger.debug(logging_text + " successfully created")
                 db_k8scluster_update["_admin.operationalState"] = "ENABLED"
             else:
+                self.logger.debug(logging_text + " successfully created with errors")
                 db_k8scluster_update["_admin.operationalState"] = "ERROR"
                 db_k8scluster_update["_admin.detailed-status"] = ";".join(error_text_list)
 
@@ -1102,6 +1081,7 @@ class K8sClusterLcm(LcmBase):
                 uninstall_sw = uninstall_sw or False
                 cluster_removed = await self.juju_k8scluster.reset(cluster_uuid=k8s_jb_id, uninstall_sw=uninstall_sw)
 
+            # Try to remove from cluster_inserted to clean old versions
             if k8s_hc_id and cluster_removed:
                 step = "Removing k8scluster='{}' from k8srepos".format(k8scluster_id)
                 self.logger.debug(logging_text + step)
@@ -1193,31 +1173,6 @@ class K8sRepoLcm(LcmBase):
             step = "Getting k8srepo-id='{}' from db".format(k8srepo_id)
             self.logger.debug(logging_text + step)
             db_k8srepo = self.db.get_one("k8srepos", {"_id": k8srepo_id})
-            step = "Getting k8scluster_list from db"
-            self.logger.debug(logging_text + step)
-            db_k8scluster_list = self.db.get_list("k8sclusters", {})
-            db_k8srepo_update["_admin.cluster-inserted"] = []
-            task_list = []
-            for k8scluster in db_k8scluster_list:
-                hc_id = deep_get(k8scluster, ("_admin", "helm-chart", "id"))
-                if hc_id:
-                    step = "Adding repo to cluster: {}".format(hc_id)
-                    self.logger.debug(logging_text + step)
-                    task = asyncio.ensure_future(self.k8srepo.repo_add(cluster_uuid=hc_id,
-                                                                       name=db_k8srepo["name"], url=db_k8srepo["url"],
-                                                                       repo_type="chart"))
-                    task_list.append(task)
-                    db_k8srepo_update["_admin.cluster-inserted"].append(hc_id)
-
-            done = None
-            pending = None
-            if len(task_list) > 0:
-                self.logger.debug('Waiting for terminate pending tasks...')
-                done, pending = await asyncio.wait(task_list, timeout=3600)
-                if not pending:
-                    self.logger.debug('All tasks finished...')
-                else:
-                    self.logger.info('There are pending tasks: {}'.format(pending))
             db_k8srepo_update["_admin.operationalState"] = "ENABLED"
         except Exception as e:
             self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
@@ -1264,27 +1219,6 @@ class K8sRepoLcm(LcmBase):
             step = "Getting k8srepo-id='{}' from db".format(k8srepo_id)
             self.logger.debug(logging_text + step)
             db_k8srepo = self.db.get_one("k8srepos", {"_id": k8srepo_id})
-            step = "Getting k8scluster_list from db"
-            self.logger.debug(logging_text + step)
-            db_k8scluster_list = self.db.get_list("k8sclusters", {})
-
-            task_list = []
-            for k8scluster in db_k8scluster_list:
-                hc_id = deep_get(k8scluster, ("_admin", "helm-chart", "id"))
-                if hc_id:
-                    task = asyncio.ensure_future(self.k8srepo.repo_remove(cluster_uuid=hc_id,
-                                                                          name=db_k8srepo["name"]))
-                task_list.append(task)
-            done = None
-            pending = None
-            if len(task_list) > 0:
-                self.logger.debug('Waiting for terminate pending tasks...')
-                done, pending = await asyncio.wait(task_list, timeout=3600)
-                if not pending:
-                    self.logger.debug('All tasks finished...')
-                else:
-                    self.logger.info('There are pending tasks: {}'.format(pending))
-            self.db.del_one("k8srepos", {"_id": k8srepo_id})
 
         except Exception as e:
             self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)

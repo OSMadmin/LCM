@@ -2076,9 +2076,28 @@ class NsLcm(LcmBase):
                     except Exception:
                         # it is not a file
                         pass
+
+                    step = "Prepare instantiate KDU {} in k8s cluster {}".format(
+                        kdur["kdu-name"], kdur["k8s-cluster"]["id"])
+
                     try:
                         if not error_text:
                             cluster_uuid = _get_cluster_id(kdur["k8s-cluster"]["id"], k8sclustertype_full)
+
+                            updated_cluster_list = []
+                            if k8sclustertype == "chart" and cluster_uuid not in updated_cluster_list:
+                                del_repo_list, added_repo_dict = await asyncio.ensure_future(
+                                    self.k8sclusterhelm.synchronize_repos(cluster_uuid=cluster_uuid))
+                                if del_repo_list or added_repo_dict:
+                                    unset = {'_admin.helm_charts_added.' + item: None for item in del_repo_list}
+                                    updated = {'_admin.helm_charts_added.' +
+                                               item: name for item, name in added_repo_dict.items()}
+                                    self.logger.debug("repos synchronized, to_delete: {}, to_add: {}".
+                                                      format(del_repo_list, added_repo_dict))
+                                    self.db.set_one("k8sclusters", {"_id": kdur["k8s-cluster"]["id"]},
+                                                    updated, unset=unset)
+                            updated_cluster_list.append(cluster_uuid)
+
                     except LcmException as e:
                         error_text = str(e)
                         deployed_ok = False
@@ -2097,6 +2116,7 @@ class NsLcm(LcmBase):
 
                     db_dict = {"collection": "nsrs", "filter": {"_id": nsr_id}, "path": "_admin.deployed.K8s."
                                                                                         "{}".format(index)}
+
                     if k8sclustertype == "chart":
                         task = asyncio.ensure_future(
                             self.k8sclusterhelm.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel, atomic=True,
