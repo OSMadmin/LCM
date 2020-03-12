@@ -1042,7 +1042,7 @@ class K8sClusterLcm(LcmBase):
                                            detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
-            self.lcm_tasks.remove("k8sclusters", k8scluster_id, order_id)
+            self.lcm_tasks.remove("k8scluster", k8scluster_id, order_id)
 
     async def delete(self, k8scluster_content, order_id):
 
@@ -1100,7 +1100,10 @@ class K8sClusterLcm(LcmBase):
             #     raise Exception("K8scluster was not properly removed")
 
         except Exception as e:
-            self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
+            if isinstance(e, LcmException, DbException):
+                self.logger.error(logging_text + "Exit Exception {}".format(e))
+            else:
+                self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
             exc = e
         finally:
             if exc and db_k8scluster:
@@ -1119,7 +1122,7 @@ class K8sClusterLcm(LcmBase):
                                            detailed_status=detailed_status_HA)
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
-            self.lcm_tasks.remove("k8sclusters", k8scluster_id, order_id)
+            self.lcm_tasks.remove("k8scluster", k8scluster_id, order_id)
 
 
 class K8sRepoLcm(LcmBase):

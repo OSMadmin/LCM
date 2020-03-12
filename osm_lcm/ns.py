@@ -2095,11 +2095,11 @@ class NsLcm(LcmBase):
                                     unset = {'_admin.helm_charts_added.' + item: None for item in del_repo_list}
                                     updated = {'_admin.helm_charts_added.' +
                                                item: name for item, name in added_repo_dict.items()}
-                                    self.logger.debug("repos synchronized, to_delete: {}, to_add: {}".
+                                    self.logger.debug(logging_text + "repos synchronized, to_delete: {}, to_add: {}".
                                                       format(del_repo_list, added_repo_dict))
                                     self.db.set_one("k8sclusters", {"_id": kdur["k8s-cluster"]["id"]},
                                                     updated, unset=unset)
-                            updated_cluster_list.append(cluster_uuid)
+                                updated_cluster_list.append(cluster_uuid)
 
                     except LcmException as e:
                         error_text = str(e)
