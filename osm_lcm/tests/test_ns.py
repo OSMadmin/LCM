@@ -507,6 +507,33 @@ class TestMyNS(asynctest.TestCase):
         k8s_instace_info["kdu-model"] = "stable/mongodb"
         self.assertEqual(db_nsr["_admin"]["deployed"]["K8s"][1], k8s_instace_info)
 
+    async def test_instantiate_pdu(self):
+        nsr_id = descriptors.test_ids["TEST-A"]["ns"]
+        nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
+        # Modify vnfd/vnfr to change KDU for PDU. Adding keys that NBI will already set
+        self.db.set_one("vnfrs", {"nsr-id-ref": nsr_id, "member-vnf-index-ref": "1"},
+                        update_dict={"ip-address": "10.205.1.46",
+                                     "vdur.0.pdu-id": "53e1ec21-2464-451e-a8dc-6e311d45b2c8",
+                                     "vdur.0.pdu-type": "PDU-TYPE-1",
+                                     "vdur.0.ip-address": "10.205.1.46",
+                                     },
+                        unset={"vdur.status": None})
+        self.db.set_one("vnfrs", {"nsr-id-ref": nsr_id, "member-vnf-index-ref": "2"},
+                        update_dict={"ip-address": "10.205.1.47",
+                                     "vdur.0.pdu-id": "53e1ec21-2464-451e-a8dc-6e311d45b2c8",
+                                     "vdur.0.pdu-type": "PDU-TYPE-1",
+                                     "vdur.0.ip-address": "10.205.1.47",
+                                     },
+                        unset={"vdur.status": None})
+
+        await self.my_ns.instantiate(nsr_id, nslcmop_id)
+        db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+        self.assertEqual(db_nsr.get("nsState"), "READY", str(db_nsr.get("errorDescription ")))
+        self.assertEqual(db_nsr.get("currentOperation"), "IDLE", "currentOperation different than 'IDLE'")
+        self.assertEqual(db_nsr.get("currentOperationID"), None, "currentOperationID different than None")
+        self.assertEqual(db_nsr.get("errorDescription "), None, "errorDescription different than None")
+        self.assertEqual(db_nsr.get("errorDetail"), None, "errorDetail different than None")
+
 
 if __name__ == '__main__':
     asynctest.main()

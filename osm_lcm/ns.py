@@ -964,12 +964,13 @@ class NsLcm(LcmBase):
                     vdur = next((x for x in get_iterable(db_vnfr, "vdur")
                                  if x.get("vdu-id-ref") == vdu_id and x.get("count-index") == vdu_index), None)
 
+                if not vdur and len(db_vnfr.get("vdur", ())) == 1:  # If only one, this should be the target vdu
+                    vdur = db_vnfr["vdur"][0]
                 if not vdur:
-                    raise LcmException("Not found vnfr_id={}, vdu_index={}, vdu_index={}".format(
-                        vnfr_id, vdu_id, vdu_index
-                    ))
+                    raise LcmException("Not found vnfr_id={}, vdu_id={}, vdu_index={}".format(vnfr_id, vdu_id,
+                                                                                              vdu_index))
 
-                if vdur.get("status") == "ACTIVE":
+                if vdur.get("pdu-type") or vdur.get("status") == "ACTIVE":
                     ip_address = vdur.get("ip-address")
                     if not ip_address:
                         continue
@@ -980,11 +981,12 @@ class NsLcm(LcmBase):
             if not target_vdu_id:
                 continue
 
-            # self.logger.debug(logging_text + "IP address={}".format(ip_address))
-
             # inject public key into machine
             if pub_key and user:
                 # self.logger.debug(logging_text + "Inserting RO key")
+                if vdur.get("pdu-type"):
+                    self.logger.error(logging_text + "Cannot inject ssh-ky to a PDU")
+                    return ip_address
                 try:
                     ro_vm_id = "{}-{}".format(db_vnfr["member-vnf-index-ref"], target_vdu_id)  # TODO add vdu_index
                     result_dict = await self.RO.create_action(
@@ -1802,6 +1804,7 @@ class NsLcm(LcmBase):
                                  exc_info=True)
         finally:
             if exc:
+                instantiated_ok = False
                 if db_nsr:
                     db_nsr_update["detailed-status"] = "ERROR {}: {}".format(step, exc)
                     db_nsr_update["operational-status"] = "failed"
