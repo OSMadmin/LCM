@@ -72,6 +72,7 @@ ENV OSMLCM_VCA_HOST        vca
 ENV OSMLCM_VCA_PORT        17070
 ENV OSMLCM_VCA_USER        admin
 ENV OSMLCM_VCA_SECRET      secret
+ENV OSMLCM_VCA_CLOUD:      localhost
 # ENV OSMLCM_VCA_ENABLEOSUPGRADE false
 # ENV OSMLCM_VCA_APTMIRROR  http://archive.ubuntu.com/ubuntu/
 # ENV OSMLCM_VCA_PUBKEY     pubkey
