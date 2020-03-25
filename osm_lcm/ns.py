@@ -1271,11 +1271,24 @@ class NsLcm(LcmBase):
                                 deploy_params
                             )
                             break
+            num_units = 1
+            if is_proxy_charm:
+                if element_type == "NS":
+                    num_units = db_nsr.get("config-units") or 1
+                elif element_type == "VNF":
+                    num_units = db_vnfr.get("config-units") or 1
+                elif element_type == "VDU":
+                    for v in db_vnfr["vdur"]:
+                        if vdu_id == v["vdu-id-ref"]:
+                            num_units = v.get("config-units") or 1
+                            break
+
             await self.n2vc.install_configuration_sw(
                 ee_id=ee_id,
                 artifact_path=artifact_path,
                 db_dict=db_dict,
-                config=config
+                config=config,
+                num_units=num_units
             )
 
             # write in db flag of configuration_sw already installed
