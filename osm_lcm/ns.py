@@ -53,7 +53,7 @@ class NsLcm(LcmBase):
     SUBOPERATION_STATUS_NOT_FOUND = -1
     SUBOPERATION_STATUS_NEW = -2
     SUBOPERATION_STATUS_SKIP = -3
-    task_name_deploy_vca = "Deploy VCA"
+    task_name_deploy_vca = "Deploying VCA"
 
     def __init__(self, db, msg, fs, lcm_tasks, config, loop):
         """
@@ -104,6 +104,12 @@ class NsLcm(LcmBase):
             on_update_db=None,
         )
 
+        self.k8scluster_map = {
+            "helm-chart": self.k8sclusterhelm,
+            "chart": self.k8sclusterhelm,
+            "juju-bundle": self.k8sclusterjuju,
+            "juju": self.k8sclusterjuju,
+        }
         # create RO client
         self.RO = ROclient.ROClient(self.loop, **self.ro_config)
 
@@ -957,6 +963,7 @@ class NsLcm(LcmBase):
             # await self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
             # self.logger.debug(logging_text + "Deployed at VIM")
         except (ROclient.ROClientException, LcmException, DbException) as e:
+            stage[2] = "ERROR deployig at VIM"
             self.set_vnfr_at_error(db_vnfrs, str(e))
             raise
 
@@ -1347,7 +1354,7 @@ class NsLcm(LcmBase):
             raise LcmException("{} {}".format(step, e)) from e
 
     def _write_ns_status(self, nsr_id: str, ns_state: str, current_operation: str, current_operation_id: str,
-                         error_description: str = None, other_update: dict = None):
+                         error_description: str = None, error_detail: str = None, other_update: dict = None):
         """
         Update db_nsr fields.
         :param nsr_id:
@@ -1355,6 +1362,7 @@ class NsLcm(LcmBase):
         :param current_operation:
         :param current_operation_id:
         :param error_description:
+        :param error_detail:
         :param other_update: Other required changes at database if provided, will be cleared
         :return:
         """
@@ -1366,6 +1374,7 @@ class NsLcm(LcmBase):
             db_dict["currentOperation"] = current_operation
             db_dict["currentOperationID"] = current_operation_id
             db_dict["errorDescription"] = error_description
+            db_dict["errorDetail"] = error_detail
 
             if ns_state:
                 db_dict["nsState"] = ns_state
@@ -1632,7 +1641,7 @@ class NsLcm(LcmBase):
                 )
             )
             self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_RO", task_ro)
-            tasks_dict_info[task_ro] = "Deploy at VIM"
+            tasks_dict_info[task_ro] = "Deploying at VIM"
 
             # n2vc_redesign STEP 3 to 6 Deploy N2VC
             stage[1] = "Deploying Execution Environments."
@@ -1833,16 +1842,17 @@ class NsLcm(LcmBase):
 
             # update status at database
             if error_list:
-                error_detail = "; ".join(error_list)
+                error_detail = ". ".join(error_list)
                 self.logger.error(logging_text + error_detail)
-                error_description_nslcmop = 'Stage: {} {} Detail: {}'.format(stage[0], stage[1], error_detail)
-                error_description_nsr = 'Operation: INSTANTIATING.{}, {}'.format(nslcmop_id, error_description_nslcmop)
+                error_description_nslcmop = 'Stage: {}. Detail: {}'.format(stage[0], error_detail)
+                error_description_nsr = 'Operation: INSTANTIATING.{}, Stage {}'.format(nslcmop_id, stage[0])
 
-                db_nsr_update["detailed-status"] = error_description_nsr
+                db_nsr_update["detailed-status"] = error_description_nsr + " Detail: " + error_detail
                 db_nslcmop_update["detailed-status"] = error_detail
                 nslcmop_operation_state = "FAILED"
                 ns_state = "BROKEN"
             else:
+                error_detail = None
                 error_description_nsr = error_description_nslcmop = None
                 ns_state = "READY"
                 db_nsr_update["detailed-status"] = "Done"
@@ -1856,6 +1866,7 @@ class NsLcm(LcmBase):
                     current_operation="IDLE",
                     current_operation_id=None,
                     error_description=error_description_nsr,
+                    error_detail=error_detail,
                     other_update=db_nsr_update
                 )
             if db_nslcmop:
@@ -2122,21 +2133,14 @@ class NsLcm(LcmBase):
                                "filter": {"_id": nsr_id},
                                "path": "_admin.deployed.K8s.{}".format(index)}
 
-                    if k8sclustertype == "helm-chart":
-                        task = asyncio.ensure_future(
-                            self.k8sclusterhelm.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel, atomic=True,
-                                                        params=desc_params, db_dict=db_dict, timeout=3600)
-                        )
-                    else:
-                        task = asyncio.ensure_future(
-                            self.k8sclusterjuju.install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
-                                                        atomic=True, params=desc_params,
-                                                        db_dict=db_dict, timeout=600,
-                                                        kdu_name=kdur["kdu-name"])
-                        )
+                    task = asyncio.ensure_future(
+                        self.k8scluster_map[k8sclustertype].install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
+                                                                    atomic=True, params=desc_params,
+                                                                    db_dict=db_dict, timeout=600,
+                                                                    kdu_name=kdur["kdu-name"]))
 
                     self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDU-{}".format(index), task)
-                    task_instantiation_info[task] = "Deploy KDU {}".format(kdur["kdu-name"])
+                    task_instantiation_info[task] = "Deploying KDU {}".format(kdur["kdu-name"])
 
                     index += 1
 
@@ -2583,11 +2587,11 @@ class NsLcm(LcmBase):
                 db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = None
                 self.logger.debug(logging_text + "RO_ns_id={} already deleted".format(ro_nsr_id))
             elif isinstance(e, ROclient.ROClientException) and e.http_code == 409:  # conflict
-                failed_detail.append("RO_ns_id={} delete conflict: {}".format(ro_nsr_id, e))
-                self.logger.debug(logging_text + failed_detail[-1])
+                failed_detail.append("delete conflict: {}".format(e))
+                self.logger.debug(logging_text + "RO_ns_id={} delete conflict: {}".format(ro_nsr_id, e))
             else:
-                failed_detail.append("RO_ns_id={} delete error: {}".format(ro_nsr_id, e))
-                self.logger.error(logging_text + failed_detail[-1])
+                failed_detail.append("delete error: {}".format(e))
+                self.logger.error(logging_text + "RO_ns_id={} delete error: {}".format(ro_nsr_id, e))
 
         # Delete nsd
         if not failed_detail and deep_get(nsr_deployed, ("RO", "nsd_id")):
@@ -2636,13 +2640,16 @@ class NsLcm(LcmBase):
                         failed_detail.append("ro_vnfd_id={} delete error: {}".format(ro_vnfd_id, e))
                         self.logger.error(logging_text + failed_detail[-1])
 
-        stage[2] = "Deleted from VIM"
+        if failed_detail:
+            stage[2] = "Error deleting from VIM"
+        else:
+            stage[2] = "Deleted from VIM"
         db_nsr_update["detailed-status"] = " ".join(stage)
         self.update_db_2("nsrs", nsr_id, db_nsr_update)
         self._write_op_status(nslcmop_id, stage)
 
         if failed_detail:
-            raise LcmException("Error while {}: {}".format(stage[2], "; ".join(failed_detail)))
+            raise LcmException("; ".join(failed_detail))
 
     async def terminate(self, nsr_id, nslcmop_id):
         # Try to lock HA task here
@@ -2761,14 +2768,11 @@ class NsLcm(LcmBase):
                 if not kdu or not kdu.get("kdu-instance"):
                     continue
                 kdu_instance = kdu.get("kdu-instance")
-                if kdu.get("k8scluster-type") in ("helm-chart", "chart"):
+                if kdu.get("k8scluster-type") in self.k8scluster_map:
                     task_delete_kdu_instance = asyncio.ensure_future(
-                        self.k8sclusterhelm.uninstall(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                      kdu_instance=kdu_instance))
-                elif kdu.get("k8scluster-type") in ("juju-bundle", "juju"):
-                    task_delete_kdu_instance = asyncio.ensure_future(
-                        self.k8sclusterjuju.uninstall(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                      kdu_instance=kdu_instance))
+                        self.k8scluster_map[kdu["k8scluster-type"]].uninstall(
+                            cluster_uuid=kdu.get("k8scluster-uuid"),
+                            kdu_instance=kdu_instance))
                 else:
                     self.logger.error(logging_text + "Unknown k8s deployment type {}".
                                       format(kdu.get("k8scluster-type")))
@@ -2812,15 +2816,16 @@ class NsLcm(LcmBase):
             if error_list:
                 error_detail = "; ".join(error_list)
                 # self.logger.error(logging_text + error_detail)
-                error_description_nslcmop = 'Stage: {} {} Detail: {}'.format(stage[0], stage[1], error_detail)
-                error_description_nsr = 'Operation: TERMINATING.{}, {}'.format(nslcmop_id, error_description_nslcmop)
+                error_description_nslcmop = 'Stage: {}. Detail: {}'.format(stage[0], error_detail)
+                error_description_nsr = 'Operation: TERMINATING.{}, Stage {}.'.format(nslcmop_id, stage[0])
 
                 db_nsr_update["operational-status"] = "failed"
-                db_nsr_update["detailed-status"] = error_description_nsr
+                db_nsr_update["detailed-status"] = error_description_nsr + " Detail: " + error_detail
                 db_nslcmop_update["detailed-status"] = error_detail
                 nslcmop_operation_state = "FAILED"
                 ns_state = "BROKEN"
             else:
+                error_detail = None
                 error_description_nsr = error_description_nslcmop = None
                 ns_state = "NOT_INSTANTIATED"
                 db_nsr_update["operational-status"] = "terminated"
@@ -2836,6 +2841,7 @@ class NsLcm(LcmBase):
                     current_operation="IDLE",
                     current_operation_id=None,
                     error_description=error_description_nsr,
+                    error_detail=error_detail,
                     other_update=db_nsr_update
                 )
             if db_nslcmop:
@@ -2861,34 +2867,39 @@ class NsLcm(LcmBase):
 
     async def _wait_for_tasks(self, logging_text, created_tasks_info, timeout, stage, nslcmop_id, nsr_id=None):
         time_start = time()
+        error_detail_list = []
         error_list = []
         pending_tasks = list(created_tasks_info.keys())
         num_tasks = len(pending_tasks)
         num_done = 0
         stage[1] = "{}/{}.".format(num_done, num_tasks)
         self._write_op_status(nslcmop_id, stage)
-        new_error = False
         while pending_tasks:
+            new_error = None
             _timeout = timeout + time_start - time()
             done, pending_tasks = await asyncio.wait(pending_tasks, timeout=_timeout,
                                                      return_when=asyncio.FIRST_COMPLETED)
             num_done += len(done)
             if not done:   # Timeout
                 for task in pending_tasks:
-                    error_list.append(created_tasks_info[task] + ": Timeout")
+                    new_error = created_tasks_info[task] + ": Timeout"
+                    error_detail_list.append(new_error)
+                    error_list.append(new_error)
                 break
             for task in done:
                 if task.cancelled():
-                    self.logger.warn(logging_text + created_tasks_info[task] + ": Cancelled")
-                    error_list.append(created_tasks_info[task] + ": Cancelled")
-                    new_error = True
+                    new_error = created_tasks_info[task] + ": Cancelled"
+                    self.logger.warn(logging_text + new_error)
+                    error_detail_list.append(new_error)
+                    error_list.append(new_error)
                 else:
                     exc = task.exception()
                     if exc:
-                        error_list.append(created_tasks_info[task] + ": {}".format(exc))
-                        new_error = True
+                        new_error = created_tasks_info[task] + ": {}".format(exc)
+                        error_list.append(created_tasks_info[task])
+                        error_detail_list.append(new_error)
                         if isinstance(exc, (DbException, N2VCException, ROclient.ROClientException, LcmException)):
-                            self.logger.error(logging_text + created_tasks_info[task] + ": " + str(exc))
+                            self.logger.error(logging_text + new_error)
                         else:
                             exc_traceback = "".join(traceback.format_exception(None, exc, exc.__traceback__))
                             self.logger.error(logging_text + created_tasks_info[task] + exc_traceback)
@@ -2896,12 +2907,12 @@ class NsLcm(LcmBase):
                         self.logger.debug(logging_text + created_tasks_info[task] + ": Done")
             stage[1] = "{}/{}.".format(num_done, num_tasks)
             if new_error:
-                stage[1] += "Errors: " + ". ".join(error_list) + "."
-                new_error = False
+                stage[1] += " Errors: " + ". ".join(error_detail_list) + "."
                 if nsr_id:  # update also nsr
-                    self.update_db_2("nsrs", nsr_id, {"errorDescription": ". ".join(error_list)})
+                    self.update_db_2("nsrs", nsr_id, {"errorDescription": "Error at: " + ", ".join(error_list),
+                                                      "errorDetail": ". ".join(error_detail_list)})
             self._write_op_status(nslcmop_id, stage)
-        return error_list
+        return error_detail_list
 
     @staticmethod
     def _map_primitive_params(primitive_desc, params, instantiation_params):
@@ -3096,47 +3107,37 @@ class NsLcm(LcmBase):
                                 if len(parts) == 2:
                                     kdu_model = parts[0]
 
-                            if kdu.get("k8scluster-type") in ("helm-chart", "chart"):
-                                output = await self.k8sclusterhelm.upgrade(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                                           kdu_instance=kdu.get("kdu-instance"),
-                                                                           atomic=True, kdu_model=kdu_model,
-                                                                           params=desc_params, db_dict=db_dict,
-                                                                           timeout=300)
-                            elif kdu.get("k8scluster-type")in ("juju-bundle", "juju"):
-                                output = await self.k8sclusterjuju.upgrade(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                                           kdu_instance=kdu.get("kdu-instance"),
-                                                                           atomic=True, kdu_model=kdu_model,
-                                                                           params=desc_params, db_dict=db_dict,
-                                                                           timeout=300)
+                            if kdu.get("k8scluster-type") in self.k8scluster_map:
+                                output = await self.k8scluster_map[kdu["k8scluster-type"]].upgrade(
+                                    cluster_uuid=kdu.get("k8scluster-uuid"),
+                                    kdu_instance=kdu.get("kdu-instance"),
+                                    atomic=True, kdu_model=kdu_model,
+                                    params=desc_params, db_dict=db_dict,
+                                    timeout=300)
 
                             else:
-                                msg = "k8scluster-type not defined"
+                                msg = "unknown k8scluster-type '{}'".format(kdu.get("k8scluster-type"))
                                 raise LcmException(msg)
 
                             self.logger.debug(logging_text + " Upgrade of kdu {} done".format(output))
                             break
                         elif primitive == "rollback":
-                            if kdu.get("k8scluster-type") in ("helm-chart", "chart"):
-                                output = await self.k8sclusterhelm.rollback(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                                            kdu_instance=kdu.get("kdu-instance"),
-                                                                            db_dict=db_dict)
-                            elif kdu.get("k8scluster-type") in ("juju-bundle", "juju"):
-                                output = await self.k8sclusterjuju.rollback(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                                            kdu_instance=kdu.get("kdu-instance"),
-                                                                            db_dict=db_dict)
+                            if kdu.get("k8scluster-type") in self.k8scluster_map:
+                                output = await self.k8scluster_map[kdu["k8scluster-type"]].rollback(
+                                    cluster_uuid=kdu.get("k8scluster-uuid"),
+                                    kdu_instance=kdu.get("kdu-instance"),
+                                    db_dict=db_dict)
                             else:
-                                msg = "k8scluster-type not defined"
+                                msg = "unknown k8scluster-type '{}'".format(kdu.get("k8scluster-type"))
                                 raise LcmException(msg)
                             break
                         elif primitive == "status":
-                            if kdu.get("k8scluster-type") in ("helm-chart", "chart"):
-                                output = await self.k8sclusterhelm.status_kdu(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                                              kdu_instance=kdu.get("kdu-instance"))
-                            elif kdu.get("k8scluster-type") in ("juju-bundle", "juju"):
-                                output = await self.k8sclusterjuju.status_kdu(cluster_uuid=kdu.get("k8scluster-uuid"),
-                                                                              kdu_instance=kdu.get("kdu-instance"))
+                            if kdu.get("k8scluster-type") in self.k8scluster_map:
+                                output = await self.k8scluster_map[kdu["k8scluster-type"]].status_kdu(
+                                    cluster_uuid=kdu.get("k8scluster-uuid"),
+                                    kdu_instance=kdu.get("kdu-instance"))
                             else:
-                                msg = "k8scluster-type not defined"
+                                msg = "unknown k8scluster-type '{}'".format(kdu.get("k8scluster-type"))
                                 raise LcmException(msg)
                             break
                     index += 1
