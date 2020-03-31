@@ -503,7 +503,8 @@ class TestMyNS(asynctest.TestCase):
         self.assertEqual(len(db_nsr["_admin"]["deployed"]["K8s"]), 2, "K8s entry is not of type list")
         k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
                             "k8scluster-type": "helm-chart",
-                            "kdu-name": "ldap", "kdu-model": "stable/openldap:1.2.1"}
+                            "kdu-name": "ldap", "kdu-model": "stable/openldap:1.2.1",
+                            "member-vnf-index": "multikdu"}
 
         self.assertEqual(db_nsr["_admin"]["deployed"]["K8s"][0], k8s_instace_info)
         k8s_instace_info["kdu-name"] = "mongo"
