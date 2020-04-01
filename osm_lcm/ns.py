@@ -1726,7 +1726,8 @@ class NsLcm(LcmBase):
                                 deploy_params=deploy_params_vdu,
                                 descriptor_config=descriptor_config,
                                 base_folder=base_folder,
-                                task_instantiation_info=tasks_dict_info
+                                task_instantiation_info=tasks_dict_info,
+                                stage=stage
                             )
                 for kdud in get_iterable(vnfd, 'kdu'):
                     kdu_name = kdud["name"]
@@ -1761,7 +1762,8 @@ class NsLcm(LcmBase):
                             deploy_params=deploy_params,
                             descriptor_config=descriptor_config,
                             base_folder=base_folder,
-                            task_instantiation_info=tasks_dict_info
+                            task_instantiation_info=tasks_dict_info,
+                            stage=stage
                         )
 
             # Check if this NS has a charm configuration
@@ -1796,7 +1798,8 @@ class NsLcm(LcmBase):
                     deploy_params=deploy_params,
                     descriptor_config=descriptor_config,
                     base_folder=base_folder,
-                    task_instantiation_info=tasks_dict_info
+                    task_instantiation_info=tasks_dict_info,
+                    stage=stage
                 )
 
             # rest of staff will be done at finally
