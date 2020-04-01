@@ -1230,7 +1230,24 @@ class NsLcm(LcmBase):
 
             # TODO check if already done
             self.logger.debug(logging_text + step)
-            await self.n2vc.install_configuration_sw(ee_id=ee_id, artifact_path=artifact_path, db_dict=db_dict)
+            config = None
+            if not is_proxy_charm:
+                initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
+                if initial_config_primitive_list:
+                    for primitive in initial_config_primitive_list:
+                        if primitive["name"] == "config":
+                            config = self._map_primitive_params(
+                                primitive,
+                                {},
+                                deploy_params
+                            )
+                            break
+            await self.n2vc.install_configuration_sw(
+                ee_id=ee_id,
+                artifact_path=artifact_path,
+                db_dict=db_dict,
+                config=config
+            )
 
             # write in db flag of configuration_sw already installed
             self.update_db_2("nsrs", nsr_id, {db_update_entry + "config_sw_installed": True})
