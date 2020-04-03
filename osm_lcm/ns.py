@@ -214,10 +214,10 @@ class NsLcm(LcmBase):
             # write to database
             self.update_db_2("nsrs", nsr_id, db_dict)
 
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            raise
         except Exception as e:
             self.logger.warn('Error updating NS state for ns={}: {}'.format(nsr_id, e))
-
-        return
 
     def vnfd2RO(self, vnfd, new_id=None, additionalParams=None, nsrId=None):
         """
@@ -1137,6 +1137,10 @@ class NsLcm(LcmBase):
                     namespace += ".{}-{}".format(vdu_id, vdu_index or 0)
                     element_type = 'VDU'
                     element_under_configuration = "{}-{}".format(vdu_id, vdu_index or 0)
+                elif kdu_name:
+                    namespace += ".{}".format(kdu_name)
+                    element_type = 'KDU'
+                    element_under_configuration = kdu_name
 
             # Get artifact path
             self.fs.sync()  # Sync from FSMongo
@@ -1212,9 +1216,9 @@ class NsLcm(LcmBase):
             ee_id_parts = ee_id.split('.')
             model_name = ee_id_parts[0]
             application_name = ee_id_parts[1]
-            self.update_db_2("nsrs", nsr_id, {db_update_entry + "model": model_name,
-                                              db_update_entry + "application": application_name,
-                                              db_update_entry + "ee_id": ee_id})
+            db_nsr_update = {db_update_entry + "model": model_name,
+                             db_update_entry + "application": application_name,
+                             db_update_entry + "ee_id": ee_id}
 
             # n2vc_redesign STEP 3.3
 
@@ -1225,7 +1229,8 @@ class NsLcm(LcmBase):
                 vca_index=vca_index,
                 status='INSTALLING SW',
                 element_under_configuration=element_under_configuration,
-                element_type=element_type
+                element_type=element_type,
+                other_update=db_nsr_update
             )
 
             # TODO check if already done
@@ -1420,33 +1425,30 @@ class NsLcm(LcmBase):
         except DbException as e:
             self.logger.warn('Error writing OPERATION status for op_id: {} -> {}'.format(op_id, e))
 
-    def _write_all_config_status(self, nsr_id: str, status: str):
+    def _write_all_config_status(self, db_nsr: dict, status: str):
         try:
-            # nsrs record
-            db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            nsr_id = db_nsr["_id"]
             # configurationStatus
             config_status = db_nsr.get('configurationStatus')
             if config_status:
+                db_nsr_update = {"configurationStatus.{}.status".format(index): status for index, v in
+                                 enumerate(config_status) if v}
                 # update status
-                db_dict = dict()
-                db_dict['configurationStatus'] = list()
-                for c in config_status:
-                    c['status'] = status
-                    db_dict['configurationStatus'].append(c)
-                self.update_db_2("nsrs", nsr_id, db_dict)
+                self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
         except DbException as e:
             self.logger.warn('Error writing all configuration status, ns={}: {}'.format(nsr_id, e))
 
     def _write_configuration_status(self, nsr_id: str, vca_index: int, status: str = None,
-                                    element_under_configuration: str = None, element_type: str = None):
+                                    element_under_configuration: str = None, element_type: str = None,
+                                    other_update: dict = None):
 
         # self.logger.debug('_write_configuration_status(): vca_index={}, status={}'
         #                   .format(vca_index, status))
 
         try:
             db_path = 'configurationStatus.{}.'.format(vca_index)
-            db_dict = dict()
+            db_dict = other_update or {}
             if status:
                 db_dict[db_path + 'status'] = status
             if element_under_configuration:
@@ -2102,7 +2104,6 @@ class NsLcm(LcmBase):
                 for kdur in get_iterable(vnfr_data, "kdur"):
                     desc_params = self._format_additional_params(kdur.get("additionalParams"))
                     vnfd_id = vnfr_data.get('vnfd-id')
-                    pkgdir = deep_get(db_vnfds.get(vnfd_id), ('_admin', 'storage', 'pkg-dir'))
                     if kdur.get("helm-chart"):
                         kdumodel = kdur["helm-chart"]
                         k8sclustertype = "helm-chart"
@@ -2115,11 +2116,14 @@ class NsLcm(LcmBase):
                                            format(vnfr_data["member-vnf-index-ref"], kdur["kdu-name"]))
                     # check if kdumodel is a file and exists
                     try:
-                        # path format: /vnfdid/pkkdir/kdumodel
-                        filename = '{}/{}/{}s/{}'.format(vnfd_id, pkgdir, k8sclustertype, kdumodel)
-                        if self.fs.file_exists(filename, mode='file') or self.fs.file_exists(filename, mode='dir'):
-                            kdumodel = self.fs.path + filename
-                    except asyncio.CancelledError:
+                        storage = deep_get(db_vnfds.get(vnfd_id), ('_admin', 'storage'))
+                        if storage and storage.get('pkg-dir'):  # may be not present if vnfd has not artifacts
+                            # path format: /vnfdid/pkkdir/helm-charts|juju-bundles/kdumodel
+                            filename = '{}/{}/{}s/{}'.format(storage["folder"], storage["'pkg-dir"], k8sclustertype,
+                                                             kdumodel)
+                            if self.fs.file_exists(filename, mode='file') or self.fs.file_exists(filename, mode='dir'):
+                                kdumodel = self.fs.path + filename
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
                         raise
                     except Exception:       # it is not a file
                         pass
@@ -2316,9 +2320,9 @@ class NsLcm(LcmBase):
 
     # sub-operations
 
-    def _reintent_or_skip_suboperation(self, db_nslcmop, op_index):
-        op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
-        if (op.get('operationState') == 'COMPLETED'):
+    def _retry_or_skip_suboperation(self, db_nslcmop, op_index):
+        op = deep_get(db_nslcmop, ('_admin', 'operations'), [])[op_index]
+        if op.get('operationState') == 'COMPLETED':
             # b. Skip sub-operation
             # _ns_execute_primitive() or RO.create_action() will NOT be executed
             return self.SUBOPERATION_STATUS_SKIP
@@ -2425,7 +2429,7 @@ class NsLcm(LcmBase):
                 'lcmOperationType': operationType
             }
         op_index = self._find_suboperation(db_nslcmop, match)
-        if (op_index == self.SUBOPERATION_STATUS_NOT_FOUND):
+        if op_index == self.SUBOPERATION_STATUS_NOT_FOUND:
             # a. New sub-operation
             # The sub-operation does not exist, add it.
             # _ns_execute_primitive() will be called from scale() as usual, with non-modified arguments
@@ -2433,7 +2437,7 @@ class NsLcm(LcmBase):
             vdu_id = None
             vdu_count_index = None
             vdu_name = None
-            if (RO_nsr_id and RO_scaling_info):
+            if RO_nsr_id and RO_scaling_info:
                 vnf_config_primitive = None
                 primitive_params = None
             else:
@@ -2459,7 +2463,7 @@ class NsLcm(LcmBase):
         else:
             # Return either SUBOPERATION_STATUS_SKIP (operationState == 'COMPLETED'),
             # or op_index (operationState != 'COMPLETED')
-            return self._reintent_or_skip_suboperation(db_nslcmop, op_index)
+            return self._retry_or_skip_suboperation(db_nslcmop, op_index)
 
     # Function to return execution_environment id
 
@@ -2526,11 +2530,11 @@ class NsLcm(LcmBase):
         if destroy_ee:
             await self.n2vc.delete_execution_environment(vca_deployed["ee_id"])
 
-    async def _delete_N2VC(self, nsr_id: str):
-        self._write_all_config_status(nsr_id=nsr_id, status='TERMINATING')
-        namespace = "." + nsr_id
+    async def _delete_all_N2VC(self, db_nsr: dict):
+        self._write_all_config_status(db_nsr=db_nsr, status='TERMINATING')
+        namespace = "." + db_nsr["_id"]
         await self.n2vc.delete_namespace(namespace=namespace, total_timeout=self.timeout_charm_delete)
-        self._write_all_config_status(nsr_id=nsr_id, status='DELETED')
+        self._write_all_config_status(db_nsr=db_nsr, status='DELETED')
 
     async def _terminate_RO(self, logging_text, nsr_deployed, nsr_id, nslcmop_id, stage):
         """
@@ -2780,7 +2784,7 @@ class NsLcm(LcmBase):
             stage[1] = "Deleting all execution environments."
             self.logger.debug(logging_text + stage[1])
 
-            task_delete_ee = asyncio.ensure_future(asyncio.wait_for(self._delete_N2VC(nsr_id=nsr_id),
+            task_delete_ee = asyncio.ensure_future(asyncio.wait_for(self._delete_all_N2VC(db_nsr=db_nsr),
                                                                     timeout=self.timeout_charm_delete))
             # task_delete_ee = asyncio.ensure_future(self.n2vc.delete_namespace(namespace="." + nsr_id))
             tasks_dict_info[task_delete_ee] = "Terminating all VCA"

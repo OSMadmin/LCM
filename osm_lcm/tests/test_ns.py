@@ -303,23 +303,23 @@ class TestMyNS(asynctest.TestCase):
         self.assertEqual(return_value, expected_value)
         # print("scale_result: {}".format(self.db.get_one("nslcmops", {"_id": nslcmop_id}).get("detailed-status")))
 
-    # Test _reintent_or_skip_suboperation()
+    # Test _retry_or_skip_suboperation()
     # Expected result:
     # - if a suboperation's 'operationState' is marked as 'COMPLETED', SUBOPERATION_STATUS_SKIP is expected
     # - if marked as anything but 'COMPLETED', the suboperation index is expected
-    def test_scale_reintent_or_skip_suboperation(self):
+    def test_scale_retry_or_skip_suboperation(self):
         # Load an alternative 'nslcmops' YAML for this test
         nslcmop_id = descriptors.test_ids["TEST-A"]["instantiate"]
         db_nslcmop = self.db.get_one('nslcmops', {"_id": nslcmop_id})
         op_index = 2
         # Test when 'operationState' is 'COMPLETED'
         db_nslcmop['_admin']['operations'][op_index]['operationState'] = 'COMPLETED'
-        return_value = self.my_ns._reintent_or_skip_suboperation(db_nslcmop, op_index)
+        return_value = self.my_ns._retry_or_skip_suboperation(db_nslcmop, op_index)
         expected_value = self.my_ns.SUBOPERATION_STATUS_SKIP
         self.assertEqual(return_value, expected_value)
         # Test when 'operationState' is not 'COMPLETED'
         db_nslcmop['_admin']['operations'][op_index]['operationState'] = None
-        return_value = self.my_ns._reintent_or_skip_suboperation(db_nslcmop, op_index)
+        return_value = self.my_ns._retry_or_skip_suboperation(db_nslcmop, op_index)
         expected_value = op_index
         self.assertEqual(return_value, expected_value)
 
