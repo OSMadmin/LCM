@@ -2781,13 +2781,14 @@ class NsLcm(LcmBase):
 
             # remove All execution environments at once
             stage[0] = "Stage 3/3 delete all."
-            stage[1] = "Deleting all execution environments."
-            self.logger.debug(logging_text + stage[1])
 
-            task_delete_ee = asyncio.ensure_future(asyncio.wait_for(self._delete_all_N2VC(db_nsr=db_nsr),
-                                                                    timeout=self.timeout_charm_delete))
-            # task_delete_ee = asyncio.ensure_future(self.n2vc.delete_namespace(namespace="." + nsr_id))
-            tasks_dict_info[task_delete_ee] = "Terminating all VCA"
+            if nsr_deployed.get("VCA"):
+                stage[1] = "Deleting all execution environments."
+                self.logger.debug(logging_text + stage[1])
+                task_delete_ee = asyncio.ensure_future(asyncio.wait_for(self._delete_all_N2VC(db_nsr=db_nsr),
+                                                                        timeout=self.timeout_charm_delete))
+                # task_delete_ee = asyncio.ensure_future(self.n2vc.delete_namespace(namespace="." + nsr_id))
+                tasks_dict_info[task_delete_ee] = "Terminating all VCA"
 
             # Delete from k8scluster
             stage[1] = "Deleting KDUs."
