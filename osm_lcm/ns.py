@@ -3168,8 +3168,11 @@ class NsLcm(LcmBase):
             else:
                 desc_params = self._format_additional_params(db_nsr.get("additionalParamsForNs"))
 
+            if kdu_name:
+                kdu_action = True if not deep_get(kdu, ("kdu-configuration", "juju")) else False
+
             # TODO check if ns is in a proper status
-            if kdu_name and primitive in ("upgrade", "rollback", "status"):
+            if kdu_name and (primitive in ("upgrade", "rollback", "status") or kdu_action):
                 # kdur and desc_params already set from before
                 if primitive_params:
                     desc_params.update(primitive_params)
@@ -3221,13 +3224,24 @@ class NsLcm(LcmBase):
                             cluster_uuid=kdu.get("k8scluster-uuid"),
                             kdu_instance=kdu.get("kdu-instance")),
                         timeout=timeout_ns_action)
+                else:
+                    kdu_instance = kdu.get("kdu-instance") or "{}-{}".format(kdu["kdu-name"], nsr_id)
+                    params = self._map_primitive_params(config_primitive_desc, primitive_params, desc_params)
+
+                    detailed_status = await asyncio.wait_for(
+                        self.k8scluster_map[kdu["k8scluster-type"]].exec_primitive(
+                            cluster_uuid=kdu.get("k8scluster-uuid"),
+                            kdu_instance=kdu_instance,
+                            primitive_name=primitive,
+                            params=params, db_dict=db_dict,
+                            timeout=timeout_ns_action),
+                        timeout=timeout_ns_action)
 
                 if detailed_status:
                     nslcmop_operation_state = 'COMPLETED'
                 else:
                     detailed_status = ''
                     nslcmop_operation_state = 'FAILED'
-
             else:
                 nslcmop_operation_state, detailed_status = await self._ns_execute_primitive(
                     self._look_for_deployed_vca(nsr_deployed["VCA"],
