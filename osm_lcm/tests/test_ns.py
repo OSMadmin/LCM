@@ -281,7 +281,7 @@ class TestMyNS(asynctest.TestCase):
             nsd["constituent-vnfd"].append({"vnfd-id-ref": k, "member-vnf-index": k})
 
         n2vc_key_list = ["key"]
-        ro_ns_params = self.my_ns.ns_params_2_RO(ns_params, nsd, vnfd_dict, n2vc_key_list)
+        ro_ns_params = self.my_ns._ns_params_2_RO(ns_params, nsd, vnfd_dict, n2vc_key_list)
         ro_params_expected = {'wim_account': None, "datacenter": ro_vim_id,
                               "vnfs": {"5": {"vdus": {"vdu_id": {"mgmt_keys": n2vc_key_list}}}}}
         self.assertEqual(ro_ns_params, ro_params_expected)
@@ -504,7 +504,7 @@ class TestMyNS(asynctest.TestCase):
         k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
                             "k8scluster-type": "helm-chart",
                             "kdu-name": "ldap", "kdu-model": "stable/openldap:1.2.1",
-                            "member-vnf-index": "multikdu"}
+                            "member-vnf-index": "multikdu", "namespace": None}
 
         self.assertEqual(db_nsr["_admin"]["deployed"]["K8s"][0], k8s_instace_info)
         k8s_instace_info["kdu-name"] = "mongo"

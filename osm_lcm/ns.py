@@ -277,7 +277,7 @@ class NsLcm(LcmBase):
             raise LcmException("Error parsing Jinja2 to cloud-init content at vnfd[id={}]:vdu[id={}]: {}".
                                format(vnfd["id"], vdu["id"], e))
 
-    def ns_params_2_RO(self, ns_params, nsd, vnfd_dict, n2vc_key_list):
+    def _ns_params_2_RO(self, ns_params, nsd, vnfd_dict, n2vc_key_list):
         """
         Creates a RO ns descriptor from OSM ns_instantiate params
         :param ns_params: OSM instantiate params
@@ -898,7 +898,7 @@ class NsLcm(LcmBase):
                             await asyncio.wait(task_dependency, timeout=3600)
 
                 stage[2] = "Checking instantiation parameters."
-                RO_ns_params = self.ns_params_2_RO(ns_params, nsd, db_vnfds_ref, n2vc_key_list)
+                RO_ns_params = self._ns_params_2_RO(ns_params, nsd, db_vnfds_ref, n2vc_key_list)
                 stage[2] = "Deploying ns at VIM."
                 db_nsr_update["detailed-status"] = " ".join(stage)
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
@@ -2116,6 +2116,7 @@ class NsLcm(LcmBase):
                 for kdur in get_iterable(vnfr_data, "kdur"):
                     desc_params = self._format_additional_params(kdur.get("additionalParams"))
                     vnfd_id = vnfr_data.get('vnfd-id')
+                    namespace = kdur.get("k8s-namespace")
                     if kdur.get("helm-chart"):
                         kdumodel = kdur["helm-chart"]
                         k8sclustertype = "helm-chart"
@@ -2165,7 +2166,8 @@ class NsLcm(LcmBase):
                                         "k8scluster-type": k8sclustertype,
                                         "member-vnf-index": vnfr_data["member-vnf-index-ref"],
                                         "kdu-name": kdur["kdu-name"],
-                                        "kdu-model": kdumodel}
+                                        "kdu-model": kdumodel,
+                                        "namespace": namespace}
                     db_nsr_update["_admin.deployed.K8s.{}".format(index)] = k8s_instace_info
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
@@ -2177,7 +2179,7 @@ class NsLcm(LcmBase):
                         self.k8scluster_map[k8sclustertype].install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
                                                                     atomic=True, params=desc_params,
                                                                     db_dict=db_dict, timeout=600,
-                                                                    kdu_name=kdur["kdu-name"]))
+                                                                    kdu_name=kdur["kdu-name"], namespace=namespace))
 
                     self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDU-{}".format(index), task)
                     task_instantiation_info[task] = "Deploying KDU {}".format(kdur["kdu-name"])
