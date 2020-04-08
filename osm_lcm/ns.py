@@ -33,7 +33,7 @@ from osm_common.dbbase import DbException
 from osm_common.fsbase import FsException
 
 from n2vc.n2vc_juju_conn import N2VCJujuConnector
-from n2vc.exceptions import N2VCException
+from n2vc.exceptions import N2VCException, N2VCNotFound, K8sException
 
 from copy import copy, deepcopy
 from http import HTTPStatus
@@ -2533,7 +2533,10 @@ class NsLcm(LcmBase):
     async def _delete_all_N2VC(self, db_nsr: dict):
         self._write_all_config_status(db_nsr=db_nsr, status='TERMINATING')
         namespace = "." + db_nsr["_id"]
-        await self.n2vc.delete_namespace(namespace=namespace, total_timeout=self.timeout_charm_delete)
+        try:
+            await self.n2vc.delete_namespace(namespace=namespace, total_timeout=self.timeout_charm_delete)
+        except N2VCNotFound:  # already deleted. Skip
+            pass
         self._write_all_config_status(db_nsr=db_nsr, status='DELETED')
 
     async def _terminate_RO(self, logging_text, nsr_deployed, nsr_id, nslcmop_id, stage):
@@ -3227,7 +3230,7 @@ class NsLcm(LcmBase):
                                                                                    detailed_status))
             return  # database update is called inside finally
 
-        except (DbException, LcmException, N2VCException) as e:
+        except (DbException, LcmException, N2VCException, K8sException) as e:
             self.logger.error(logging_text + "Exit Exception {}".format(e))
             exc = e
         except asyncio.CancelledError:
