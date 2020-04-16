@@ -765,7 +765,7 @@ class NsLcm(LcmBase):
 
             # Check for and optionally request placement optimization. Database will be updated if placement activated
             stage[2] = "Waiting for Placement."
-            await self.do_placement(logging_text, db_nslcmop, db_vnfrs)
+            await self._do_placement(logging_text, db_nslcmop, db_vnfrs)
 
             # deploy RO
 
@@ -1460,28 +1460,40 @@ class NsLcm(LcmBase):
             self.logger.warn('Error writing configuration status={}, ns={}, vca_index={}: {}'
                              .format(status, nsr_id, vca_index, e))
 
-    async def do_placement(self, logging_text, db_nslcmop, db_vnfrs):
+    async def _do_placement(self, logging_text, db_nslcmop, db_vnfrs):
+        """
+        Check and computes the placement, (vim account where to deploy). If it is decided by an external tool, it
+        sends the request via kafka and wait until the result is wrote at database (nslcmops _admin.plca).
+        Database is used because the result can be obtained from a different LCM worker in case of HA.
+        :param logging_text: contains the prefix for logging, with the ns and nslcmop identifiers
+        :param db_nslcmop: database content of nslcmop
+        :param db_vnfrs: database content of vnfrs, indexed by member-vnf-index.
+        :return: None. Modifies database vnfrs and parameter db_vnfr with the computed 'vim-account-id'
+        """
+        nslcmop_id = db_nslcmop['_id']
         placement_engine = deep_get(db_nslcmop, ('operationParams', 'placement-engine'))
         if placement_engine == "PLA":
-            self.logger.debug(logging_text + "Invoke placement optimization for nslcmopId={}".format(db_nslcmop['id']))
-            await self.msg.aiowrite("pla", "get_placement", {'nslcmopId': db_nslcmop['_id']}, loop=self.loop)
+            self.logger.debug(logging_text + "Invoke and wait for placement optimization")
+            await self.msg.aiowrite("pla", "get_placement", {'nslcmopId': nslcmop_id}, loop=self.loop)
             db_poll_interval = 5
-            wait = db_poll_interval * 4
+            wait = db_poll_interval * 10
             pla_result = None
             while not pla_result and wait >= 0:
                 await asyncio.sleep(db_poll_interval)
                 wait -= db_poll_interval
-                db_nslcmop = self.db.get_one("nslcmops", {"_id": db_nslcmop["_id"]})
+                db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
                 pla_result = deep_get(db_nslcmop, ('_admin', 'pla'))
 
             if not pla_result:
-                raise LcmException("Placement timeout for nslcmopId={}".format(db_nslcmop['id']))
+                raise LcmException("Placement timeout for nslcmopId={}".format(nslcmop_id))
 
             for pla_vnf in pla_result['vnf']:
                 vnfr = db_vnfrs.get(pla_vnf['member-vnf-index'])
                 if not pla_vnf.get('vimAccountId') or not vnfr:
                     continue
                 self.db.set_one("vnfrs", {"_id": vnfr["_id"]}, {"vim-account-id": pla_vnf['vimAccountId']})
+                # Modifies db_vnfrs
+                vnfr["vim-account-id"] = pla_vnf['vimAccountId']
         return
 
     def update_nsrs_with_pla_result(self, params):
