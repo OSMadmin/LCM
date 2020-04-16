@@ -39,6 +39,7 @@ from copy import copy, deepcopy
 from http import HTTPStatus
 from time import time
 from uuid import uuid4
+from functools import partial
 
 __author__ = "Alfonso Tierno"
 
@@ -2084,6 +2085,25 @@ class NsLcm(LcmBase):
             self.logger.warn(logging_text + ' ERROR adding relations: {}'.format(e))
             return False
 
+    def _write_db_callback(self, task, item, _id, on_done=None, on_exc=None):
+        """
+        callback for kdu install intended to store the returned kdu_instance at database
+        :return: None
+        """
+        db_update = {}
+        try:
+            result = task.result()
+            if on_done:
+                db_update[on_done] = str(result)
+        except Exception as e:
+            if on_exc:
+                db_update[on_exc] = str(e)
+        if db_update:
+            try:
+                self.update_db_2(item, _id, db_update)
+            except Exception:
+                pass
+
     async def deploy_kdus(self, logging_text, nsr_id, nslcmop_id, db_vnfrs, db_vnfds, task_instantiation_info):
         # Launch kdus if present in the descriptor
 
@@ -2168,12 +2188,13 @@ class NsLcm(LcmBase):
                                         "kdu-name": kdur["kdu-name"],
                                         "kdu-model": kdumodel,
                                         "namespace": namespace}
-                    db_nsr_update["_admin.deployed.K8s.{}".format(index)] = k8s_instace_info
+                    db_path = "_admin.deployed.K8s.{}".format(index)
+                    db_nsr_update[db_path] = k8s_instace_info
                     self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
                     db_dict = {"collection": "nsrs",
                                "filter": {"_id": nsr_id},
-                               "path": "_admin.deployed.K8s.{}".format(index)}
+                               "path": db_path}
 
                     task = asyncio.ensure_future(
                         self.k8scluster_map[k8sclustertype].install(cluster_uuid=cluster_uuid, kdu_model=kdumodel,
@@ -2181,6 +2202,9 @@ class NsLcm(LcmBase):
                                                                     db_dict=db_dict, timeout=600,
                                                                     kdu_name=kdur["kdu-name"], namespace=namespace))
 
+                    task.add_done_callback(partial(self._write_db_callback, item="nsrs", _id=nsr_id,
+                                                   on_done=db_path + ".kdu-instance",
+                                                   on_exc=db_path + ".detailed-status"))
                     self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "instantiate_KDU-{}".format(index), task)
                     task_instantiation_info[task] = "Deploying KDU {}".format(kdur["kdu-name"])
 

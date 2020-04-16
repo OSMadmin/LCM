@@ -501,7 +501,7 @@ class TestMyNS(asynctest.TestCase):
         self.assertIn("K8s", db_nsr["_admin"]["deployed"], "K8s entry not created at '_admin.deployed'")
         self.assertIsInstance(db_nsr["_admin"]["deployed"]["K8s"], list, "K8s entry is not of type list")
         self.assertEqual(len(db_nsr["_admin"]["deployed"]["K8s"]), 2, "K8s entry is not of type list")
-        k8s_instace_info = {"kdu-instance": None, "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
+        k8s_instace_info = {"kdu-instance": "k8s_id", "k8scluster-uuid": "73d96432-d692-40d2-8440-e0c73aee209c",
                             "k8scluster-type": "helm-chart",
                             "kdu-name": "ldap", "kdu-model": "stable/openldap:1.2.1",
                             "member-vnf-index": "multikdu", "namespace": None}
