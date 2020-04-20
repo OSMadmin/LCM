@@ -2968,7 +2968,8 @@ class NsLcm(LcmBase):
                     new_error = created_tasks_info[task] + ": {}".format(exc)
                     error_list.append(created_tasks_info[task])
                     error_detail_list.append(new_error)
-                    if isinstance(exc, (str, DbException, N2VCException, ROclient.ROClientException, LcmException)):
+                    if isinstance(exc, (str, DbException, N2VCException, ROclient.ROClientException, LcmException,
+                                        K8sException)):
                         self.logger.error(logging_text + new_error)
                     else:
                         exc_traceback = "".join(traceback.format_exception(None, exc, exc.__traceback__))

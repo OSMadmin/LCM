@@ -1100,7 +1100,7 @@ class K8sClusterLcm(LcmBase):
             #     raise Exception("K8scluster was not properly removed")
 
         except Exception as e:
-            if isinstance(e, LcmException, DbException):
+            if isinstance(e, (LcmException, DbException)):
                 self.logger.error(logging_text + "Exit Exception {}".format(e))
             else:
                 self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
@@ -1216,6 +1216,7 @@ class K8sRepoLcm(LcmBase):
         db_k8srepo = None
         db_k8srepo_update = {}
 
+        exc = None
         operationState_HA = ''
         detailed_status_HA = ''
         try:
@@ -1241,6 +1242,7 @@ class K8sRepoLcm(LcmBase):
                 self.lcm_tasks.register_HA('k8srepo', 'delete', op_id,
                                            operationState=operationState_HA,
                                            detailed_status=detailed_status_HA)
+                self.db.del_one("k8srepos", {"_id": k8srepo_id})
             except DbException as e:
                 self.logger.error(logging_text + "Cannot update database: {}".format(e))
             self.lcm_tasks.remove("k8srepo", k8srepo_id, order_id)
