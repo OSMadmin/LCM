@@ -1168,7 +1168,6 @@ class NsLcm(LcmBase):
                     element_under_configuration = kdu_name
 
             # Get artifact path
-            self.fs.sync()  # Sync from FSMongo
             artifact_path = "{}/{}/charms/{}".format(
                 base_folder["folder"],
                 base_folder["pkg-dir"],
@@ -1547,6 +1546,9 @@ class NsLcm(LcmBase):
 
         logging_text = "Task ns={} instantiate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
+
+        # Sync from FSMongo
+        self.fs.sync()
 
         # get all needed from database
 
