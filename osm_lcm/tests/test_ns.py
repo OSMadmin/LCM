@@ -261,9 +261,12 @@ class TestMyNS(asynctest.TestCase):
         # TODO add a terminate
 
     def test_ns_params_2_RO(self):
-        vim = self.db.get_list("vim_accounts")[0]
-        vim_id = vim["_id"]
-        ro_vim_id = vim["_admin"]["deployed"]["RO"]
+        vims = self.db.get_list("vim_accounts")
+        vim_id = vims[0]["_id"]
+        ro_vim_id = vims[0]["_admin"]["deployed"]["RO"]
+        vim_id2 = vims[1]["_id"]
+        ro_vim_id2 = vims[1]["_admin"]["deployed"]["RO"]
+
         ns_params = {"vimAccountId": vim_id}
         mgmt_interface = {"cp": "cp"}
         vdu = [{"id": "vdu_id", "interface": [{"external-connection-point-ref": "cp"}]}]
@@ -277,13 +280,18 @@ class TestMyNS(asynctest.TestCase):
                   "vnf-configuration": {"config-access": {"ssh-access": {"required": True, "default_user": "U"}}}},
         }
         nsd = {"constituent-vnfd": []}
+        db_vnfrs = {}
         for k in vnfd_dict.keys():
-            nsd["constituent-vnfd"].append({"vnfd-id-ref": k, "member-vnf-index": k})
+            nsd["constituent-vnfd"].append({"vnfd-id-ref": k, "member-vnf-index": "member " + k})
+            db_vnfrs["member " + k] = {"vim-account-id": vim_id2 if k == "1" else vim_id}
 
         n2vc_key_list = ["key"]
-        ro_ns_params = self.my_ns._ns_params_2_RO(ns_params, nsd, vnfd_dict, n2vc_key_list)
+        ro_ns_params = self.my_ns._ns_params_2_RO(ns_params, nsd, vnfd_dict, db_vnfrs, n2vc_key_list)
         ro_params_expected = {'wim_account': None, "datacenter": ro_vim_id,
-                              "vnfs": {"5": {"vdus": {"vdu_id": {"mgmt_keys": n2vc_key_list}}}}}
+                              "vnfs": {
+                                  "member 5": {"vdus": {"vdu_id": {"mgmt_keys": n2vc_key_list}}},
+                                  "member 1": {"datacenter": ro_vim_id2}
+                              }}
         self.assertEqual(ro_ns_params, ro_params_expected)
 
     # Test scale() and related methods

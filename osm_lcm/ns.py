@@ -278,10 +278,12 @@ class NsLcm(LcmBase):
             raise LcmException("Error parsing Jinja2 to cloud-init content at vnfd[id={}]:vdu[id={}]: {}".
                                format(vnfd["id"], vdu["id"], e))
 
-    def _ns_params_2_RO(self, ns_params, nsd, vnfd_dict, n2vc_key_list):
+    def _ns_params_2_RO(self, ns_params, nsd, vnfd_dict, db_vnfrs, n2vc_key_list):
         """
         Creates a RO ns descriptor from OSM ns_instantiate params
         :param ns_params: OSM instantiate params
+        :param vnfd_dict: database content of vnfds, indexed by id (not _id). {id: {vnfd_object}, ...}
+        :param db_vnfrs: database content of vnfrs, indexed by member-vnf-index. {member-vnf-index: {vnfr_object}, ...}
         :return: The RO ns descriptor
         """
         vim_2_RO = {}
@@ -343,6 +345,13 @@ class NsLcm(LcmBase):
             "wim_account": wim_account_2_RO(ns_params.get("wimAccountId")),
             # "scenario": ns_params["nsdId"],
         }
+        # set vim_account of each vnf if different from general vim_account.
+        # Get this information from <vnfr> database content, key vim-account-id
+        # Vim account can be set by placement_engine and it may be different from
+        # the instantiate parameters (vnfs.member-vnf-index.datacenter).
+        for vnf_index, vnfr in db_vnfrs.items():
+            if vnfr.get("vim-account-id") and vnfr["vim-account-id"] != ns_params["vimAccountId"]:
+                populate_dict(RO_ns_params, ("vnfs", vnf_index, "datacenter"), vim_account_2_RO(vnfr["vim-account-id"]))
 
         n2vc_key_list = n2vc_key_list or []
         for vnfd_ref, vnfd in vnfd_dict.items():
@@ -391,9 +400,6 @@ class NsLcm(LcmBase):
             else:
                 raise LcmException("Invalid instantiate parameter vnf:member-vnf-index={} is not present at nsd:"
                                    "constituent-vnfd".format(vnf_params["member-vnf-index"]))
-            if vnf_params.get("vimAccountId"):
-                populate_dict(RO_ns_params, ("vnfs", vnf_params["member-vnf-index"], "datacenter"),
-                              vim_account_2_RO(vnf_params["vimAccountId"]))
 
             for vdu_params in get_iterable(vnf_params, "vdu"):
                 # TODO feature 1417: check that this VDU exist and it is not a PDU
@@ -752,6 +758,19 @@ class NsLcm(LcmBase):
 
     async def instantiate_RO(self, logging_text, nsr_id, nsd, db_nsr, db_nslcmop, db_vnfrs, db_vnfds_ref,
                              n2vc_key_list, stage):
+        """
+        Instantiate at RO
+        :param logging_text: preffix text to use at logging
+        :param nsr_id: nsr identity
+        :param nsd: database content of ns descriptor
+        :param db_nsr: database content of ns record
+        :param db_nslcmop: database content of ns operation, in this case, 'instantiate'
+        :param db_vnfrs:
+        :param db_vnfds_ref: database content of vnfds, indexed by id (not _id). {id: {vnfd_object}, ...}
+        :param n2vc_key_list: ssh-public-key list to be inserted to management vdus via cloud-init
+        :param stage: list with 3 items: [general stage, tasks, vim_specific]. This task will write over vim_specific
+        :return: None or exception
+        """
         try:
             db_nsr_update = {}
             RO_descriptor_number = 0   # number of descriptors created at RO
@@ -899,7 +918,7 @@ class NsLcm(LcmBase):
                             await asyncio.wait(task_dependency, timeout=3600)
 
                 stage[2] = "Checking instantiation parameters."
-                RO_ns_params = self._ns_params_2_RO(ns_params, nsd, db_vnfds_ref, n2vc_key_list)
+                RO_ns_params = self._ns_params_2_RO(ns_params, nsd, db_vnfds_ref, db_vnfrs, n2vc_key_list)
                 stage[2] = "Deploying ns at VIM."
                 db_nsr_update["detailed-status"] = " ".join(stage)
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)

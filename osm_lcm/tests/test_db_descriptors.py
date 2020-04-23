@@ -753,14 +753,43 @@ db_vim_accounts_text = """
         projects_write:
         - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
     _id: ea958ba5-4e58-4405-bf42-6e3be15d4c3a
-    description: Openstack site 2, based on Mirantis, also called DSS9000-1, with
-        tenant tid
-    name: ost2-mrt-tid
+    description: some description here
+    name: vim1
     schema_version: '1.1'
     vim_password: 5g0yGX86qIhprX86YTMcpg==
     vim_tenant_name: osm
     vim_type: openstack
     vim_url: http://10.95.87.162:5000/v2.0
+    vim_user: osm
+-   _admin:
+        created: 1566818150.3024442
+        current_operation: 0
+        deployed:
+            RO: 9ac17c0d-4265-4333-843b-c3cbd1f93f88
+            RO-account: 011895dc-ab34-4c9f-b06f-401a8ffb073b
+        detailed-status: Done
+        modified: 1566818150.3024442
+        operationalState: ENABLED
+        operations:
+        -   detailed-status: Done
+            lcmOperationType: create
+            operationParams: null
+            operationState: COMPLETED
+            startTime: 1566818150.3025382
+            statusEnteredTime: 1566818150.3025382
+            worker: 86434c2948e2
+        projects_read:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+        projects_write:
+        - 25b5aebf-3da1-49ed-99de-1d2b4a86d6e4
+    _id: 05357241-1a01-416f-9e02-af20f65f51cd
+    description: No description
+    name: vim2
+    schema_version: '1.1'
+    vim_password: 5g0yGX86qIhprX86YTMcpg==
+    vim_tenant_name: osm
+    vim_type: dumy
+    vim_url: http://10.95.88.162:5000/v2.0
     vim_user: osm
 """
 
