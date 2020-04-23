@@ -785,10 +785,15 @@ class NsLcm(LcmBase):
 
             # Check for and optionally request placement optimization. Database will be updated if placement activated
             stage[2] = "Waiting for Placement."
-            await self._do_placement(logging_text, db_nslcmop, db_vnfrs)
+            if await self._do_placement(logging_text, db_nslcmop, db_vnfrs):
+                # in case of placement change ns_params[vimAcountId) if not present at any vnfrs
+                for vnfr in db_vnfrs.values():
+                    if ns_params["vimAccountId"] == vnfr["vim-account-id"]:
+                        break
+                else:
+                    ns_params["vimAccountId"] == vnfr["vim-account-id"]
 
             # deploy RO
-
             # get vnfds, instantiate at RO
             for c_vnf in nsd.get("constituent-vnfd", ()):
                 member_vnf_index = c_vnf["member-vnf-index"]
@@ -1488,8 +1493,10 @@ class NsLcm(LcmBase):
         :param logging_text: contains the prefix for logging, with the ns and nslcmop identifiers
         :param db_nslcmop: database content of nslcmop
         :param db_vnfrs: database content of vnfrs, indexed by member-vnf-index.
-        :return: None. Modifies database vnfrs and parameter db_vnfr with the computed 'vim-account-id'
+        :return: True if some modification is done. Modifies database vnfrs and parameter db_vnfr with the
+            computed 'vim-account-id'
         """
+        modified = False
         nslcmop_id = db_nslcmop['_id']
         placement_engine = deep_get(db_nslcmop, ('operationParams', 'placement-engine'))
         if placement_engine == "PLA":
@@ -1511,10 +1518,11 @@ class NsLcm(LcmBase):
                 vnfr = db_vnfrs.get(pla_vnf['member-vnf-index'])
                 if not pla_vnf.get('vimAccountId') or not vnfr:
                     continue
+                modified = True
                 self.db.set_one("vnfrs", {"_id": vnfr["_id"]}, {"vim-account-id": pla_vnf['vimAccountId']})
                 # Modifies db_vnfrs
                 vnfr["vim-account-id"] = pla_vnf['vimAccountId']
-        return
+        return modified
 
     def update_nsrs_with_pla_result(self, params):
         try:
