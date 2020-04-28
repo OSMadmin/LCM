@@ -1932,14 +1932,13 @@ class NsLcm(LcmBase):
                     error_detail=error_detail,
                     other_update=db_nsr_update
                 )
-            if db_nslcmop:
-                self._write_op_status(
-                    op_id=nslcmop_id,
-                    stage="",
-                    error_message=error_description_nslcmop,
-                    operation_state=nslcmop_operation_state,
-                    other_update=db_nslcmop_update,
-                )
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage="",
+                error_message=error_description_nslcmop,
+                operation_state=nslcmop_operation_state,
+                other_update=db_nslcmop_update,
+            )
 
             if nslcmop_operation_state:
                 try:
@@ -2758,6 +2757,7 @@ class NsLcm(LcmBase):
         timeout_ns_terminate = self.timeout_ns_terminate
         db_nsr = None
         db_nslcmop = None
+        operation_params = None
         exc = None
         error_list = []   # annotates all failed error messages
         db_nslcmop_update = {}
@@ -2942,14 +2942,14 @@ class NsLcm(LcmBase):
                     error_detail=error_detail,
                     other_update=db_nsr_update
                 )
-            if db_nslcmop:
-                self._write_op_status(
-                    op_id=nslcmop_id,
-                    stage="",
-                    error_message=error_description_nslcmop,
-                    operation_state=nslcmop_operation_state,
-                    other_update=db_nslcmop_update,
-                )
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage="",
+                error_message=error_description_nslcmop,
+                operation_state=nslcmop_operation_state,
+                other_update=db_nslcmop_update,
+            )
+            if operation_params:
                 autoremove = operation_params.get("autoremove", False)
             if nslcmop_operation_state:
                 try:
@@ -3338,14 +3338,13 @@ class NsLcm(LcmBase):
                     other_update=db_nsr_update
                 )
 
-            if db_nslcmop:
-                self._write_op_status(
-                    op_id=nslcmop_id,
-                    stage="",
-                    error_message=error_description_nslcmop,
-                    operation_state=nslcmop_operation_state,
-                    other_update=db_nslcmop_update,
-                )
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage="",
+                error_message=error_description_nslcmop,
+                operation_state=nslcmop_operation_state,
+                other_update=db_nslcmop_update,
+            )
 
             if nslcmop_operation_state:
                 try:
@@ -3777,9 +3776,6 @@ class NsLcm(LcmBase):
                         scale_process = None
             # POST-SCALE END
 
-            db_nslcmop_update["operationState"] = nslcmop_operation_state = "COMPLETED"
-            db_nslcmop_update["statusEnteredTime"] = time()
-            db_nslcmop_update["detailed-status"] = "done"
             db_nsr_update["detailed-status"] = ""  # "scaled {} {}".format(scaling_group, scaling_type)
             db_nsr_update["operational-status"] = "running" if old_operational_status == "failed" \
                 else old_operational_status
@@ -3802,10 +3798,8 @@ class NsLcm(LcmBase):
                 current_operation_id=None
             )
             if exc:
-                if db_nslcmop:
-                    db_nslcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
-                    db_nslcmop_update["operationState"] = nslcmop_operation_state = "FAILED"
-                    db_nslcmop_update["statusEnteredTime"] = time()
+                db_nslcmop_update["detailed-status"] = error_description_nslcmop = "FAILED {}: {}".format(step, exc)
+                nslcmop_operation_state = "FAILED"
                 if db_nsr:
                     db_nsr_update["operational-status"] = old_operational_status
                     db_nsr_update["config-status"] = old_config_status
@@ -3817,20 +3811,27 @@ class NsLcm(LcmBase):
                             db_nsr_update["operational-status"] = "failed"
                         db_nsr_update["detailed-status"] = "FAILED scaling nslcmop={} {}: {}".format(nslcmop_id, step,
                                                                                                      exc)
-            try:
-                if db_nslcmop and db_nslcmop_update:
-                    self.update_db_2("nslcmops", nslcmop_id, db_nslcmop_update)
-                if db_nsr:
-                    self._write_ns_status(
-                        nsr_id=nsr_id,
-                        ns_state=None,
-                        current_operation="IDLE",
-                        current_operation_id=None,
-                        other_update=db_nsr_update
-                    )
+            else:
+                error_description_nslcmop = None
+                nslcmop_operation_state = "COMPLETED"
+                db_nslcmop_update["detailed-status"] = "Done"
 
-            except DbException as e:
-                self.logger.error(logging_text + "Cannot update database: {}".format(e))
+            self._write_op_status(
+                op_id=nslcmop_id,
+                stage="",
+                error_message=error_description_nslcmop,
+                operation_state=nslcmop_operation_state,
+                other_update=db_nslcmop_update,
+            )
+            if db_nsr:
+                self._write_ns_status(
+                    nsr_id=nsr_id,
+                    ns_state=None,
+                    current_operation="IDLE",
+                    current_operation_id=None,
+                    other_update=db_nsr_update
+                )
+
             if nslcmop_operation_state:
                 try:
                     await self.msg.aiowrite("ns", "scaled", {"nsr_id": nsr_id, "nslcmop_id": nslcmop_id,
