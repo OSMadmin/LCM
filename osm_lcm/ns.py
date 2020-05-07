@@ -25,6 +25,7 @@ import json
 from jinja2 import Environment, Template, meta, TemplateError, TemplateNotFound, TemplateSyntaxError
 
 from osm_lcm import ROclient
+from osm_lcm.ng_ro import NgRoClient, NgRoException
 from osm_lcm.lcm_utils import LcmException, LcmExceptionNoMgmtIP, LcmBase, deep_get, get_iterable, populate_dict
 from n2vc.k8s_helm_conn import K8sHelmConnector
 from n2vc.k8s_juju_conn import K8sJujuConnector
@@ -41,7 +42,7 @@ from time import time
 from uuid import uuid4
 from functools import partial
 
-__author__ = "Alfonso Tierno"
+__author__ = "Alfonso Tierno <alfonso.tiernosepulveda@telefonica.com>"
 
 
 class NsLcm(LcmBase):
@@ -74,6 +75,7 @@ class NsLcm(LcmBase):
         self.lcm_tasks = lcm_tasks
         self.timeout = config["timeout"]
         self.ro_config = config["ro_config"]
+        self.ng_ro = config["ro_config"].get("ng")
         self.vca_config = config["VCA"].copy()
 
         # create N2VC connector
@@ -113,7 +115,10 @@ class NsLcm(LcmBase):
             "juju": self.k8sclusterjuju,
         }
         # create RO client
-        self.RO = ROclient.ROClient(self.loop, **self.ro_config)
+        if self.ng_ro:
+            self.RO = NgRoClient(self.loop, **self.ro_config)
+        else:
+            self.RO = ROclient.ROClient(self.loop, **self.ro_config)
 
     def _on_update_ro_db(self, nsrs_id, ro_descriptor):
 
@@ -756,6 +761,179 @@ class NsLcm(LcmBase):
             primitive_list.insert(config_position + 1, {"name": "verify-ssh-credentials", "parameter": []})
         return primitive_list
 
+    async def _instantiate_ng_ro(self, logging_text, nsr_id, nsd, db_nsr, db_nslcmop, db_vnfrs, db_vnfds_ref,
+                                 n2vc_key_list, stage, start_deploy, timeout_ns_deploy):
+        nslcmop_id = db_nslcmop["_id"]
+        target = {
+            "name": db_nsr["name"],
+            "ns": {"vld": []},
+            "vnf": [],
+            "image": deepcopy(db_nsr["image"]),
+            "flavor": deepcopy(db_nsr["flavor"]),
+            "action_id": nslcmop_id,
+        }
+        for image in target["image"]:
+            image["vim_info"] = []
+        for flavor in target["flavor"]:
+            flavor["vim_info"] = []
+
+        ns_params = db_nslcmop.get("operationParams")
+        ssh_keys = []
+        if ns_params.get("ssh_keys"):
+            ssh_keys += ns_params.get("ssh_keys")
+        if n2vc_key_list:
+            ssh_keys += n2vc_key_list
+
+        cp2target = {}
+        for vld_index, vld in enumerate(nsd.get("vld")):
+            target_vld = {"id": vld["id"],
+                          "name": vld["name"],
+                          "mgmt-network": vld.get("mgmt-network", False),
+                          "type": vld.get("type"),
+                          "vim_info": [{"vim-network-name": vld.get("vim-network-name"),
+                                        "vim_account_id": ns_params["vimAccountId"]}],
+                          }
+            for cp in vld["vnfd-connection-point-ref"]:
+                cp2target["member_vnf:{}.{}".format(cp["member-vnf-index-ref"], cp["vnfd-connection-point-ref"])] = \
+                    "nsrs:{}:vld.{}".format(nsr_id, vld_index)
+            target["ns"]["vld"].append(target_vld)
+        for vnfr in db_vnfrs.values():
+            vnfd = db_vnfds_ref[vnfr["vnfd-ref"]]
+            target_vnf = deepcopy(vnfr)
+            for vld in target_vnf.get("vld", ()):
+                # check if connected to a ns.vld
+                vnf_cp = next((cp for cp in vnfd.get("connection-point", ()) if
+                               cp.get("internal-vld-ref") == vld["id"]), None)
+                if vnf_cp:
+                    ns_cp = "member_vnf:{}.{}".format(vnfr["member-vnf-index-ref"], vnf_cp["id"])
+                    if cp2target.get(ns_cp):
+                        vld["target"] = cp2target[ns_cp]
+                vld["vim_info"] = [{"vim-network-name": vld.get("vim-network-name"),
+                                    "vim_account_id": vnfr["vim-account-id"]}]
+
+            for vdur in target_vnf.get("vdur", ()):
+                vdur["vim_info"] = [{"vim_account_id": vnfr["vim-account-id"]}]
+                vdud_index, vdud = next(k for k in enumerate(vnfd["vdu"]) if k[1]["id"] == vdur["vdu-id-ref"])
+                # vdur["additionalParams"] = vnfr.get("additionalParamsForVnf")  # TODO additional params for VDU
+
+                if ssh_keys:
+                    if deep_get(vdud, ("vdu-configuration", "config-access", "ssh-access", "required")):
+                        vdur["ssh-keys"] = ssh_keys
+                        vdur["ssh-access-required"] = True
+                    elif deep_get(vnfd, ("vnf-configuration", "config-access", "ssh-access", "required")) and \
+                            any(iface.get("mgmt-vnf") for iface in vdur["interfaces"]):
+                        vdur["ssh-keys"] = ssh_keys
+                        vdur["ssh-access-required"] = True
+
+                # cloud-init
+                if vdud.get("cloud-init-file"):
+                    vdur["cloud-init"] = "{}:file:{}".format(vnfd["_id"], vdud.get("cloud-init-file"))
+                elif vdud.get("cloud-init"):
+                    vdur["cloud-init"] = "{}:vdu:{}".format(vnfd["_id"], vdud_index)
+
+                # flavor
+                ns_flavor = target["flavor"][int(vdur["ns-flavor-id"])]
+                if not next((vi for vi in ns_flavor["vim_info"] if
+                             vi and vi.get("vim_account_id") == vnfr["vim-account-id"]), None):
+                    ns_flavor["vim_info"].append({"vim_account_id": vnfr["vim-account-id"]})
+                # image
+                ns_image = target["image"][int(vdur["ns-image-id"])]
+                if not next((vi for vi in ns_image["vim_info"] if
+                             vi and vi.get("vim_account_id") == vnfr["vim-account-id"]), None):
+                    ns_image["vim_info"].append({"vim_account_id": vnfr["vim-account-id"]})
+
+                vdur["vim_info"] = [{"vim_account_id": vnfr["vim-account-id"]}]
+            target["vnf"].append(target_vnf)
+
+        desc = await self.RO.deploy(nsr_id, target)
+        action_id = desc["action_id"]
+        await self._wait_ng_ro(self, nsr_id, action_id, nslcmop_id, start_deploy, timeout_ns_deploy, stage)
+
+        # Updating NSR
+        db_nsr_update = {
+            "_admin.deployed.RO.operational-status": "running",
+            "detailed-status": " ".join(stage)
+        }
+        # db_nsr["_admin.deployed.RO.detailed-status"] = "Deployed at VIM"
+        self.update_db_2("nsrs", nsr_id, db_nsr_update)
+        self._write_op_status(nslcmop_id, stage)
+        self.logger.debug(logging_text + "ns deployed at RO. RO_id={}".format(action_id))
+        return
+
+    async def _wait_ng_ro(self, nsr_id, action_id, nslcmop_id, start_time, timeout, stage):
+        detailed_status_old = None
+        db_nsr_update = {}
+        while time() <= start_time + timeout:
+            desc_status = await self.RO.status(nsr_id, action_id)
+            if desc_status["status"] == "FAILED":
+                raise NgRoException(desc_status["details"])
+            elif desc_status["status"] == "BUILD":
+                stage[2] = "VIM: ({})".format(desc_status["details"])
+            elif desc_status["status"] == "DONE":
+                stage[2] = "Deployed at VIM"
+                break
+            else:
+                assert False, "ROclient.check_ns_status returns unknown {}".format(desc_status["status"])
+            if stage[2] != detailed_status_old:
+                detailed_status_old = stage[2]
+                db_nsr_update["detailed-status"] = " ".join(stage)
+                self.update_db_2("nsrs", nsr_id, db_nsr_update)
+                self._write_op_status(nslcmop_id, stage)
+            await asyncio.sleep(5, loop=self.loop)
+        else:  # timeout_ns_deploy
+            raise NgRoException("Timeout waiting ns to deploy")
+
+    async def _terminate_ng_ro(self, logging_text, nsr_deployed, nsr_id, nslcmop_id, stage):
+        db_nsr_update = {}
+        failed_detail = []
+        action_id = None
+        start_deploy = time()
+        try:
+            target = {
+                "ns": {"vld": []},
+                "vnf": [],
+                "image": [],
+                "flavor": [],
+            }
+            desc = await self.RO.deploy(nsr_id, target)
+            action_id = desc["action_id"]
+            db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = action_id
+            db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETING"
+            self.logger.debug(logging_text + "ns terminate action at RO. action_id={}".format(action_id))
+
+            # wait until done
+            delete_timeout = 20 * 60  # 20 minutes
+            await self._wait_ng_ro(self, nsr_id, action_id, nslcmop_id, start_deploy, delete_timeout, stage)
+
+            db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = None
+            db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
+            # delete all nsr
+            await self.RO.delete(nsr_id)
+        except Exception as e:
+            if isinstance(e, NgRoException) and e.http_code == 404:  # not found
+                db_nsr_update["_admin.deployed.RO.nsr_id"] = None
+                db_nsr_update["_admin.deployed.RO.nsr_status"] = "DELETED"
+                db_nsr_update["_admin.deployed.RO.nsr_delete_action_id"] = None
+                self.logger.debug(logging_text + "RO_action_id={} already deleted".format(action_id))
+            elif isinstance(e, NgRoException) and e.http_code == 409:  # conflict
+                failed_detail.append("delete conflict: {}".format(e))
+                self.logger.debug(logging_text + "RO_action_id={} delete conflict: {}".format(action_id, e))
+            else:
+                failed_detail.append("delete error: {}".format(e))
+                self.logger.error(logging_text + "RO_action_id={} delete error: {}".format(action_id, e))
+
+        if failed_detail:
+            stage[2] = "Error deleting from VIM"
+        else:
+            stage[2] = "Deleted from VIM"
+        db_nsr_update["detailed-status"] = " ".join(stage)
+        self.update_db_2("nsrs", nsr_id, db_nsr_update)
+        self._write_op_status(nslcmop_id, stage)
+
+        if failed_detail:
+            raise LcmException("; ".join(failed_detail))
+        return
+
     async def instantiate_RO(self, logging_text, nsr_id, nsd, db_nsr, db_nslcmop, db_vnfrs, db_vnfds_ref,
                              n2vc_key_list, stage):
         """
@@ -793,6 +971,10 @@ class NsLcm(LcmBase):
                 else:
                     ns_params["vimAccountId"] == vnfr["vim-account-id"]
 
+            if self.ng_ro:
+                return await self._instantiate_ng_ro(logging_text, nsr_id, nsd, db_nsr, db_nslcmop, db_vnfrs,
+                                                     db_vnfds_ref, n2vc_key_list, stage, start_deploy,
+                                                     timeout_ns_deploy)
             # deploy RO
             # get vnfds, instantiate at RO
             for c_vnf in nsd.get("constituent-vnfd", ()):
@@ -988,7 +1170,7 @@ class NsLcm(LcmBase):
             self._write_op_status(nslcmop_id, stage)
             # await self._on_update_n2vc_db("nsrs", {"_id": nsr_id}, "_admin.deployed", db_nsr_update)
             # self.logger.debug(logging_text + "Deployed at VIM")
-        except (ROclient.ROClientException, LcmException, DbException) as e:
+        except (ROclient.ROClientException, LcmException, DbException, NgRoException) as e:
             stage[2] = "ERROR deploying at VIM"
             self.set_vnfr_at_error(db_vnfrs, str(e))
             raise
@@ -1068,21 +1250,29 @@ class NsLcm(LcmBase):
                     return ip_address
                 try:
                     ro_vm_id = "{}-{}".format(db_vnfr["member-vnf-index-ref"], target_vdu_id)  # TODO add vdu_index
-                    result_dict = await self.RO.create_action(
-                        item="ns",
-                        item_id_name=ro_nsr_id,
-                        descriptor={"add_public_key": pub_key, "vms": [ro_vm_id], "user": user}
-                    )
-                    # result_dict contains the format {VM-id: {vim_result: 200, description: text}}
-                    if not result_dict or not isinstance(result_dict, dict):
-                        raise LcmException("Unknown response from RO when injecting key")
-                    for result in result_dict.values():
-                        if result.get("vim_result") == 200:
-                            break
-                        else:
-                            raise ROclient.ROClientException("error injecting key: {}".format(
-                                result.get("description")))
-                    break
+                    if self.ng_ro:
+                        target = {"action": "inject_ssh_key", "key": pub_key, "user": user,
+                                  "vnf": [{"_id": vnfr_id, "vdur": [{"id": vdu_id}]}],
+                                  }
+                        await self.RO.deploy(nsr_id, target)
+                    else:
+                        result_dict = await self.RO.create_action(
+                            item="ns",
+                            item_id_name=ro_nsr_id,
+                            descriptor={"add_public_key": pub_key, "vms": [ro_vm_id], "user": user}
+                        )
+                        # result_dict contains the format {VM-id: {vim_result: 200, description: text}}
+                        if not result_dict or not isinstance(result_dict, dict):
+                            raise LcmException("Unknown response from RO when injecting key")
+                        for result in result_dict.values():
+                            if result.get("vim_result") == 200:
+                                break
+                            else:
+                                raise ROclient.ROClientException("error injecting key: {}".format(
+                                    result.get("description")))
+                        break
+                except NgRoException as e:
+                    raise LcmException("Reaching max tries injecting key. Error: {}".format(e))
                 except ROclient.ROClientException as e:
                     if not nb_tries:
                         self.logger.debug(logging_text + "error injecting key: {}. Retrying until {} seconds".
@@ -2896,8 +3086,12 @@ class NsLcm(LcmBase):
 
             # remove from RO
             stage[1] = "Deleting ns from VIM."
-            task_delete_ro = asyncio.ensure_future(
-                self._terminate_RO(logging_text, nsr_deployed, nsr_id, nslcmop_id, stage))
+            if self.ng_ro:
+                task_delete_ro = asyncio.ensure_future(
+                    self._terminate_ng_ro(logging_text, nsr_deployed, nsr_id, nslcmop_id, stage))
+            else:
+                task_delete_ro = asyncio.ensure_future(
+                    self._terminate_RO(logging_text, nsr_deployed, nsr_id, nslcmop_id, stage))
             tasks_dict_info[task_delete_ro] = "Removing deployment from VIM"
 
             # rest of staff will be done at finally

@@ -60,8 +60,8 @@ lcm_config = {
         'ca_cert': getenv("OSMLCM_VCA_CACERT", None)
     },
     "ro_config": {
-        "endpoint_url": "http://{}:{}/openmano".format(getenv("OSMLCM_RO_HOST", "ro"),
-                                                       getenv("OSMLCM_RO_PORT", "9090")),
+        "uri": "http://{}:{}/openmano".format(getenv("OSMLCM_RO_HOST", "ro"),
+                                              getenv("OSMLCM_RO_PORT", "9090")),
         "tenant": getenv("OSMLCM_RO_TENANT", "osm"),
         "logger_name": "lcm.ROclient",
         "loglevel": "DEBUG",

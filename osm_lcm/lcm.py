@@ -32,7 +32,8 @@ import sys
 from osm_lcm import ns
 from osm_lcm import vim_sdn
 from osm_lcm import netslice
-from osm_lcm import ROclient
+from osm_lcm.ng_ro import NgRoException, NgRoClient
+from osm_lcm.ROclient import ROClient, ROClientException
 
 from time import time
 from osm_lcm.lcm_utils import versiontuple, LcmException, TaskRegistry, LcmExceptionExit
@@ -86,11 +87,18 @@ class Lcm:
         config = self.read_config_file(config_file)
         self.config = config
         self.config["ro_config"] = {
-            "endpoint_url": "http://{}:{}/openmano".format(config["RO"]["host"], config["RO"]["port"]),
+            "ng": config["RO"].get("ng", False),
+            "uri": config["RO"].get("uri"),
             "tenant": config.get("tenant", "osm"),
-            "logger_name": "lcm.ROclient",
-            "loglevel": "ERROR",
+            "logger_name": "lcm.roclient",
+            "loglevel": config["RO"].get("loglevel", "ERROR"),
         }
+        if not self.config["ro_config"]["uri"]:
+            if not self.config["ro_config"]["ng"]:
+                self.config["ro_config"]["uri"] = "http://{}:{}/openmano".format(config["RO"]["host"],
+                                                                                 config["RO"]["port"])
+            else:
+                self.config["ro_config"]["uri"] = "http://{}:{}/ro".format(config["RO"]["host"], config["RO"]["port"])
 
         self.loop = loop or asyncio.get_event_loop()
 
@@ -197,17 +205,19 @@ class Lcm:
         last_error = None
         while True:
             try:
-                ro_server = ROclient.ROClient(self.loop, **self.config["ro_config"])
+                if self.config["ro_config"].get("ng"):
+                    ro_server = NgRoClient(self.loop, **self.config["ro_config"])
+                else:
+                    ro_server = ROClient(self.loop, **self.config["ro_config"])
                 ro_version = await ro_server.get_version()
                 if versiontuple(ro_version) < versiontuple(min_RO_version):
                     raise LcmException("Not compatible osm/RO version '{}'. Needed '{}' or higher".format(
                         ro_version, min_RO_version))
                 self.logger.info("Connected to RO version {}".format(ro_version))
                 return
-            except ROclient.ROClientException as e:
+            except (ROClientException, NgRoException) as e:
                 tries -= 1
-                error_text = "Error while connecting to RO on {}: {}".format(self.config["ro_config"]["endpoint_url"],
-                                                                             e)
+                error_text = "Error while connecting to RO on {}: {}".format(self.config["ro_config"]["uri"], e)
                 if tries <= 0:
                     self.logger.critical(error_text)
                     raise LcmException(error_text)

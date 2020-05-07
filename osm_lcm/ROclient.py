@@ -117,9 +117,9 @@ class ROClient:
     timeout_large = 120
     timeout_short = 30
 
-    def __init__(self, loop, endpoint_url, **kwargs):
+    def __init__(self, loop, uri, **kwargs):
         self.loop = loop
-        self.endpoint_url = endpoint_url
+        self.uri = uri
 
         self.username = kwargs.get("username")
         self.password = kwargs.get("password")
@@ -127,7 +127,7 @@ class ROClient:
         self.tenant = None
         self.datacenter_id_name = kwargs.get("datacenter")
         self.datacenter = None
-        logger_name = kwargs.get('logger_name', 'ROClient')
+        logger_name = kwargs.get('logger_name', 'lcm.ro')
         self.logger = logging.getLogger(logger_name)
         if kwargs.get("loglevel"):
             self.logger.setLevel(kwargs["loglevel"])
@@ -143,8 +143,8 @@ class ROClient:
             return self.username
         elif index == 'password':
             return self.password
-        elif index == 'endpoint_url':
-            return self.endpoint_url
+        elif index == 'uri':
+            return self.uri
         else:
             raise KeyError("Invalid key '{}'".format(index))
         
@@ -157,8 +157,8 @@ class ROClient:
             self.username = value
         elif index == 'password':
             self.password = value
-        elif index == 'endpoint_url':
-            self.endpoint_url = value
+        elif index == 'uri':
+            self.uri = value
         else:
             raise KeyError("Invalid key '{}'".format(index))
         self.tenant = None      # force to reload tenant with different credentials
@@ -434,7 +434,7 @@ class ROClient:
             tenant_text = "/" + self.tenant
 
         item_id = 0
-        url = "{}{}/{}".format(self.endpoint_url, tenant_text, item)
+        url = "{}{}/{}".format(self.uri, tenant_text, item)
         if self.check_if_uuid(item_id_name):
             item_id = item_id_name
             url += "/" + item_id_name
@@ -485,7 +485,7 @@ class ROClient:
             # check that exist
             uuid = await self._get_item_uuid(session, item, item_id_name, all_tenants)
 
-        url = "{}{}/{}/{}".format(self.endpoint_url, tenant_text, item, uuid)
+        url = "{}{}/{}/{}".format(self.uri, tenant_text, item, uuid)
         if extra_item:
             url += "/" + extra_item
             if extra_item_id:
@@ -547,7 +547,7 @@ class ROClient:
         else:
             action = "/{}".format(action)
 
-        url = "{}{apiver}{tenant}/{item}{id}{action}".format(self.endpoint_url, apiver=api_version_text,
+        url = "{}{apiver}{tenant}/{item}{id}{action}".format(self.uri, apiver=api_version_text,
                                                              tenant=tenant_text, item=item, id=uuid, action=action)
         self.logger.debug("RO POST %s %s", url, payload_req)
         # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
@@ -577,7 +577,7 @@ class ROClient:
         else:
             uuid = item_id_name
 
-        url = "{}{}/{}/{}".format(self.endpoint_url, tenant_text, item, uuid)
+        url = "{}{}/{}/{}".format(self.uri, tenant_text, item, uuid)
         self.logger.debug("DELETE %s", url)
         # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
         async with session.delete(url, headers=self.headers_req) as response:
@@ -598,7 +598,7 @@ class ROClient:
                 await self._get_tenant(session)
             tenant_text = "/" + self.tenant
 
-        url = "{}{}/{}".format(self.endpoint_url, tenant_text, item)
+        url = "{}{}/{}".format(self.uri, tenant_text, item)
         separator = "?"
         if filter_dict:
             for k in filter_dict:
@@ -627,7 +627,7 @@ class ROClient:
         payload_req = yaml.safe_dump(descriptor)
             
         # print payload_req
-        url = "{}{}/{}/{}".format(self.endpoint_url, tenant_text, item, item_id)
+        url = "{}{}/{}/{}".format(self.uri, tenant_text, item, item_id)
         self.logger.debug("RO PUT %s %s", url, payload_req)
         # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
         async with session.put(url, headers=self.headers_req, data=payload_req) as response:
@@ -646,7 +646,7 @@ class ROClient:
         try:
             response_text = ""
             async with aiohttp.ClientSession(loop=self.loop) as session:
-                url = "{}/version".format(self.endpoint_url)
+                url = "{}/version".format(self.uri)
                 self.logger.debug("RO GET %s", url)
                 # timeout = aiohttp.ClientTimeout(total=self.timeout_short)
                 async with session.get(url, headers=self.headers_req) as response:
@@ -943,7 +943,7 @@ class ROClient:
                 item_id = await self._get_item_uuid(session, self.client_to_RO[item], item_id_name, all_tenants=True)
                 await self._get_tenant(session)
 
-                url = "{}/{tenant}/{item}/{item_id}".format(self.endpoint_url, tenant=self.tenant,
+                url = "{}/{tenant}/{item}/{item_id}".format(self.uri, tenant=self.tenant,
                                                             item=self.client_to_RO[item], item_id=item_id)
                 self.logger.debug("RO POST %s %s", url, payload_req)
                 # timeout = aiohttp.ClientTimeout(total=self.timeout_large)
@@ -969,7 +969,7 @@ class ROClient:
                 item_id = await self._get_item_uuid(session, self.client_to_RO[item], item_id_name, all_tenants=False)
                 tenant = await self._get_tenant(session)
 
-                url = "{}/{tenant}/{item}/{datacenter}".format(self.endpoint_url, tenant=tenant,
+                url = "{}/{tenant}/{item}/{datacenter}".format(self.uri, tenant=tenant,
                                                                item=self.client_to_RO[item], datacenter=item_id)
                 self.logger.debug("RO DELETE %s", url)
                
@@ -1097,7 +1097,7 @@ class ROClient:
             datacenter = self.get_datacenter(session)
 
         if action == "list":
-            url = "{}{}/vim/{}/{}".format(self.endpoint_url, tenant_text, datacenter, item)
+            url = "{}{}/vim/{}/{}".format(self.uri, tenant_text, datacenter, item)
             self.logger.debug("GET %s", url)
             mano_response = requests.get(url, headers=self.headers_req)
             self.logger.debug("RO response: %s", mano_response.text)
@@ -1107,7 +1107,7 @@ class ROClient:
             else:
                 raise ROClientException(str(content), http_code=mano_response.status)        
         elif action == "get" or action == "show":
-            url = "{}{}/vim/{}/{}/{}".format(self.endpoint_url, tenant_text, datacenter, item, uuid)
+            url = "{}{}/vim/{}/{}/{}".format(self.uri, tenant_text, datacenter, item, uuid)
             self.logger.debug("GET %s", url)
             mano_response = requests.get(url, headers=self.headers_req)
             self.logger.debug("RO response: %s", mano_response.text)
@@ -1117,7 +1117,7 @@ class ROClient:
             else:
                 raise ROClientException(str(content), http_code=mano_response.status)        
         elif action == "delete":
-            url = "{}{}/vim/{}/{}/{}".format(self.endpoint_url, tenant_text, datacenter, item, uuid)
+            url = "{}{}/vim/{}/{}/{}".format(self.uri, tenant_text, datacenter, item, uuid)
             self.logger.debug("DELETE %s", url)
             mano_response = requests.delete(url, headers=self.headers_req)
             self.logger.debug("RO response: %s", mano_response.text)
@@ -1145,7 +1145,7 @@ class ROClient:
                 descriptor[item[:-1]]['description'] = kwargs["description"]
             payload_req = yaml.safe_dump(descriptor)
             # print payload_req
-            url = "{}{}/vim/{}/{}".format(self.endpoint_url, tenant_text, datacenter, item)
+            url = "{}{}/vim/{}/{}".format(self.uri, tenant_text, datacenter, item)
             self.logger.debug("RO POST %s %s", url, payload_req)
             mano_response = requests.post(url, headers=self.headers_req, data=payload_req)
             self.logger.debug("RO response: %s", mano_response.text)
@@ -1177,7 +1177,7 @@ if __name__ == '__main__':
     tenant_id = None
     vim_id = False
     loop = asyncio.get_event_loop()
-    myClient = ROClient(endpoint_url=RO_URL, loop=loop, loglevel="DEBUG")
+    myClient = ROClient(uri=RO_URL, loop=loop, loglevel="DEBUG")
     try:
         # test tenant
         content = loop.run_until_complete(myClient.get_list("tenant"))
