@@ -2393,9 +2393,9 @@ class NsLcm(LcmBase):
             # _ns_execute_primitive() or RO.create_action() will NOT be executed
             return self.SUBOPERATION_STATUS_SKIP
         else:
-            # c. Reintent executing sub-operation
+            # c. retry executing sub-operation
             # The sub-operation exists, and operationState != 'COMPLETED'
-            # Update operationState = 'PROCESSING' to indicate a reintent.
+            # Update operationState = 'PROCESSING' to indicate a retry.
             operationState = 'PROCESSING'
             detailed_status = 'In progress'
             self._update_suboperation_status(
@@ -2408,7 +2408,7 @@ class NsLcm(LcmBase):
     # Find a sub-operation where all keys in a matching dictionary must match
     # Returns the index of the matching sub-operation, or SUBOPERATION_STATUS_NOT_FOUND if no match
     def _find_suboperation(self, db_nslcmop, match):
-        if (db_nslcmop and match):
+        if db_nslcmop and match:
             op_list = db_nslcmop.get('_admin', {}).get('operations', [])
             for i, op in enumerate(op_list):
                 if all(op.get(k) == match[k] for k in match):
@@ -2476,11 +2476,11 @@ class NsLcm(LcmBase):
     # Check for 3 different cases:
     # a. New: First time execution, return SUBOPERATION_STATUS_NEW
     # b. Skip: Existing sub-operation exists, operationState == 'COMPLETED', return SUBOPERATION_STATUS_SKIP
-    # c. Reintent: Existing sub-operation exists, operationState != 'COMPLETED', return op_index to re-execute
+    # c. retry: Existing sub-operation exists, operationState != 'COMPLETED', return op_index to re-execute
     def _check_or_add_scale_suboperation(self, db_nslcmop, vnf_index, vnf_config_primitive, primitive_params,
                                          operationType, RO_nsr_id=None, RO_scaling_info=None):
         # Find this sub-operation
-        if (RO_nsr_id and RO_scaling_info):
+        if RO_nsr_id and RO_scaling_info:
             operationType = 'SCALE-RO'
             match = {
                 'member_vnf_index': vnf_index,
@@ -3542,10 +3542,10 @@ class NsLcm(LcmBase):
                         db_nsr_update["config-status"] = "configuring pre-scaling"
                         primitive_params = self._map_primitive_params(config_primitive, {}, vnfr_params)
 
-                        # Pre-scale reintent check: Check if this sub-operation has been executed before
+                        # Pre-scale retry check: Check if this sub-operation has been executed before
                         op_index = self._check_or_add_scale_suboperation(
                             db_nslcmop, nslcmop_id, vnf_index, vnf_config_primitive, primitive_params, 'PRE-SCALE')
-                        if (op_index == self.SUBOPERATION_STATUS_SKIP):
+                        if op_index == self.SUBOPERATION_STATUS_SKIP:
                             # Skip sub-operation
                             result = 'COMPLETED'
                             result_detail = 'Done'
@@ -3553,20 +3553,20 @@ class NsLcm(LcmBase):
                                               "vnf_config_primitive={} Skipped sub-operation, result {} {}".format(
                                                   vnf_config_primitive, result, result_detail))
                         else:
-                            if (op_index == self.SUBOPERATION_STATUS_NEW):
+                            if op_index == self.SUBOPERATION_STATUS_NEW:
                                 # New sub-operation: Get index of this sub-operation
                                 op_index = len(db_nslcmop.get('_admin', {}).get('operations')) - 1
                                 self.logger.debug(logging_text + "vnf_config_primitive={} New sub-operation".
                                                   format(vnf_config_primitive))
                             else:
-                                # Reintent:  Get registered params for this existing sub-operation
+                                # retry:  Get registered params for this existing sub-operation
                                 op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
                                 vnf_index = op.get('member_vnf_index')
                                 vnf_config_primitive = op.get('primitive')
                                 primitive_params = op.get('primitive_params')
-                                self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation reintent".
+                                self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation retry".
                                                   format(vnf_config_primitive))
-                            # Execute the primitive, either with new (first-time) or registered (reintent) args
+                            # Execute the primitive, either with new (first-time) or registered (retry) args
                             result, result_detail = await self._ns_execute_primitive(
                                 self._look_for_deployed_vca(nsr_deployed["VCA"],
                                                             member_vnf_index=vnf_index,
@@ -3590,26 +3590,26 @@ class NsLcm(LcmBase):
             # if (RO_nsr_id and RO_scaling_info):
             if RO_scaling_info:
                 scale_process = "RO"
-                # Scale RO reintent check: Check if this sub-operation has been executed before
+                # Scale RO retry check: Check if this sub-operation has been executed before
                 op_index = self._check_or_add_scale_suboperation(
                     db_nslcmop, vnf_index, None, None, 'SCALE-RO', RO_nsr_id, RO_scaling_info)
-                if (op_index == self.SUBOPERATION_STATUS_SKIP):
+                if op_index == self.SUBOPERATION_STATUS_SKIP:
                     # Skip sub-operation
                     result = 'COMPLETED'
                     result_detail = 'Done'
                     self.logger.debug(logging_text + "Skipped sub-operation RO, result {} {}".format(
                         result, result_detail))
                 else:
-                    if (op_index == self.SUBOPERATION_STATUS_NEW):
+                    if op_index == self.SUBOPERATION_STATUS_NEW:
                         # New sub-operation: Get index of this sub-operation
                         op_index = len(db_nslcmop.get('_admin', {}).get('operations')) - 1
                         self.logger.debug(logging_text + "New sub-operation RO")
                     else:
-                        # Reintent:  Get registered params for this existing sub-operation
+                        # retry:  Get registered params for this existing sub-operation
                         op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
                         RO_nsr_id = op.get('RO_nsr_id')
                         RO_scaling_info = op.get('RO_scaling_info')
-                        self.logger.debug(logging_text + "Sub-operation RO reintent".format(
+                        self.logger.debug(logging_text + "Sub-operation RO retry for primitive {}".format(
                             vnf_config_primitive))
 
                     RO_desc = await self.RO.create_action("ns", RO_nsr_id, {"vdu-scaling": RO_scaling_info})
@@ -3735,7 +3735,7 @@ class NsLcm(LcmBase):
                         db_nsr_update["config-status"] = "configuring post-scaling"
                         primitive_params = self._map_primitive_params(config_primitive, {}, vnfr_params)
 
-                        # Post-scale reintent check: Check if this sub-operation has been executed before
+                        # Post-scale retry check: Check if this sub-operation has been executed before
                         op_index = self._check_or_add_scale_suboperation(
                             db_nslcmop, nslcmop_id, vnf_index, vnf_config_primitive, primitive_params, 'POST-SCALE')
                         if op_index == self.SUBOPERATION_STATUS_SKIP:
@@ -3752,14 +3752,14 @@ class NsLcm(LcmBase):
                                 self.logger.debug(logging_text + "vnf_config_primitive={} New sub-operation".
                                                   format(vnf_config_primitive))
                             else:
-                                # Reintent:  Get registered params for this existing sub-operation
+                                # retry:  Get registered params for this existing sub-operation
                                 op = db_nslcmop.get('_admin', {}).get('operations', [])[op_index]
                                 vnf_index = op.get('member_vnf_index')
                                 vnf_config_primitive = op.get('primitive')
                                 primitive_params = op.get('primitive_params')
-                                self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation reintent".
+                                self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation retry".
                                                   format(vnf_config_primitive))
-                            # Execute the primitive, either with new (first-time) or registered (reintent) args
+                            # Execute the primitive, either with new (first-time) or registered (retry) args
                             result, result_detail = await self._ns_execute_primitive(
                                 self._look_for_deployed_vca(nsr_deployed["VCA"],
                                                             member_vnf_index=vnf_index,
