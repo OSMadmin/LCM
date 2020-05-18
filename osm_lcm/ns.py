@@ -2180,7 +2180,7 @@ class NsLcm(LcmBase):
                         storage = deep_get(db_vnfds.get(vnfd_id), ('_admin', 'storage'))
                         if storage and storage.get('pkg-dir'):  # may be not present if vnfd has not artifacts
                             # path format: /vnfdid/pkkdir/helm-charts|juju-bundles/kdumodel
-                            filename = '{}/{}/{}s/{}'.format(storage["folder"], storage["'pkg-dir"], k8sclustertype,
+                            filename = '{}/{}/{}s/{}'.format(storage["folder"], storage["pkg-dir"], k8sclustertype,
                                                              kdumodel)
                             if self.fs.file_exists(filename, mode='file') or self.fs.file_exists(filename, mode='dir'):
                                 kdumodel = self.fs.path + filename
