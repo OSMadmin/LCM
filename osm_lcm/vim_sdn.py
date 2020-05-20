@@ -1074,12 +1074,16 @@ class K8sClusterLcm(LcmBase):
             uninstall_sw = deep_get(db_k8scluster, ("_admin", "helm-chart", "created"))
             cluster_removed = True
             if k8s_hc_id:
+                step = "Removing helm-chart '{}'".format(k8s_hc_id)
                 uninstall_sw = uninstall_sw or False
                 cluster_removed = await self.helm_k8scluster.reset(cluster_uuid=k8s_hc_id, uninstall_sw=uninstall_sw)
+                db_k8scluster_update["_admin.helm-chart.id"] = None
 
             if k8s_jb_id:
+                step = "Removing juju-bundle '{}'".format(k8s_jb_id)
                 uninstall_sw = uninstall_sw or False
                 cluster_removed = await self.juju_k8scluster.reset(cluster_uuid=k8s_jb_id, uninstall_sw=uninstall_sw)
+                db_k8scluster_update["_admin.juju-bundle.id"] = None
 
             # Try to remove from cluster_inserted to clean old versions
             if k8s_hc_id and cluster_removed:
@@ -1093,14 +1097,11 @@ class K8sClusterLcm(LcmBase):
                         self.update_db_2("k8srepos", k8srepo["_id"], {"_admin.cluster-inserted": cluster_list})
                     except Exception as e:
                         self.logger.error("{}: {}".format(step, e))
-                self.db.del_one("k8sclusters", {"_id": k8scluster_id})
-            else:
-                raise LcmException("An error happened during the reset of the k8s cluster '{}'".format(k8scluster_id))
-            # if not cluster_removed:
-            #     raise Exception("K8scluster was not properly removed")
+            self.db.del_one("k8sclusters", {"_id": k8scluster_id})
+            db_k8scluster_update = {}
 
         except Exception as e:
-            if isinstance(e, (LcmException, DbException)):
+            if isinstance(e, (LcmException, DbException, K8sException, N2VCException)):
                 self.logger.error(logging_text + "Exit Exception {}".format(e))
             else:
                 self.logger.critical(logging_text + "Exit Exception {}".format(e), exc_info=True)
