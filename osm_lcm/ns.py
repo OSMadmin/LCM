@@ -1967,13 +1967,14 @@ class NsLcm(LcmBase):
 
             # read nsr record
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
+            nsd = self.db.get_one("nsds", {"_id": db_nsr["nsd-id"]})
 
             # this VCA data
             my_vca = deep_get(db_nsr, ('_admin', 'deployed', 'VCA'))[vca_index]
 
             # read all ns-configuration relations
             ns_relations = list()
-            db_ns_relations = deep_get(db_nsr, ('nsd', 'ns-configuration', 'relation'))
+            db_ns_relations = deep_get(nsd, ('ns-configuration', 'relation'))
             if db_ns_relations:
                 for r in db_ns_relations:
                     # check if this VCA is in the relation
