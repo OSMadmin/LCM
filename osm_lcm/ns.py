@@ -49,8 +49,8 @@ class NsLcm(LcmBase):
     timeout_ns_deploy = 2 * 3600   # default global timeout for deployment a ns
     timeout_ns_terminate = 1800   # default global timeout for un deployment a ns
     timeout_charm_delete = 10 * 60
-    timeout_primitive = 10 * 60  # timeout for primitive execution
-    timeout_progress_primitive = 2 * 60  # timeout for some progress in a primitive execution
+    timeout_primitive = 30 * 60  # timeout for primitive execution
+    timeout_progress_primitive = 10 * 60  # timeout for some progress in a primitive execution
 
     SUBOPERATION_STATUS_NOT_FOUND = -1
     SUBOPERATION_STATUS_NEW = -2
