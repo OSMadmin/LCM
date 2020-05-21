@@ -29,8 +29,8 @@ RUN curl https://get.helm.sh/helm-v2.15.2-linux-amd64.tar.gz --output helm-v2.15
     && mv linux-amd64/helm /usr/local/bin/helm \
     && rm -r linux-amd64/
 
-RUN curl -L https://launchpad.net/juju/2.7/2.7.0/+download/juju-2.7.0-k8s.tar.xz --output juju-2.7.0-k8s.tar.xz \
-    && tar -xvf juju-2.7.0-k8s.tar.xz \
+RUN curl -L https://launchpad.net/juju/2.7/2.7.6/+download/juju-2.7.6-k8s.tar.xz --output juju-2.7.6-k8s.tar.xz \
+    && tar -xvf juju-2.7.6-k8s.tar.xz \
     && mv juju /usr/local/bin/juju
 
 RUN apt-get update && apt-get install -y git tox python3 \
