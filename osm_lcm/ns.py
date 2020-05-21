@@ -1605,8 +1605,9 @@ class NsLcm(LcmBase):
             # read from db: ns
             stage[1] = "Getting nsr={} from db".format(nsr_id)
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
-            # nsd is replicated into ns (no db read)
-            nsd = db_nsr["nsd"]
+            stage[1] = "Getting nsd={} from db".format(db_nsr["nsd-id"])
+            nsd = self.db.get_one("nsds", {"_id": db_nsr["nsd-id"]})
+            db_nsr["nsd"] = nsd
             # nsr_name = db_nsr["name"]   # TODO short-name??
 
             # read from db: vnf's of this ns
