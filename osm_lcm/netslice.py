@@ -248,7 +248,7 @@ class NetsliceLcm(LcmBase):
                                 if nss_cp_item["nss-ref"] == nss["nss-id"]:
                                     db_nsds = self.db.get_one("nsds", {"_id": nss["nsdId"]})
                                     # Go for nsd, and search the CP that match with nst:CP to get vld-id-ref
-                                    for cp_nsd in db_nsds["connection-point"]:
+                                    for cp_nsd in db_nsds.get("connection-point", ()):
                                         if cp_nsd["name"] == nss_cp_item["nsd-connection-point-ref"]:
                                             if nslcmop.get("operationParams"):
                                                 if nslcmop["operationParams"].get("nsName") == nss["nsName"]:
