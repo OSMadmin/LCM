@@ -1365,74 +1365,72 @@ class NsLcm(LcmBase):
             )
 
             is_proxy_charm = deep_get(config_descriptor, ('juju', 'charm')) is not None
+            is_k8s_proxy_charm = False
+
             if deep_get(config_descriptor, ('juju', 'proxy')) is False:
                 is_proxy_charm = False
 
-            # n2vc_redesign STEP 3.1
+            if deep_get(config_descriptor, ('juju', 'k8s')) is True and is_proxy_charm:
+                is_k8s_proxy_charm = True
 
-            # find old ee_id if exists
-            ee_id = vca_deployed.get("ee_id")
+            if not is_k8s_proxy_charm:
+                # n2vc_redesign STEP 3.1
 
-            # create or register execution environment in VCA
-            if is_proxy_charm:
+                # find old ee_id if exists
+                ee_id = vca_deployed.get("ee_id")
 
-                self._write_configuration_status(
-                    nsr_id=nsr_id,
-                    vca_index=vca_index,
-                    status='CREATING',
-                    element_under_configuration=element_under_configuration,
-                    element_type=element_type
-                )
+                # create or register execution environment in VCA
+                if is_proxy_charm:
 
-                step = "create execution environment"
-                self.logger.debug(logging_text + step)
-                ee_id, credentials = await self.n2vc.create_execution_environment(namespace=namespace,
-                                                                                  reuse_ee_id=ee_id,
-                                                                                  db_dict=db_dict)
+                    self._write_configuration_status(
+                        nsr_id=nsr_id,
+                        vca_index=vca_index,
+                        status='CREATING',
+                        element_under_configuration=element_under_configuration,
+                        element_type=element_type
+                    )
 
-            else:
-                step = "Waiting to VM being up and getting IP address"
-                self.logger.debug(logging_text + step)
-                rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(logging_text, nsr_id, vnfr_id, vdu_id, vdu_index,
-                                                                 user=None, pub_key=None)
-                credentials = {"hostname": rw_mgmt_ip}
-                # get username
-                username = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
-                # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
-                #  merged. Meanwhile let's get username from initial-config-primitive
-                if not username and config_descriptor.get("initial-config-primitive"):
-                    for config_primitive in config_descriptor["initial-config-primitive"]:
-                        for param in config_primitive.get("parameter", ()):
-                            if param["name"] == "ssh-username":
-                                username = param["value"]
-                                break
-                if not username:
-                    raise LcmException("Cannot determine the username neither with 'initial-config-promitive' nor with "
-                                       "'config-access.ssh-access.default-user'")
-                credentials["username"] = username
-                # n2vc_redesign STEP 3.2
+                    step = "create execution environment"
+                    self.logger.debug(logging_text + step)
+                    ee_id, credentials = await self.n2vc.create_execution_environment(namespace=namespace,
+                                                                                      reuse_ee_id=ee_id,
+                                                                                      db_dict=db_dict)
 
-                self._write_configuration_status(
-                    nsr_id=nsr_id,
-                    vca_index=vca_index,
-                    status='REGISTERING',
-                    element_under_configuration=element_under_configuration,
-                    element_type=element_type
-                )
+                else:
+                    step = "Waiting to VM being up and getting IP address"
+                    self.logger.debug(logging_text + step)
+                    rw_mgmt_ip = await self.wait_vm_up_insert_key_ro(logging_text, nsr_id, vnfr_id, vdu_id, vdu_index,
+                                                                     user=None, pub_key=None)
+                    credentials = {"hostname": rw_mgmt_ip}
+                    # get username
+                    username = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
+                    # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
+                    #  merged. Meanwhile let's get username from initial-config-primitive
+                    if not username and config_descriptor.get("initial-config-primitive"):
+                        for config_primitive in config_descriptor["initial-config-primitive"]:
+                            for param in config_primitive.get("parameter", ()):
+                                if param["name"] == "ssh-username":
+                                    username = param["value"]
+                                    break
+                    if not username:
+                        raise LcmException("Cannot determine the username neither with"
+                                           "'initial-config-promitive' nor with "
+                                           "'config-access.ssh-access.default-user'")
+                    credentials["username"] = username
+                    # n2vc_redesign STEP 3.2
 
-                step = "register execution environment {}".format(credentials)
-                self.logger.debug(logging_text + step)
-                ee_id = await self.n2vc.register_execution_environment(credentials=credentials, namespace=namespace,
-                                                                       db_dict=db_dict)
+                    self._write_configuration_status(
+                        nsr_id=nsr_id,
+                        vca_index=vca_index,
+                        status='REGISTERING',
+                        element_under_configuration=element_under_configuration,
+                        element_type=element_type
+                    )
 
-            # for compatibility with MON/POL modules, the need model and application name at database
-            # TODO ask to N2VC instead of assuming the format "model_name.application_name"
-            ee_id_parts = ee_id.split('.')
-            model_name = ee_id_parts[0]
-            application_name = ee_id_parts[1]
-            db_nsr_update = {db_update_entry + "model": model_name,
-                             db_update_entry + "application": application_name,
-                             db_update_entry + "ee_id": ee_id}
+                    step = "register execution environment {}".format(credentials)
+                    self.logger.debug(logging_text + step)
+                    ee_id = await self.n2vc.register_execution_environment(credentials=credentials, namespace=namespace,
+                                                                           db_dict=db_dict)
 
             # n2vc_redesign STEP 3.3
 
@@ -1444,7 +1442,6 @@ class NsLcm(LcmBase):
                 status='INSTALLING SW',
                 element_under_configuration=element_under_configuration,
                 element_type=element_type,
-                other_update=db_nsr_update
             )
 
             # TODO check if already done
@@ -1461,25 +1458,36 @@ class NsLcm(LcmBase):
                                 deploy_params
                             )
                             break
-            num_units = 1
-            if is_proxy_charm:
-                if element_type == "NS":
-                    num_units = db_nsr.get("config-units") or 1
-                elif element_type == "VNF":
-                    num_units = db_vnfr.get("config-units") or 1
-                elif element_type == "VDU":
-                    for v in db_vnfr["vdur"]:
-                        if vdu_id == v["vdu-id-ref"]:
-                            num_units = v.get("config-units") or 1
-                            break
+            if is_k8s_proxy_charm:
+                charm_name = deep_get(config_descriptor, ('juju', 'charm'))
+                self.logger.debug("Installing K8s Proxy Charm: {}".format(charm_name))
 
-            await self.n2vc.install_configuration_sw(
-                ee_id=ee_id,
-                artifact_path=artifact_path,
-                db_dict=db_dict,
-                config=config,
-                num_units=num_units
-            )
+                ee_id = await self.n2vc.install_k8s_proxy_charm(
+                    charm_name=charm_name,
+                    namespace=namespace,
+                    artifact_path=artifact_path,
+                    db_dict=db_dict
+                )
+            else:
+                num_units = 1
+                if is_proxy_charm:
+                    if element_type == "NS":
+                        num_units = db_nsr.get("config-units") or 1
+                    elif element_type == "VNF":
+                        num_units = db_vnfr.get("config-units") or 1
+                    elif element_type == "VDU":
+                        for v in db_vnfr["vdur"]:
+                            if vdu_id == v["vdu-id-ref"]:
+                                num_units = v.get("config-units") or 1
+                                break
+
+                await self.n2vc.install_configuration_sw(
+                    ee_id=ee_id,
+                    artifact_path=artifact_path,
+                    db_dict=db_dict,
+                    config=config,
+                    num_units=num_units
+                )
 
             # write in db flag of configuration_sw already installed
             self.update_db_2("nsrs", nsr_id, {db_update_entry + "config_sw_installed": True})
