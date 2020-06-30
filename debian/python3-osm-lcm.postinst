@@ -22,6 +22,7 @@ echo "POST INSTALL OSM-LCM"
 # echo "Installing python dependencies via pip..."
 # python3 -m pip install -U pip
 # python3 -m pip install --user aiokafka
+python3 -m pip install grpcio-tools grpclib
 
 #Creation of log folder
 mkdir -p /var/log/osm

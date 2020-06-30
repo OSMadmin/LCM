@@ -49,6 +49,8 @@ RUN git -C /app clone https://osm.etsi.org/gerrit/osm/common.git \
     && python3 -m pip install -e /app/common
     #  python3-pymongo python3-yaml pycrypto aiokafka
 
+RUN python3 -m pip install grpcio-tools grpclib
+
 RUN mkdir -p /app/storage/kafka && mkdir -p /app/log
 
 
