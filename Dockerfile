@@ -18,7 +18,7 @@
 # Use Dockerfile.local for running osm/LCM in a docker container from source
 
 
-FROM ubuntu:16.04
+FROM ubuntu:18.04
 
 RUN apt-get update && \ 
     DEBIAN_FRONTEND=noninteractive apt-get --yes install git tox make debhelper wget \
