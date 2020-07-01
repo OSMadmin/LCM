@@ -57,7 +57,8 @@ lcm_config = {
         "user": getenv("OSMLCM_VCA_USER", "admin"),
         "secret": getenv("OSMLCM_VCA_SECRET", "vca"),
         "public_key": getenv("OSMLCM_VCA_PUBKEY", None),
-        'ca_cert': getenv("OSMLCM_VCA_CACERT", None)
+        'ca_cert': getenv("OSMLCM_VCA_CACERT", None),
+        'apiproxy': getenv("OSMLCM_VCA_APIPROXY", "192.168.1.1")
     },
     "ro_config": {
         "uri": "http://{}:{}/openmano".format(getenv("OSMLCM_RO_HOST", "ro"),
@@ -86,7 +87,7 @@ class TestMyNS(asynctest.TestCase):
             yield "app_name-{}".format(num_calls)
             num_calls += 1
 
-    def _n2vc_CreateExecutionEnvironment(self, namespace, reuse_ee_id, db_dict):
+    def _n2vc_CreateExecutionEnvironment(self, namespace, reuse_ee_id, db_dict, *args, **kwargs):
         k_list = namespace.split(".")
         ee_id = k_list[1] + "."
         if len(k_list) >= 2:
@@ -175,6 +176,8 @@ class TestMyNS(asynctest.TestCase):
 
         if not getenv("OSMLCMTEST_VCA_NOMOCK"):
             ns.N2VCJujuConnector = asynctest.MagicMock(ns.N2VCJujuConnector)
+            ns.N2VCJujuConnectorLCM = asynctest.MagicMock(ns.N2VCJujuConnectorLCM)
+            ns.LCMHelmConn = asynctest.MagicMock(ns.LCMHelmConn)
 
         # Create NsLCM class
         self.my_ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, lcm_config, self.loop)

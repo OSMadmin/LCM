@@ -202,6 +202,8 @@ class LCMHelmConn(N2VCConnector):
                                        progress_timeout: float = None,
                                        total_timeout: float = None,
                                        config: dict = None,
+                                       num_units: int = 1,
+                                       vca_type: str = None
                                        ):
         # nothing to do
         pass
