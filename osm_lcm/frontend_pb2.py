@@ -32,10 +32,10 @@ _sym_db = _symbol_database.Default()
 
 DESCRIPTOR = _descriptor.FileDescriptor(
   name='osm_lcm/frontend.proto',
-  package='osm_lcm',
+  package='osm_ee',
   syntax='proto3',
-  serialized_options=b'\n\027com.etsi.osm.lcm.osm_lcmB\014GrpcExecutorP\001\242\002\003OEE',
-  serialized_pb=b'\n\x15osm_lcm/frontend.proto\x12\x06osm_lcm\"<\n\x10PrimitiveRequest\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x0e\n\x06params\x18\x03 \x01(\t\":\n\x0ePrimitiveReply\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x18\n\x10\x64\x65tailed_message\x18\x02 \x01(\t\"\x0f\n\rSshKeyRequest\"\x1e\n\x0bSshKeyReply\x12\x0f\n\x07message\x18\x01 \x01(\t2\x93\x01\n\x10\x46rontendExecutor\x12\x44\n\x0cRunPrimitive\x12\x18.osm_lcm.PrimitiveRequest\x1a\x16.osm_lcm.PrimitiveReply\"\x00\x30\x01\x12\x39\n\tGetSshKey\x12\x15.osm_lcm.SshKeyRequest\x1a\x13.osm_lcm.SshKeyReply\"\x00\x42/\n\x17\x63om.etsi.osm.lcm.osm_lcmB\x0cGrpcExecutorP\x01\xa2\x02\x03OEEb\x06proto3'
+  serialized_options=b'\n\027com.etsi.osm.lcm.osm_eeB\014GrpcExecutorP\001\242\002\003OEE',
+  serialized_pb=b'\n\x16osm_lcm/frontend.proto\x12\x06osm_ee\"<\n\x10PrimitiveRequest\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12\x0e\n\x06params\x18\x03 \x01(\t\":\n\x0ePrimitiveReply\x12\x0e\n\x06status\x18\x01 \x01(\t\x12\x18\n\x10\x64\x65tailed_message\x18\x02 \x01(\t\"\x0f\n\rSshKeyRequest\"\x1e\n\x0bSshKeyReply\x12\x0f\n\x07message\x18\x01 \x01(\t2\x93\x01\n\x10\x46rontendExecutor\x12\x44\n\x0cRunPrimitive\x12\x18.osm_ee.PrimitiveRequest\x1a\x16.osm_ee.PrimitiveReply\"\x00\x30\x01\x12\x39\n\tGetSshKey\x12\x15.osm_ee.SshKeyRequest\x1a\x13.osm_ee.SshKeyReply\"\x00\x42/\n\x17\x63om.etsi.osm.lcm.osm_eeB\x0cGrpcExecutorP\x01\xa2\x02\x03OEEb\x06proto3'
 )
 
 
@@ -43,27 +43,27 @@ DESCRIPTOR = _descriptor.FileDescriptor(
 
 _PRIMITIVEREQUEST = _descriptor.Descriptor(
   name='PrimitiveRequest',
-  full_name='osm_lcm.PrimitiveRequest',
+  full_name='osm_ee.PrimitiveRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='id', full_name='osm_lcm.PrimitiveRequest.id', index=0,
+      name='id', full_name='osm_ee.PrimitiveRequest.id', index=0,
       number=1, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='name', full_name='osm_lcm.PrimitiveRequest.name', index=1,
+      name='name', full_name='osm_ee.PrimitiveRequest.name', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='params', full_name='osm_lcm.PrimitiveRequest.params', index=2,
+      name='params', full_name='osm_ee.PrimitiveRequest.params', index=2,
       number=3, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -81,27 +81,27 @@ _PRIMITIVEREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=33,
-  serialized_end=93,
+  serialized_start=34,
+  serialized_end=94,
 )
 
 
 _PRIMITIVEREPLY = _descriptor.Descriptor(
   name='PrimitiveReply',
-  full_name='osm_lcm.PrimitiveReply',
+  full_name='osm_ee.PrimitiveReply',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='status', full_name='osm_lcm.PrimitiveReply.status', index=0,
+      name='status', full_name='osm_ee.PrimitiveReply.status', index=0,
       number=1, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
       is_extension=False, extension_scope=None,
       serialized_options=None, file=DESCRIPTOR),
     _descriptor.FieldDescriptor(
-      name='detailed_message', full_name='osm_lcm.PrimitiveReply.detailed_message', index=1,
+      name='detailed_message', full_name='osm_ee.PrimitiveReply.detailed_message', index=1,
       number=2, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -119,14 +119,14 @@ _PRIMITIVEREPLY = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=95,
-  serialized_end=153,
+  serialized_start=96,
+  serialized_end=154,
 )
 
 
 _SSHKEYREQUEST = _descriptor.Descriptor(
   name='SshKeyRequest',
-  full_name='osm_lcm.SshKeyRequest',
+  full_name='osm_ee.SshKeyRequest',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
@@ -143,20 +143,20 @@ _SSHKEYREQUEST = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=155,
-  serialized_end=170,
+  serialized_start=156,
+  serialized_end=171,
 )
 
 
 _SSHKEYREPLY = _descriptor.Descriptor(
   name='SshKeyReply',
-  full_name='osm_lcm.SshKeyReply',
+  full_name='osm_ee.SshKeyReply',
   filename=None,
   file=DESCRIPTOR,
   containing_type=None,
   fields=[
     _descriptor.FieldDescriptor(
-      name='message', full_name='osm_lcm.SshKeyReply.message', index=0,
+      name='message', full_name='osm_ee.SshKeyReply.message', index=0,
       number=1, type=9, cpp_type=9, label=1,
       has_default_value=False, default_value=b"".decode('utf-8'),
       message_type=None, enum_type=None, containing_type=None,
@@ -174,8 +174,8 @@ _SSHKEYREPLY = _descriptor.Descriptor(
   extension_ranges=[],
   oneofs=[
   ],
-  serialized_start=172,
-  serialized_end=202,
+  serialized_start=173,
+  serialized_end=203,
 )
 
 DESCRIPTOR.message_types_by_name['PrimitiveRequest'] = _PRIMITIVEREQUEST
@@ -187,28 +187,28 @@ _sym_db.RegisterFileDescriptor(DESCRIPTOR)
 PrimitiveRequest = _reflection.GeneratedProtocolMessageType('PrimitiveRequest', (_message.Message,), {
   'DESCRIPTOR' : _PRIMITIVEREQUEST,
   '__module__' : 'osm_lcm.frontend_pb2'
-  # @@protoc_insertion_point(class_scope:osm_lcm.PrimitiveRequest)
+  # @@protoc_insertion_point(class_scope:osm_ee.PrimitiveRequest)
   })
 _sym_db.RegisterMessage(PrimitiveRequest)
 
 PrimitiveReply = _reflection.GeneratedProtocolMessageType('PrimitiveReply', (_message.Message,), {
   'DESCRIPTOR' : _PRIMITIVEREPLY,
   '__module__' : 'osm_lcm.frontend_pb2'
-  # @@protoc_insertion_point(class_scope:osm_lcm.PrimitiveReply)
+  # @@protoc_insertion_point(class_scope:osm_ee.PrimitiveReply)
   })
 _sym_db.RegisterMessage(PrimitiveReply)
 
 SshKeyRequest = _reflection.GeneratedProtocolMessageType('SshKeyRequest', (_message.Message,), {
   'DESCRIPTOR' : _SSHKEYREQUEST,
   '__module__' : 'osm_lcm.frontend_pb2'
-  # @@protoc_insertion_point(class_scope:osm_lcm.SshKeyRequest)
+  # @@protoc_insertion_point(class_scope:osm_ee.SshKeyRequest)
   })
 _sym_db.RegisterMessage(SshKeyRequest)
 
 SshKeyReply = _reflection.GeneratedProtocolMessageType('SshKeyReply', (_message.Message,), {
   'DESCRIPTOR' : _SSHKEYREPLY,
   '__module__' : 'osm_lcm.frontend_pb2'
-  # @@protoc_insertion_point(class_scope:osm_lcm.SshKeyReply)
+  # @@protoc_insertion_point(class_scope:osm_ee.SshKeyReply)
   })
 _sym_db.RegisterMessage(SshKeyReply)
 
@@ -217,16 +217,16 @@ DESCRIPTOR._options = None
 
 _FRONTENDEXECUTOR = _descriptor.ServiceDescriptor(
   name='FrontendExecutor',
-  full_name='osm_lcm.FrontendExecutor',
+  full_name='osm_ee.FrontendExecutor',
   file=DESCRIPTOR,
   index=0,
   serialized_options=None,
-  serialized_start=205,
-  serialized_end=352,
+  serialized_start=206,
+  serialized_end=353,
   methods=[
   _descriptor.MethodDescriptor(
     name='RunPrimitive',
-    full_name='osm_lcm.FrontendExecutor.RunPrimitive',
+    full_name='osm_ee.FrontendExecutor.RunPrimitive',
     index=0,
     containing_service=None,
     input_type=_PRIMITIVEREQUEST,
@@ -235,7 +235,7 @@ _FRONTENDEXECUTOR = _descriptor.ServiceDescriptor(
   ),
   _descriptor.MethodDescriptor(
     name='GetSshKey',
-    full_name='osm_lcm.FrontendExecutor.GetSshKey',
+    full_name='osm_ee.FrontendExecutor.GetSshKey',
     index=1,
     containing_service=None,
     input_type=_SSHKEYREQUEST,
