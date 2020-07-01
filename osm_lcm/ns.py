@@ -1370,7 +1370,7 @@ class NsLcm(LcmBase):
             if deep_get(config_descriptor, ('juju', 'proxy')) is False:
                 is_proxy_charm = False
 
-            if deep_get(config_descriptor, ('juju', 'k8s')) is True and is_proxy_charm:
+            if deep_get(config_descriptor, ('juju', 'cloud')) == 'k8s' and is_proxy_charm:
                 is_k8s_proxy_charm = True
 
             if not is_k8s_proxy_charm:
