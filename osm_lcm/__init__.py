@@ -13,8 +13,8 @@
 ##
 
 # version moved to lcm.py. uncomment if LCM is installed as library and installed
-version = '7.0.1.post18'
-version_date = '2020-04-08'
+version = '8.0.0.post1'
+version_date = '2020-07-01'
 
 # Try to get version from package using pkg_resources (available with setuptools)
 try:

@@ -46,8 +46,8 @@ setup(
     #             ('/etc/systemd/system/', ['osm_lcm/osm-lcm.service']),
     #             ],
     dependency_links=[
-        'git+https://osm.etsi.org/gerrit/osm/common.git#egg=osm-common',
-        'git+https://osm.etsi.org/gerrit/osm/N2VC.git#egg=n2vc',
+        'git+https://osm.etsi.org/gerrit/osm/common.git@v8.0#egg=osm-common',
+        'git+https://osm.etsi.org/gerrit/osm/N2VC.git@v8.0#egg=n2vc',
     ],
     install_requires=[
         # 'pymongo',

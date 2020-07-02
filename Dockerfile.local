@@ -39,6 +39,7 @@ RUN apt-get update && apt-get install -y git tox python3 \
     && python3 -m pip install -U 'PyYAML' 'aiohttp>=2.3.10' flake8
 
 RUN git -C /app clone https://osm.etsi.org/gerrit/osm/N2VC.git \
+    && git -C /app/N2VC checkout v8.0 \
     && python3 -m pip install -e /app/N2VC \
     && python3 -m pip install -U juju \
     && apt-get install -y libffi-dev libssl-dev openssh-client
@@ -46,6 +47,7 @@ RUN git -C /app clone https://osm.etsi.org/gerrit/osm/N2VC.git \
     # cd modules/libjuju; python3 setup.py develop
 
 RUN git -C /app clone https://osm.etsi.org/gerrit/osm/common.git \
+    && git -C /app/common checkout v8.0 \
     && python3 -m pip install -e /app/common
     #  python3-pymongo python3-yaml pycrypto aiokafka
 
