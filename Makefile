@@ -20,8 +20,8 @@ clean:
 
 package:
 	python3 setup.py --command-packages=stdeb.command sdist_dsc
-	# cp debian/python3-osm-lcm.postinst deb_dist/osm-lcm*/debian
-	cd deb_dist/osm-lcm*/debian && echo "osm-common python3-osm-common" > py3dist-overrides
+	cp debian/python3-osm-lcm.postinst deb_dist/osm-lcm*/debian
+	# cd deb_dist/osm-lcm*/debian && echo "osm-common python3-osm-common" > py3dist-overrides
 	# cd deb_dist/osm-lcm*/debian && echo "pip3 python3-pip"       >> py3dist-overrides
 	cd deb_dist/osm-lcm*/  && dpkg-buildpackage -rfakeroot -uc -us
 

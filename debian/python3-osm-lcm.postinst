@@ -18,13 +18,11 @@
 ##
 
 echo "POST INSTALL OSM-LCM"
-# Currently it is not needed pip3 installation
-# echo "Installing python dependencies via pip..."
-# python3 -m pip install -U pip
-# python3 -m pip install --user aiokafka
+echo "Installing python dependencies grpcio-tools grpclib via pip..."
+echo
+python3 -m pip install -U pip
 python3 -m pip install grpcio-tools grpclib
 
-#Creation of log folder
-mkdir -p /var/log/osm
+# Creation of log folder
+# mkdir -p /var/log/osm
 
-# systemctl enable osm-lcm.service
