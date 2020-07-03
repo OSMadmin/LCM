@@ -17,7 +17,7 @@ import asyncio
 import logging
 import logging.handlers
 import traceback
-from osm_lcm import ROclient, ns
+from osm_lcm import ROclient
 from osm_lcm.lcm_utils import LcmException, LcmBase, populate_dict, get_iterable, deep_get
 from osm_common.dbbase import DbException
 from time import time
@@ -31,7 +31,7 @@ class NetsliceLcm(LcmBase):
 
     timeout_nsi_deploy = 2 * 3600  # default global timeout for deployment a nsi
 
-    def __init__(self, db, msg, fs, lcm_tasks, config, loop):
+    def __init__(self, db, msg, fs, lcm_tasks, config, loop, ns):
         """
         Init, Connect to database, filesystem storage, and messaging
         :param config: two level dictionary with configuration. Top level should contain 'database', 'storage',
@@ -41,7 +41,7 @@ class NetsliceLcm(LcmBase):
         self.logger = logging.getLogger('lcm.netslice')
         self.loop = loop
         self.lcm_tasks = lcm_tasks
-        self.ns = ns.NsLcm(db, msg, fs, lcm_tasks, config, loop)
+        self.ns = ns
         self.ro_config = config["ro_config"]
         self.timeout = config["timeout"]
 

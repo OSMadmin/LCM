@@ -123,6 +123,7 @@ class LCMHelmConn(N2VCConnector):
                                            reuse_ee_id: str = None,
                                            progress_timeout: float = None,
                                            total_timeout: float = None,
+                                           config: dict = None,
                                            artifact_path: str = None,
                                            vca_type: str = None) -> (str, dict):
         """
@@ -137,8 +138,9 @@ class LCMHelmConn(N2VCConnector):
         :param str reuse_ee_id: ee id from an older execution. TODO - right now this params is not used
         :param float progress_timeout:
         :param float total_timeout:
-        :param str artifact_path  path of package content
-        :param str vca_type  Type of vca, not used as assumed of type helm
+        :param dict config:  General variables to instantiate KDU
+        :param str artifact_path:  path of package content
+        :param str vca_type:  Type of vca, not used as assumed of type helm
         :returns str, dict: id of the new execution environment including namespace.helm_id
         and credentials object set to None as all credentials should be osm kubernetes .kubeconfig
         """
@@ -177,10 +179,16 @@ class LCMHelmConn(N2VCConnector):
             # Call helm conn install
             # Obtain system cluster id from database
             system_cluster_uuid = self._get_system_cluster_id()
+            # Add parameter osm if exist to global
+            if config and config.get("osm"):
+                if not config.get("global"):
+                    config["global"] = {}
+                config["global"]["osm"] = config.get("osm")
 
             self.log.debug("install helm chart: {}".format(full_path))
             helm_id = await self._k8sclusterhelm.install(system_cluster_uuid, kdu_model=full_path,
                                                          namespace=self._KUBECTL_OSM_NAMESPACE,
+                                                         params=config,
                                                          db_dict=db_dict,
                                                          timeout=progress_timeout)
 
