@@ -29,9 +29,7 @@ import logging.handlers
 import getopt
 import sys
 
-from osm_lcm import ns
-from osm_lcm import vim_sdn
-from osm_lcm import netslice
+from osm_lcm import ns, prometheus, vim_sdn, netslice
 from osm_lcm.ng_ro import NgRoException, NgRoClient
 from osm_lcm.ROclient import ROClient, ROClientException
 
@@ -192,8 +190,13 @@ class Lcm:
         # contains created tasks/futures to be able to cancel
         self.lcm_tasks = TaskRegistry(self.worker_id, self.db, self.logger)
 
-        self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
-        self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
+        if self.config.get("prometheus"):
+            self.prometheus = prometheus.Prometheus(self.config["prometheus"], self.worker_id, self.db, self.loop)
+        else:
+            self.prometheus = None
+        self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop, self.prometheus)
+        self.netslice = netslice.NetsliceLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop,
+                                             self.ns)
         self.vim = vim_sdn.VimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
         self.wim = vim_sdn.WimLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
         self.sdn = vim_sdn.SdnLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop)
@@ -505,6 +508,10 @@ class Lcm:
 
         # check RO version
         self.loop.run_until_complete(self.check_RO_version())
+
+        # configure Prometheus
+        if self.prometheus:
+            self.loop.run_until_complete(self.prometheus.start())
 
         self.loop.run_until_complete(asyncio.gather(
             self.kafka_read(),
