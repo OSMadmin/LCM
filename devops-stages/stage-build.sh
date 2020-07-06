@@ -16,6 +16,5 @@
 
 # For the moment it is not needed any post-intall action, so tox instead of Makefile is used
 
-make clean     # rm -rf deb_dist
-tox -e build   # make package
+make clean package
 
