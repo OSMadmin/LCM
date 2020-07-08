@@ -785,19 +785,27 @@ class NsLcm(LcmBase):
         return ns_config_info
 
     @staticmethod
-    def _get_initial_config_primitive_list(desc_primitive_list, vca_deployed):
+    def _get_initial_config_primitive_list(desc_primitive_list, vca_deployed, ee_descriptor_id):
         """
         Generates a list of initial-config-primitive based on the list provided by the descriptor. It includes internal
         primitives as verify-ssh-credentials, or config when needed
         :param desc_primitive_list: information of the descriptor
         :param vca_deployed: information of the deployed, needed for known if it is related to an NS, VNF, VDU and if
             this element contains a ssh public key
+        :param ee_descriptor_id: execution environment descriptor id. It is the value of
+            XXX_configuration.execution-environment-list.INDEX.id; it can be None
         :return: The modified list. Can ba an empty list, but always a list
         """
-        if desc_primitive_list:
-            primitive_list = desc_primitive_list.copy()
-        else:
-            primitive_list = []
+
+        primitive_list = desc_primitive_list or []
+
+        # filter primitives by ee_id
+        primitive_list = [p for p in primitive_list if p.get("execution-environment-ref") == ee_descriptor_id]
+
+        # sort by 'seq'
+        if primitive_list:
+            primitive_list.sort(key=lambda val: int(val['seq']))
+
         # look for primitive config, and get the position. None if not present
         config_position = None
         for index, primitive in enumerate(primitive_list):
@@ -809,7 +817,7 @@ class NsLcm(LcmBase):
         if not vca_deployed["member-vnf-index"] and config_position is None:
             primitive_list.insert(0, {"name": "config", "parameter": []})
             config_position = 0
-        # for VNF/VDU add verify-ssh-credentials after config
+        # TODO revise if needed: for VNF/VDU add verify-ssh-credentials after config
         if vca_deployed["member-vnf-index"] and config_position is not None and vca_deployed.get("ssh-public-key"):
             primitive_list.insert(config_position + 1, {"name": "verify-ssh-credentials", "parameter": []})
         return primitive_list
@@ -1422,9 +1430,15 @@ class NsLcm(LcmBase):
                 "charms" if vca_type in ("native_charm", "lxc_proxy_charm", "k8s_proxy_charm") else "helm-charts",
                 vca_name
             )
+            # get initial_config_primitive_list that applies to this element
+            initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
+
+            # add config if not present for NS charm
+            ee_descriptor_id = ee_config_descriptor.get("id")
+            initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
+                                                                                    vca_deployed, ee_descriptor_id)
 
             # n2vc_redesign STEP 3.1
-
             # find old ee_id if exists
             ee_id = vca_deployed.get("ee_id")
 
@@ -1459,14 +1473,14 @@ class NsLcm(LcmBase):
                 username = deep_get(config_descriptor, ("config-access", "ssh-access", "default-user"))
                 # TODO remove this when changes on IM regarding config-access:ssh-access:default-user were
                 #  merged. Meanwhile let's get username from initial-config-primitive
-                if not username and config_descriptor.get("initial-config-primitive"):
-                    for config_primitive in config_descriptor["initial-config-primitive"]:
+                if not username and initial_config_primitive_list:
+                    for config_primitive in initial_config_primitive_list:
                         for param in config_primitive.get("parameter", ()):
                             if param["name"] == "ssh-username":
                                 username = param["value"]
                                 break
                 if not username:
-                    raise LcmException("Cannot determine the username neither with 'initial-config-promitive' nor with "
+                    raise LcmException("Cannot determine the username neither with 'initial-config-primitive' nor with "
                                        "'config-access.ssh-access.default-user'")
                 credentials["username"] = username
                 # n2vc_redesign STEP 3.2
@@ -1510,16 +1524,13 @@ class NsLcm(LcmBase):
             self.logger.debug(logging_text + step)
             config = None
             if vca_type == "native_charm":
-                initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
-                if initial_config_primitive_list:
-                    for primitive in initial_config_primitive_list:
-                        if primitive["name"] == "config":
-                            config = self._map_primitive_params(
-                                primitive,
-                                {},
-                                deploy_params
-                            )
-                            break
+                config_primitive = next((p for p in initial_config_primitive_list if p["name"] == "config"), None)
+                if config_primitive:
+                    config = self._map_primitive_params(
+                        config_primitive,
+                        {},
+                        deploy_params
+                    )
             num_units = 1
             if vca_type == "lxc_proxy_charm":
                 if element_type == "NS":
@@ -1581,20 +1592,6 @@ class NsLcm(LcmBase):
 
             # n2vc_redesign STEP 6  Execute initial config primitive
             step = 'execute initial config primitive'
-            initial_config_primitive_list = config_descriptor.get('initial-config-primitive')
-
-            # sort initial config primitives by 'seq'
-            if initial_config_primitive_list:
-                try:
-                    initial_config_primitive_list.sort(key=lambda val: int(val['seq']))
-                except Exception as e:
-                    self.logger.error(logging_text + step + ": " + str(e))
-            else:
-                self.logger.debug(logging_text + step + ": No initial-config-primitive")
-
-            # add config if not present for NS charm
-            initial_config_primitive_list = self._get_initial_config_primitive_list(initial_config_primitive_list,
-                                                                                    vca_deployed)
 
             # wait for dependent primitives execution (NS -> VNF -> VDU)
             if initial_config_primitive_list:
@@ -2554,6 +2551,7 @@ class NsLcm(LcmBase):
         for ee_item in ee_list:
             self.logger.debug(logging_text + "_deploy_n2vc ee_item juju={}, helm={}".format(ee_item.get('juju'),
                                                                                             ee_item.get("helm-chart")))
+            ee_descriptor_id = ee_item.get("id")
             if ee_item.get("juju"):
                 vca_name = ee_item['juju'].get('charm')
                 vca_type = "lxc_proxy_charm" if ee_item['juju'].get('charm') is not None else "native_charm"
@@ -2575,11 +2573,19 @@ class NsLcm(LcmBase):
                 if vca_deployed.get("member-vnf-index") == member_vnf_index and \
                         vca_deployed.get("vdu_id") == vdu_id and \
                         vca_deployed.get("kdu_name") == kdu_name and \
-                        vca_deployed.get("vdu_count_index", 0) == vdu_index:
+                        vca_deployed.get("vdu_count_index", 0) == vdu_index and \
+                        vca_deployed.get("ee_descriptor_id") == ee_descriptor_id:
                     break
             else:
                 # not found, create one.
+                target = "ns" if not member_vnf_index else "vnf/{}".format(member_vnf_index)
+                if vdu_id:
+                    target += "/vdu/{}/{}".format(vdu_id, vdu_index or 0)
+                elif kdu_name:
+                    target += "/kdu/{}".format(kdu_name)
                 vca_deployed = {
+                    "target_element": target,
+                    # ^ target_element will replace member-vnf-index, kdu_name, vdu_id ... in a single string
                     "member-vnf-index": member_vnf_index,
                     "vdu_id": vdu_id,
                     "kdu_name": kdu_name,
@@ -2589,7 +2595,8 @@ class NsLcm(LcmBase):
                     "step": "initial-deploy",   # TODO revise
                     "vnfd_id": vnfd_id,
                     "vdu_name": vdu_name,
-                    "type": vca_type
+                    "type": vca_type,
+                    "ee_descriptor_id": ee_descriptor_id
                 }
                 vca_index += 1
 
@@ -2627,23 +2634,20 @@ class NsLcm(LcmBase):
             task_instantiation_info[task_n2vc] = self.task_name_deploy_vca + " {}.{}".format(
                 member_vnf_index or "", vdu_id or "")
 
-    # Check if this VNFD has a configured terminate action
-    def _has_terminate_config_primitive(self, vnfd):
-        vnf_config = vnfd.get("vnf-configuration")
-        if vnf_config and vnf_config.get("terminate-config-primitive"):
-            return True
-        else:
-            return False
-
     @staticmethod
-    def _get_terminate_config_primitive_seq_list(vnfd):
-        """ Get a numerically sorted list of the sequences for this VNFD's terminate action """
-        # No need to check for existing primitive twice, already done before
-        vnf_config = vnfd.get("vnf-configuration")
-        seq_list = vnf_config.get("terminate-config-primitive")
-        # Get all 'seq' tags in seq_list, order sequences numerically, ascending.
-        seq_list_sorted = sorted(seq_list, key=lambda x: int(x['seq']))
-        return seq_list_sorted
+    def _get_terminate_config_primitive(primitive_list, vca_deployed):
+        """ Get a sorted terminate config primitive list. In case ee_descriptor_id is present at vca_deployed,
+         it get only those primitives for this execution envirom"""
+
+        primitive_list = primitive_list or []
+        # filter primitives by ee_descriptor_id
+        ee_descriptor_id = vca_deployed.get("ee_descriptor_id")
+        primitive_list = [p for p in primitive_list if p.get("execution-environment-ref") == ee_descriptor_id]
+
+        if primitive_list:
+            primitive_list.sort(key=lambda val: int(val['seq']))
+
+        return primitive_list
 
     @staticmethod
     def _create_nslcmop(nsr_id, operation, params):
@@ -2877,14 +2881,13 @@ class NsLcm(LcmBase):
 
         # execute terminate_primitives
         if exec_primitives:
-            terminate_primitives = config_descriptor.get("terminate-config-primitive")
+            terminate_primitives = self._get_terminate_config_primitive(
+                config_descriptor.get("terminate-config-primitive"), vca_deployed)
             vdu_id = vca_deployed.get("vdu_id")
             vdu_count_index = vca_deployed.get("vdu_count_index")
             vdu_name = vca_deployed.get("vdu_name")
             vnf_index = vca_deployed.get("member-vnf-index")
             if terminate_primitives and vca_deployed.get("needed_terminate"):
-                # Get all 'seq' tags in seq_list, order sequences numerically, ascending.
-                terminate_primitives = sorted(terminate_primitives, key=lambda x: int(x['seq']))
                 for seq in terminate_primitives:
                     # For each sequence in list, get primitive and call _ns_execute_primitive()
                     step = "Calling terminate action for vnf_member_index={} primitive={}".format(
@@ -2893,8 +2896,6 @@ class NsLcm(LcmBase):
                     # Create the primitive for each sequence, i.e. "primitive": "touch"
                     primitive = seq.get('name')
                     mapped_primitive_params = self._get_terminate_primitive_params(seq, vnf_index)
-                    # The following 3 parameters are currently set to None for 'terminate':
-                    # vdu_id, vdu_count_index, vdu_name
 
                     # Add sub-operation
                     self._add_suboperation(db_nslcmop,
@@ -3402,7 +3403,8 @@ class NsLcm(LcmBase):
                 calculated_params["ns_config_info"] = instantiation_params["ns_config_info"]
         return calculated_params
 
-    def _look_for_deployed_vca(self, deployed_vca, member_vnf_index, vdu_id, vdu_count_index, kdu_name=None):
+    def _look_for_deployed_vca(self, deployed_vca, member_vnf_index, vdu_id, vdu_count_index, kdu_name=None,
+                               ee_descriptor_id=None):
         # find vca_deployed record for this action. Raise LcmException if not found or there is not any id.
         for vca in deployed_vca:
             if not vca:
@@ -3413,11 +3415,14 @@ class NsLcm(LcmBase):
                 continue
             if kdu_name and kdu_name != vca["kdu_name"]:
                 continue
+            if ee_descriptor_id and ee_descriptor_id != vca["ee_descriptor_id"]:
+                continue
             break
         else:
             # vca_deployed not found
-            raise LcmException("charm for member_vnf_index={} vdu_id={} kdu_name={} vdu_count_index={} is not "
-                               "deployed".format(member_vnf_index, vdu_id, kdu_name, vdu_count_index))
+            raise LcmException("charm for member_vnf_index={} vdu_id={}.{} kdu_name={} execution-environment-list.id={}"
+                               " is not deployed".format(member_vnf_index, vdu_id, vdu_count_index, kdu_name,
+                                                         ee_descriptor_id))
 
         # get ee_id
         ee_id = vca.get("ee_id")
@@ -3528,30 +3533,24 @@ class NsLcm(LcmBase):
                 self.update_db_2("nsrs", nsr_id, db_nsr_update)
 
             # look for primitive
-            config_primitive_desc = None
+            config_primitive_desc = descriptor_configuration = None
             if vdu_id:
                 for vdu in get_iterable(db_vnfd, "vdu"):
                     if vdu_id == vdu["id"]:
-                        for config_primitive in deep_get(vdu, ("vdu-configuration", "config-primitive"), ()):
-                            if config_primitive["name"] == primitive:
-                                config_primitive_desc = config_primitive
-                                break
+                        descriptor_configuration = vdu.get("vdu-configuration")
                         break
             elif kdu_name:
                 for kdu in get_iterable(db_vnfd, "kdu"):
                     if kdu_name == kdu["name"]:
-                        for config_primitive in deep_get(kdu, ("kdu-configuration", "config-primitive"), ()):
-                            if config_primitive["name"] == primitive:
-                                config_primitive_desc = config_primitive
-                                break
+                        descriptor_configuration = kdu.get("kdu-configuration")
                         break
             elif vnf_index:
-                for config_primitive in deep_get(db_vnfd, ("vnf-configuration", "config-primitive"), ()):
-                    if config_primitive["name"] == primitive:
-                        config_primitive_desc = config_primitive
-                        break
+                descriptor_configuration = db_vnfd.get("vnf-configuration")
             else:
-                for config_primitive in deep_get(db_nsd, ("ns-configuration", "config-primitive"), ()):
+                descriptor_configuration = db_nsd.get("ns-configuration")
+
+            if descriptor_configuration and descriptor_configuration.get("config-primitive"):
+                for config_primitive in descriptor_configuration["config-primitive"]:
                     if config_primitive["name"] == primitive:
                         config_primitive_desc = config_primitive
                         break
@@ -3559,6 +3558,8 @@ class NsLcm(LcmBase):
             if not config_primitive_desc and not (kdu_name and primitive in ("upgrade", "rollback", "status")):
                 raise LcmException("Primitive {} not found at [ns|vnf|vdu]-configuration:config-primitive ".
                                    format(primitive))
+            primitive_name = config_primitive_desc.get("execution-environment-primitive", primitive)
+            ee_descriptor_id = config_primitive_desc.get("execution-environment-ref")
 
             if vnf_index:
                 if vdu_id:
@@ -3576,7 +3577,7 @@ class NsLcm(LcmBase):
                 kdu_action = True if not deep_get(kdu, ("kdu-configuration", "juju")) else False
 
             # TODO check if ns is in a proper status
-            if kdu_name and (primitive in ("upgrade", "rollback", "status") or kdu_action):
+            if kdu_name and (primitive_name in ("upgrade", "rollback", "status") or kdu_action):
                 # kdur and desc_params already set from before
                 if primitive_params:
                     desc_params.update(primitive_params)
@@ -3594,9 +3595,9 @@ class NsLcm(LcmBase):
                 db_dict = {"collection": "nsrs",
                            "filter": {"_id": nsr_id},
                            "path": "_admin.deployed.K8s.{}".format(index)}
-                self.logger.debug(logging_text + "Exec k8s {} on {}.{}".format(primitive, vnf_index, kdu_name))
-                step = "Executing kdu {}".format(primitive)
-                if primitive == "upgrade":
+                self.logger.debug(logging_text + "Exec k8s {} on {}.{}".format(primitive_name, vnf_index, kdu_name))
+                step = "Executing kdu {}".format(primitive_name)
+                if primitive_name == "upgrade":
                     if desc_params.get("kdu_model"):
                         kdu_model = desc_params.get("kdu_model")
                         del desc_params["kdu_model"]
@@ -3615,14 +3616,14 @@ class NsLcm(LcmBase):
                             timeout=timeout_ns_action),
                         timeout=timeout_ns_action + 10)
                     self.logger.debug(logging_text + " Upgrade of kdu {} done".format(detailed_status))
-                elif primitive == "rollback":
+                elif primitive_name == "rollback":
                     detailed_status = await asyncio.wait_for(
                         self.k8scluster_map[kdu["k8scluster-type"]].rollback(
                             cluster_uuid=kdu.get("k8scluster-uuid"),
                             kdu_instance=kdu.get("kdu-instance"),
                             db_dict=db_dict),
                         timeout=timeout_ns_action)
-                elif primitive == "status":
+                elif primitive_name == "status":
                     detailed_status = await asyncio.wait_for(
                         self.k8scluster_map[kdu["k8scluster-type"]].status_kdu(
                             cluster_uuid=kdu.get("k8scluster-uuid"),
@@ -3636,7 +3637,7 @@ class NsLcm(LcmBase):
                         self.k8scluster_map[kdu["k8scluster-type"]].exec_primitive(
                             cluster_uuid=kdu.get("k8scluster-uuid"),
                             kdu_instance=kdu_instance,
-                            primitive_name=primitive,
+                            primitive_name=primitive_name,
                             params=params, db_dict=db_dict,
                             timeout=timeout_ns_action),
                         timeout=timeout_ns_action)
@@ -3650,13 +3651,14 @@ class NsLcm(LcmBase):
                 ee_id, vca_type = self._look_for_deployed_vca(nsr_deployed["VCA"],
                                                               member_vnf_index=vnf_index,
                                                               vdu_id=vdu_id,
-                                                              vdu_count_index=vdu_count_index)
+                                                              vdu_count_index=vdu_count_index,
+                                                              ee_descriptor_id=ee_descriptor_id)
                 db_nslcmop_notif = {"collection": "nslcmops",
                                     "filter": {"_id": nslcmop_id},
                                     "path": "admin.VCA"}
                 nslcmop_operation_state, detailed_status = await self._ns_execute_primitive(
                     ee_id,
-                    primitive=primitive,
+                    primitive=primitive_name,
                     primitive_params=self._map_primitive_params(config_primitive_desc, primitive_params, desc_params),
                     timeout=timeout_ns_action,
                     vca_type=vca_type,
@@ -3888,7 +3890,7 @@ class NsLcm(LcmBase):
                             raise LcmException(
                                 "Invalid vnfd descriptor at scaling-group-descriptor[name='{}']:scaling-config-action"
                                 "[vnf-config-primitive-name-ref='{}'] does not match any vnf-configuration:config-"
-                                "primitive".format(scaling_group, config_primitive))
+                                "primitive".format(scaling_group, vnf_config_primitive))
 
                         vnfr_params = {"VDU_SCALE_INFO": vdu_scaling_info}
                         if db_vnfr.get("additionalParamsForVnf"):
@@ -3923,12 +3925,16 @@ class NsLcm(LcmBase):
                                 self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation retry".
                                                   format(vnf_config_primitive))
                             # Execute the primitive, either with new (first-time) or registered (reintent) args
+                            ee_descriptor_id = config_primitive.get("execution-environment-ref")
+                            primitive_name = config_primitive.get("execution-environment-primitive",
+                                                                  vnf_config_primitive)
                             ee_id, vca_type = self._look_for_deployed_vca(nsr_deployed["VCA"],
                                                                           member_vnf_index=vnf_index,
                                                                           vdu_id=None,
-                                                                          vdu_count_index=None)
+                                                                          vdu_count_index=None,
+                                                                          ee_descriptor_id=ee_descriptor_id)
                             result, result_detail = await self._ns_execute_primitive(
-                                ee_id, vnf_config_primitive, primitive_params, vca_type)
+                                ee_id, primitive_name, primitive_params, vca_type)
                             self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                                 vnf_config_primitive, result, result_detail))
                             # Update operationState = COMPLETED | FAILED
@@ -4083,10 +4089,10 @@ class NsLcm(LcmBase):
                             if config_primitive["name"] == vnf_config_primitive:
                                 break
                         else:
-                            raise LcmException("Invalid vnfd descriptor at scaling-group-descriptor[name='{}']:"
-                                               "scaling-config-action[vnf-config-primitive-name-ref='{}'] does not "
-                                               "match any vnf-configuration:config-primitive".format(scaling_group,
-                                                                                                     config_primitive))
+                            raise LcmException(
+                                "Invalid vnfd descriptor at scaling-group-descriptor[name='{}']:scaling-config-"
+                                "action[vnf-config-primitive-name-ref='{}'] does not match any vnf-configuration:"
+                                "config-primitive".format(scaling_group, vnf_config_primitive))
                         scale_process = "VCA"
                         db_nsr_update["config-status"] = "configuring post-scaling"
                         primitive_params = self._map_primitive_params(config_primitive, {}, vnfr_params)
@@ -4116,12 +4122,16 @@ class NsLcm(LcmBase):
                                 self.logger.debug(logging_text + "vnf_config_primitive={} Sub-operation retry".
                                                   format(vnf_config_primitive))
                             # Execute the primitive, either with new (first-time) or registered (reintent) args
+                            ee_descriptor_id = config_primitive.get("execution-environment-ref")
+                            primitive_name = config_primitive.get("execution-environment-primitive",
+                                                                  vnf_config_primitive)
                             ee_id, vca_type = self._look_for_deployed_vca(nsr_deployed["VCA"],
                                                                           member_vnf_index=vnf_index,
                                                                           vdu_id=None,
-                                                                          vdu_count_index=None)
+                                                                          vdu_count_index=None,
+                                                                          ee_descriptor_id=ee_descriptor_id)
                             result, result_detail = await self._ns_execute_primitive(
-                                ee_id, vnf_config_primitive, primitive_params, vca_type)
+                                ee_id, primitive_name, primitive_params, vca_type)
                             self.logger.debug(logging_text + "vnf_config_primitive={} Done with result {} {}".format(
                                 vnf_config_primitive, result, result_detail))
                             # Update operationState = COMPLETED | FAILED
