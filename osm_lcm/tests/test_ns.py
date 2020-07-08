@@ -542,6 +542,7 @@ class TestMyNS(asynctest.TestCase):
         logging_text = "KDU"
         self.my_ns.k8sclusterhelm.install = asynctest.CoroutineMock(return_value="k8s_id")
         self.my_ns.k8sclusterhelm.synchronize_repos = asynctest.CoroutineMock(return_value=("", ""))
+        self.my_ns.k8sclusterhelm.get_services = asynctest.CoroutineMock(return_value=([]))
         await self.my_ns.deploy_kdus(logging_text, nsr_id, nslcmop_id, db_vnfrs, db_vnfds, task_register)
         await asyncio.wait(list(task_register.keys()), timeout=100)
         db_nsr = self.db.get_list("nsrs")[1]
