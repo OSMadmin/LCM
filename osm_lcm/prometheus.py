@@ -155,7 +155,7 @@ class Prometheus:
         del new_config["_id"]
         del new_config["_admin"]
         new_scrape_configs = []
-        
+
         # generate a list with the values of scrape_configs
         for scrape_config in new_config["scrape_configs"].values():
             scrape_config = scrape_config.copy()

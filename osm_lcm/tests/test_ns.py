@@ -259,9 +259,45 @@ class TestMyNS(asynctest.TestCase):
 
         if not getenv("OSMLCMTEST_DB_NOMOCK"):
             self.assertTrue(self.db.set_one.called, "db.set_one not called")
-
+        if not getenv("OSMLCMTEST_VCA_NOMOCK"):
+            # check intial-primitives called
+            self.assertTrue(self.my_ns.n2vc.exec_primitive.called,
+                            "Exec primitive not called for initial config primitive")
+            for _call in self.my_ns.n2vc.exec_primitive.call_args_list:
+                self.assertIn(_call[1]["primitive_name"], ("config", "touch"),
+                              "called exec primitive with a primitive different than config or touch")
         # TODO add more checks of called methods
         # TODO add a terminate
+
+    async def test_instantiate_ee_list(self):
+        # Using modern IM where configuration is in the new format of execution_environment_list
+        ee_descriptor_id = "charm_simple"
+        non_used_initial_primitive = {
+            "name": "not_to_be_called",
+            "seq": 3,
+            "execution-environment-ref": "not_used_ee"
+        }
+        ee_list = [
+            {
+                "id": ee_descriptor_id,
+                "juju": {"charm": "simple"},
+
+            },
+        ]
+
+        self.db.set_one(
+            "vnfds",
+            q_filter={"_id": "7637bcf8-cf14-42dc-ad70-c66fcf1e6e77"},
+            update_dict={"vnf-configuration.execution-environment-list": ee_list,
+                         "vnf-configuration.initial-config-primitive.0.execution-environment-ref": ee_descriptor_id,
+                         "vnf-configuration.initial-config-primitive.1.execution-environment-ref": ee_descriptor_id,
+                         "vnf-configuration.initial-config-primitive.2": non_used_initial_primitive,
+                         "vnf-configuration.config-primitive.0.execution-environment-ref": ee_descriptor_id,
+                         "vnf-configuration.config-primitive.0.execution-environment-primitive": "touch_charm",
+                         },
+            unset={"vnf-configuration.juju": None})
+        await self.test_instantiate()
+        # this will check that the initial-congig-primitive 'not_to_be_called' is not called
 
     def test_ns_params_2_RO(self):
         vims = self.db.get_list("vim_accounts")
