@@ -1824,9 +1824,6 @@ class NsLcm(LcmBase):
         logging_text = "Task ns={} instantiate={} ".format(nsr_id, nslcmop_id)
         self.logger.debug(logging_text + "Enter")
 
-        # Sync from FSMongo
-        self.fs.sync()
-
         # get all needed from database
 
         # database nsrs record
@@ -1852,8 +1849,11 @@ class NsLcm(LcmBase):
             # wait for any previous tasks in process
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
+            stage[1] = "Sync filesystem from database"
+            self.fs.sync()  # TODO, make use of partial sync, only for the needed packages
+
             # STEP 0: Reading database (nslcmops, nsrs, nsds, vnfrs, vnfds)
-            stage[1] = "Reading from database,"
+            stage[1] = "Reading from database"
             # nsState="BUILDING", currentOperation="INSTANTIATING", currentOperationID=nslcmop_id
             db_nsr_update["detailed-status"] = "creating"
             db_nsr_update["operational-status"] = "init"
