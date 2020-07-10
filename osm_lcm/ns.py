@@ -56,7 +56,7 @@ class N2VCJujuConnectorLCM(N2VCJujuConnector):
                                            vca_type: str = None) -> (str, dict):
         # admit two new parameters, artifact_path and vca_type
         if vca_type == "k8s_proxy_charm":
-            ee_id = await self.n2vc.install_k8s_proxy_charm(
+            ee_id = await self.install_k8s_proxy_charm(
                 charm_name=artifact_path[artifact_path.rfind("/") + 1:],
                 namespace=namespace,
                 artifact_path=artifact_path,
@@ -1560,7 +1560,8 @@ class NsLcm(LcmBase):
                                           vca_index=vca_index, vca_type=vca_type)
 
             # if SSH access is required, then get execution environment SSH public
-            if vca_type in ("lxc_proxy_charm", "helm"):  # if native charm we have waited already to VM be UP
+            # if native charm we have waited already to VM be UP
+            if vca_type in ("k8s_proxy_charm", "lxc_proxy_charm", "helm"):
                 pub_key = None
                 user = None
                 # self.logger.debug("get ssh key block")
