@@ -2475,7 +2475,8 @@ class NsLcm(LcmBase):
                 raise LcmException("K8s cluster {} cannot be found".format(cluster_id))
             k8s_id = deep_get(db_k8scluster, ("_admin", cluster_type, "id"))
             if not k8s_id:
-                raise LcmException("K8s cluster '{}' has not been initilized for '{}'".format(cluster_id, cluster_type))
+                raise LcmException("K8s cluster '{}' has not been initialized for '{}'".format(cluster_id,
+                                                                                               cluster_type))
             k8scluster_id_2_uuic[cluster_type][cluster_id] = k8s_id
             return k8s_id
 

@@ -60,7 +60,6 @@ class VimLcm(LcmBase):
             return
 
         vim_id = vim_content["_id"]
-        vim_content.pop("op_id", None)
         logging_text = "Task vim_create={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -182,7 +181,6 @@ class VimLcm(LcmBase):
             return
 
         vim_id = vim_content["_id"]
-        vim_content.pop("op_id", None)
         logging_text = "Task vim_edit={} ".format(vim_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -409,7 +407,6 @@ class WimLcm(LcmBase):
         self.lcm_tasks.lock_HA('wim', 'create', op_id)
 
         wim_id = wim_content["_id"]
-        wim_content.pop("op_id", None)
         logging_text = "Task wim_create={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -509,7 +506,6 @@ class WimLcm(LcmBase):
             return
 
         wim_id = wim_content["_id"]
-        wim_content.pop("op_id", None)
         logging_text = "Task wim_edit={} ".format(wim_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -712,7 +708,6 @@ class SdnLcm(LcmBase):
         self.lcm_tasks.lock_HA('sdn', 'create', op_id)
 
         sdn_id = sdn_content["_id"]
-        sdn_content.pop("op_id", None)
         logging_text = "Task sdn_create={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -786,7 +781,6 @@ class SdnLcm(LcmBase):
             return
 
         sdn_id = sdn_content["_id"]
-        sdn_content.pop("op_id", None)
         logging_text = "Task sdn_edit={} ".format(sdn_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -965,7 +959,6 @@ class K8sClusterLcm(LcmBase):
             return
 
         k8scluster_id = k8scluster_content["_id"]
-        k8scluster_content.pop("op_id", None)
         logging_text = "Task k8scluster_create={} ".format(k8scluster_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -983,40 +976,44 @@ class K8sClusterLcm(LcmBase):
                                            schema_version=db_k8scluster["schema_version"], salt=db_k8scluster["_id"])
             k8s_credentials = yaml.safe_dump(db_k8scluster.get("credentials"))
             error_text_list = []
+            init_target = deep_get(db_k8scluster, ("_admin", "init"))
             # helm-chart
-            k8s_hc_id = None
-            try:
-                k8s_hc_id, uninstall_sw = await self.helm_k8scluster.init_env(k8s_credentials)
-                db_k8scluster_update["_admin.helm-chart.id"] = k8s_hc_id
-                db_k8scluster_update["_admin.helm-chart.created"] = uninstall_sw
-            except Exception as e:
-                error_text_list.append("Failing init helm-chart: {}".format(e))
-                db_k8scluster_update["_admin.helm-chart.error_msg"] = str(e)
-                if isinstance(e, K8sException):
-                    self.logger.error(logging_text + "Failing init helm-chart: {}".format(e))
-                else:
-                    self.logger.error(logging_text + "Failing init helm-chart: {}".format(e), exc_info=True)
+            if not init_target or "helm-chart" in init_target:
+                k8s_hc_id = None
+                try:
+                    k8s_hc_id, uninstall_sw = await self.helm_k8scluster.init_env(k8s_credentials,
+                                                                                  reuse_cluster_uuid=k8scluster_id)
+                    db_k8scluster_update["_admin.helm-chart.id"] = k8s_hc_id
+                    db_k8scluster_update["_admin.helm-chart.created"] = uninstall_sw
+                except Exception as e:
+                    error_text_list.append("Failing init helm-chart: {}".format(e))
+                    db_k8scluster_update["_admin.helm-chart.error_msg"] = str(e)
+                    if isinstance(e, K8sException):
+                        self.logger.error(logging_text + "Failing init helm-chart: {}".format(e))
+                    else:
+                        self.logger.error(logging_text + "Failing init helm-chart: {}".format(e), exc_info=True)
 
-            # Juju/k8s cluster
-            k8s_jb_id = None
-            try:
-                k8s_jb_id, uninstall_sw = await self.juju_k8scluster.init_env(k8s_credentials)
-                db_k8scluster_update["_admin.juju-bundle.id"] = k8s_jb_id
-                db_k8scluster_update["_admin.juju-bundle.created"] = uninstall_sw
-            except Exception as e:
-                error_text_list.append("Failing init juju-bundle: {}".format(e))
-                db_k8scluster_update["_admin.juju-bundle.error_msg"] = str(e)
-                if isinstance(e, N2VCException):
-                    self.logger.error(logging_text + "Failing init juju-bundle: {}".format(e))
-                else:
-                    self.logger.error(logging_text + "Failing init juju-bundle: {}".format(e), exc_info=True)
+            if not init_target or "juju-bundle" in init_target:
+                # Juju/k8s cluster
+                k8s_jb_id = None
+                try:
+                    k8s_jb_id, uninstall_sw = await self.juju_k8scluster.init_env(k8s_credentials)
+                    db_k8scluster_update["_admin.juju-bundle.id"] = k8s_jb_id
+                    db_k8scluster_update["_admin.juju-bundle.created"] = uninstall_sw
+                except Exception as e:
+                    error_text_list.append("Failing init juju-bundle: {}".format(e))
+                    db_k8scluster_update["_admin.juju-bundle.error_msg"] = str(e)
+                    if isinstance(e, N2VCException):
+                        self.logger.error(logging_text + "Failing init juju-bundle: {}".format(e))
+                    else:
+                        self.logger.error(logging_text + "Failing init juju-bundle: {}".format(e), exc_info=True)
 
             # mark as an error if both helm-chart and juju-bundle have been failed
             if k8s_hc_id or k8s_jb_id:
-                self.logger.debug(logging_text + " successfully created")
+                self.logger.debug(logging_text + "successfully created")
                 db_k8scluster_update["_admin.operationalState"] = "ENABLED"
             else:
-                self.logger.debug(logging_text + " successfully created with errors")
+                self.logger.debug(logging_text + "created with errors")
                 db_k8scluster_update["_admin.operationalState"] = "ERROR"
                 db_k8scluster_update["_admin.detailed-status"] = ";".join(error_text_list)
 
@@ -1055,7 +1052,6 @@ class K8sClusterLcm(LcmBase):
             return
 
         k8scluster_id = k8scluster_content["_id"]
-        k8scluster_content.pop("op_id", None)
         logging_text = "Task k8scluster_delete={} ".format(k8scluster_id)
         self.logger.debug(logging_text + "Enter")
 
@@ -1073,17 +1069,17 @@ class K8sClusterLcm(LcmBase):
 
             uninstall_sw = deep_get(db_k8scluster, ("_admin", "helm-chart", "created"))
             cluster_removed = True
+            if k8s_jb_id:  # delete in reverse order of creation
+                step = "Removing juju-bundle '{}'".format(k8s_jb_id)
+                uninstall_sw = uninstall_sw or False
+                cluster_removed = await self.juju_k8scluster.reset(cluster_uuid=k8s_jb_id, uninstall_sw=uninstall_sw)
+                db_k8scluster_update["_admin.juju-bundle.id"] = None
+
             if k8s_hc_id:
                 step = "Removing helm-chart '{}'".format(k8s_hc_id)
                 uninstall_sw = uninstall_sw or False
                 cluster_removed = await self.helm_k8scluster.reset(cluster_uuid=k8s_hc_id, uninstall_sw=uninstall_sw)
                 db_k8scluster_update["_admin.helm-chart.id"] = None
-
-            if k8s_jb_id:
-                step = "Removing juju-bundle '{}'".format(k8s_jb_id)
-                uninstall_sw = uninstall_sw or False
-                cluster_removed = await self.juju_k8scluster.reset(cluster_uuid=k8s_jb_id, uninstall_sw=uninstall_sw)
-                db_k8scluster_update["_admin.juju-bundle.id"] = None
 
             # Try to remove from cluster_inserted to clean old versions
             if k8s_hc_id and cluster_removed:
@@ -1098,7 +1094,8 @@ class K8sClusterLcm(LcmBase):
                     except Exception as e:
                         self.logger.error("{}: {}".format(step, e))
             self.db.del_one("k8sclusters", {"_id": k8scluster_id})
-            db_k8scluster_update = {}
+            db_k8scluster_update = None
+            self.logger.debug(logging_text + "Done")
 
         except Exception as e:
             if isinstance(e, (LcmException, DbException, K8sException, N2VCException)):
