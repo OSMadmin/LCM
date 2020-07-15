@@ -132,9 +132,10 @@ class Prometheus:
                     for job_id in remove_jobs:
                         prometheus_data["scrape_configs"].pop(job_id, None)
                     pull_dict = {"scrape_configs." + job_id: None for job_id in remove_jobs}
-                self.logger.debug(". ".join(log_text_list))
+                self.logger.debug("Updating. " + ". ".join(log_text_list))
 
             if not await self.send_data(prometheus_data):
+                self.logger.error("Cannot update add_jobs: {}. remove_jobs: {}".format(add_jobs, remove_jobs))
                 push_dict = pull_dict = None
                 result = False
 
@@ -190,7 +191,7 @@ class Prometheus:
                         restore_backup = False
             return True
         except Exception as e:
-            self.logger.error("Error updating prometheus configuration url={}: {}".format(self.server, e))
+            self.logger.error("Error updating configuration url={}: {}".format(self.server, e))
             return False
         finally:
             if restore_backup:
@@ -206,9 +207,14 @@ class Prometheus:
             current_config_yaml = yaml.safe_load(current_config['data']['yaml'])
             current_jobs = [j["job_name"] for j in current_config_yaml["scrape_configs"]]
             expected_jobs = [j["job_name"] for j in expected_config["scrape_configs"]]
-            return current_jobs == expected_jobs
+            if current_jobs == expected_jobs:
+                return True
+            else:
+                self.logger.error("Not all jobs have been loaded. Target jobs: {} Loaded jobs: {}".format(
+                    expected_jobs, current_jobs))
+                return False
         except Exception as e:
-            self.logger.error("Invalid obtained prometheus status. Error: '{}'. Obtained data: '{}'".format(
+            self.logger.error("Invalid obtained status from server. Error: '{}'. Obtained data: '{}'".format(
                 e, current_config))
             # if format is not understood, cannot be compared, assume it is ok
             return True
