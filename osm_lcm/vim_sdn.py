@@ -997,7 +997,10 @@ class K8sClusterLcm(LcmBase):
                 # Juju/k8s cluster
                 k8s_jb_id = None
                 try:
-                    k8s_jb_id, uninstall_sw = await self.juju_k8scluster.init_env(k8s_credentials)
+                    k8s_jb_id, uninstall_sw = await self.juju_k8scluster.init_env(
+                        k8s_credentials,
+                        reuse_cluster_uuid=k8scluster_id
+                    )
                     db_k8scluster_update["_admin.juju-bundle.id"] = k8s_jb_id
                     db_k8scluster_update["_admin.juju-bundle.created"] = uninstall_sw
                 except Exception as e:
