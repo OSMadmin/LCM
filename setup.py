@@ -45,16 +45,12 @@ setup(
     # data_files=[('/etc/osm/', ['osm_lcm/lcm.cfg']),
     #             ('/etc/systemd/system/', ['osm_lcm/osm-lcm.service']),
     #             ],
-    dependency_links=[
-        'git+https://osm.etsi.org/gerrit/osm/common.git#egg=osm-common',
-        'git+https://osm.etsi.org/gerrit/osm/N2VC.git#egg=n2vc',
-    ],
     install_requires=[
         # 'pymongo',
         'PyYAML',
         'aiohttp>=2.3.10',
-        'osm-common',
-        'n2vc',
+        'osm-common @ git+https://osm.etsi.org/gerrit/osm/common.git#egg=osm-common',
+        'n2vc @ git+https://osm.etsi.org/gerrit/osm/N2VC.git#egg=n2vc',
         'jinja2',
         'grpcio-tools',
         'grpclib',
