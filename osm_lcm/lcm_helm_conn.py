@@ -194,6 +194,8 @@ class LCMHelmConn(N2VCConnector):
 
             ee_id = "{}.{}".format(self._KUBECTL_OSM_NAMESPACE, helm_id)
             return ee_id, None
+        except N2VCException:
+            raise
         except Exception as e:
             self.log.error("Error deploying chart ee: {}".format(e), exc_info=True)
             raise N2VCException("Error deploying chart ee: {}".format(e))
@@ -399,6 +401,8 @@ class LCMHelmConn(N2VCConnector):
             # Uninstall chart
             await self._k8sclusterhelm.uninstall(system_cluster_uuid, helm_id)
             self.log.info("ee_id: {} deleted".format(ee_id))
+        except N2VCException:
+            raise
         except Exception as e:
             self.log.error("Error deleting ee id: {}: {}".format(ee_id, e), exc_info=True)
             raise N2VCException("Error deleting ee id {}: {}".format(ee_id, e))
@@ -486,6 +490,10 @@ class LCMHelmConn(N2VCConnector):
         if not self._system_cluster_id:
             db_k8cluster = self.db.get_one("k8sclusters", {"name": self._KUBECTL_OSM_CLUSTER_NAME})
             k8s_hc_id = deep_get(db_k8cluster, ("_admin", "helm-chart", "id"))
+            if not k8s_hc_id:
+                self.log.error("osm system cluster has not been properly initialized for helm connector, "
+                               "helm-chart id is not defined")
+                raise N2VCException("osm system cluster has not been properly initialized for helm connector")
             self._system_cluster_id = k8s_hc_id
         return self._system_cluster_id
 
