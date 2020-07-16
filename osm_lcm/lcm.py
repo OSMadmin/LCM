@@ -483,7 +483,7 @@ class Lcm:
                 topics = ("ns", "vim_account", "wim_account", "sdn", "nsi", "k8scluster", "k8srepo", "pla")
                 topics_admin = ("admin", )
                 await asyncio.gather(
-                    self.msg.aioread(topics, self.loop, self.kafka_read_callback),
+                    self.msg.aioread(topics, self.loop, self.kafka_read_callback, from_beginning=True),
                     self.msg_admin.aioread(topics_admin, self.loop, self.kafka_read_callback, group_id=False)
                 )
 
