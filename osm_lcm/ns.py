@@ -3596,11 +3596,15 @@ class NsLcm(LcmBase):
                         config_primitive_desc = config_primitive
                         break
 
-            if not config_primitive_desc and not (kdu_name and primitive in ("upgrade", "rollback", "status")):
-                raise LcmException("Primitive {} not found at [ns|vnf|vdu]-configuration:config-primitive ".
-                                   format(primitive))
-            primitive_name = config_primitive_desc.get("execution-environment-primitive", primitive)
-            ee_descriptor_id = config_primitive_desc.get("execution-environment-ref")
+            if not config_primitive_desc:
+                if not (kdu_name and primitive in ("upgrade", "rollback", "status")):
+                    raise LcmException("Primitive {} not found at [ns|vnf|vdu]-configuration:config-primitive ".
+                                       format(primitive))
+                primitive_name = primitive
+                ee_descriptor_id = None
+            else:
+                primitive_name = config_primitive_desc.get("execution-environment-primitive", primitive)
+                ee_descriptor_id = config_primitive_desc.get("execution-environment-ref")
 
             if vnf_index:
                 if vdu_id:
