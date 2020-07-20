@@ -2465,14 +2465,22 @@ class NsLcm(LcmBase):
 
         k8scluster_id_2_uuic = {"helm-chart": {}, "juju-bundle": {}}
 
-        def _get_cluster_id(cluster_id, cluster_type):
+        async def _get_cluster_id(cluster_id, cluster_type):
             nonlocal k8scluster_id_2_uuic
             if cluster_id in k8scluster_id_2_uuic[cluster_type]:
                 return k8scluster_id_2_uuic[cluster_type][cluster_id]
 
+            # check if K8scluster is creating and wait look if previous tasks in process
+            task_name, task_dependency = self.lcm_tasks.lookfor_related("k8scluster", cluster_id)
+            if task_dependency:
+                text = "Waiting for related tasks '{}' on k8scluster {} to be completed".format(task_name, cluster_id)
+                self.logger.debug(logging_text + text)
+                await asyncio.wait(task_dependency, timeout=3600)
+
             db_k8scluster = self.db.get_one("k8sclusters", {"_id": cluster_id}, fail_on_empty=False)
             if not db_k8scluster:
                 raise LcmException("K8s cluster {} cannot be found".format(cluster_id))
+
             k8s_id = deep_get(db_k8scluster, ("_admin", cluster_type, "id"))
             if not k8s_id:
                 raise LcmException("K8s cluster '{}' has not been initialized for '{}'".format(cluster_id,
@@ -2522,7 +2530,7 @@ class NsLcm(LcmBase):
 
                     k8s_cluster_id = kdur["k8s-cluster"]["id"]
                     step = "Synchronize repos for k8s cluster '{}'".format(k8s_cluster_id)
-                    cluster_uuid = _get_cluster_id(k8s_cluster_id, k8sclustertype)
+                    cluster_uuid = await _get_cluster_id(k8s_cluster_id, k8sclustertype)
 
                     # Synchronize  repos
                     if k8sclustertype == "helm-chart" and cluster_uuid not in updated_cluster_list:
