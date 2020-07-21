@@ -106,6 +106,10 @@ ENV OSMLCM_MESSAGE_DRIVER  kafka
 ENV OSMLCM_MESSAGE_HOST    kafka
 ENV OSMLCM_MESSAGE_PORT    9092
 
+# tsdb
+# ENV OSMLCM_TSDB_DRIVER     prometheus
+# ENV OSMLCM_TSDB_PATH       /etc/prometheus
+# ENV OSMLCM_TSDB_URI        http://prometheus:9090/
 
 # logs
 # ENV OSMLCM_GLOBAL_LOGFILE  /app/log/lcm.log

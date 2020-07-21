@@ -62,6 +62,8 @@ class Lcm:
 
     ping_interval_pace = 120  # how many time ping is send once is confirmed all is running
     ping_interval_boot = 5    # how many time ping is sent when booting
+    cfg_logger_name = {"message": "lcm.msg", "database": "lcm.db", "storage": "lcm.fs", "tsdb": "lcm.prometheus"}
+    # ^ contains for each section at lcm.cfg the used logger name
 
     def __init__(self, config_file, loop=None):
         """
@@ -120,7 +122,7 @@ class Lcm:
             self.logger.setLevel(config["global"]["loglevel"])
 
         # logging other modules
-        for k1, logname in {"message": "lcm.msg", "database": "lcm.db", "storage": "lcm.fs"}.items():
+        for k1, logname in self.cfg_logger_name.items():
             config[k1]["logger_name"] = logname
             logger_module = logging.getLogger(logname)
             if config[k1].get("logfile"):
@@ -190,8 +192,12 @@ class Lcm:
         # contains created tasks/futures to be able to cancel
         self.lcm_tasks = TaskRegistry(self.worker_id, self.db, self.logger)
 
-        if self.config.get("prometheus"):
-            self.prometheus = prometheus.Prometheus(self.config["prometheus"], self.worker_id, self.db, self.loop)
+        if self.config.get("tsdb") and self.config["tsdb"].get("driver"):
+            if self.config["tsdb"]["driver"] == "prometheus":
+                self.prometheus = prometheus.Prometheus(self.config["tsdb"], self.worker_id, self.db, self.loop)
+            else:
+                raise LcmException("Invalid configuration param '{}' at '[tsdb]':'driver'".format(
+                    config["tsdb"]["driver"]))
         else:
             self.prometheus = None
         self.ns = ns.NsLcm(self.db, self.msg, self.fs, self.lcm_tasks, self.config, self.loop, self.prometheus)
@@ -509,7 +515,7 @@ class Lcm:
         # check RO version
         self.loop.run_until_complete(self.check_RO_version())
 
-        # configure Prometheus
+        # configure tsdb prometheus
         if self.prometheus:
             self.loop.run_until_complete(self.prometheus.start())
 
