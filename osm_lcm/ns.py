@@ -1903,6 +1903,7 @@ class NsLcm(LcmBase):
                 db_vnfrs[vnfr["member-vnf-index-ref"]] = vnfr   # vnf's dict indexed by member-index: '1', '2', etc
                 vnfd_id = vnfr["vnfd-id"]                       # vnfd uuid for this vnf
                 vnfd_ref = vnfr["vnfd-ref"]                     # vnfd name for this vnf
+
                 # if we haven't this vnfd, read it from db
                 if vnfd_id not in db_vnfds:
                     # read from db
@@ -1939,6 +1940,7 @@ class NsLcm(LcmBase):
             # set state to INSTANTIATED. When instantiated NBI will not delete directly
             db_nsr_update["_admin.nsState"] = "INSTANTIATED"
             self.update_db_2("nsrs", nsr_id, db_nsr_update)
+            self.db.set_list("vnfrs", {"nsr-id-ref": nsr_id}, {"_admin.nsState": "INSTANTIATED"})
 
             # n2vc_redesign STEP 2 Deploy Network Scenario
             stage[0] = 'Stage 2/5: deployment of KDUs, VMs and execution environments.'
@@ -3346,6 +3348,12 @@ class NsLcm(LcmBase):
                 operation_state=nslcmop_operation_state,
                 other_update=db_nslcmop_update,
             )
+            if ns_state == "NOT_INSTANTIATED":
+                try:
+                    self.db.set_list("vnfrs", {"nsr-id-ref": nsr_id}, {"_admin.nsState": "NOT_INSTANTIATED"})
+                except DbException as e:
+                    self.logger.warn(logging_text + 'Error writing VNFR status for nsr-id-ref: {} -> {}'.
+                                     format(nsr_id, e))
             if operation_params:
                 autoremove = operation_params.get("autoremove", False)
             if nslcmop_operation_state:
