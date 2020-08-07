@@ -3225,8 +3225,9 @@ class NsLcm(LcmBase):
                 vca_type = vca.get("type")
                 exec_terminate_primitives = (not operation_params.get("skip_terminate_primitives") and
                                              vca.get("needed_terminate"))
-                # For helm we must destroy_ee
-                destroy_ee = "True" if vca_type == "helm" else "False"
+                # For helm we must destroy_ee. Also for native_charm, as juju_model cannot be deleted if there are
+                # pending native charms
+                destroy_ee = "True" if vca_type in ("helm", "native_charm") else "False"
                 task = asyncio.ensure_future(
                     self.destroy_N2VC(logging_text, db_nslcmop, vca, config_descriptor, vca_index,
                                       destroy_ee, exec_terminate_primitives))
