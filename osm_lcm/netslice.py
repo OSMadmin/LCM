@@ -288,19 +288,19 @@ class NetsliceLcm(LcmBase):
             # Slice status Creating
             db_nsir_update["detailed-status"] = "creating"
             db_nsir_update["operational-status"] = "init"
-            self.update_db_2("nsis", nsir_id, db_nsir_update)
+            db_nsir_update["_admin.nsiState"] = "INSTANTIATED"
 
-            step = "Creating netslice VLDs before NS instantiation"
+            step = "Instantiating netslice VLDs before NS instantiation"
             # Creating netslice VLDs networking before NS instantiation
-            db_nsir_update["detailed-status"] = "Creating netslice-vld at RO"
+            db_nsir_update["detailed-status"] = step
             self.update_db_2("nsis", nsir_id, db_nsir_update)
             db_nsir_update["_admin.deployed.RO"] = db_nsir_admin["deployed"]["RO"]
             for vld_item in get_iterable(nsir_admin, "netslice-vld"):
                 await netslice_scenario_create(self, vld_item, nsir_id, db_nsir, db_nsir_admin, db_nsir_update)
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
-            step = "Creating netslice subnets at RO"
-            db_nsir_update["detailed-status"] = "Creating netslice subnets at RO"
+            step = "Instantiating netslice subnets"
+            db_nsir_update["detailed-status"] = step
             self.update_db_2("nsis", nsir_id, db_nsir_update)
 
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
@@ -316,9 +316,6 @@ class NetsliceLcm(LcmBase):
             # self.update_db_2("nsis", nsir_id, db_nsir_update)
 
             # Iterate over the network services operation ids to instantiate NSs
-            # TODO: (future improvement) look another way check the tasks instead of keep asking
-            # -> https://docs.python.org/3/library/asyncio-task.html#waiting-primitives
-            # steps: declare ns_tasks, add task when terminate is called, await asyncio.wait(vca_task_list, timeout=300)
             step = "Instantiating Netslice Subnets"
             db_nsir = self.db.get_one("nsis", {"_id": nsir_id})
             nslcmop_ids = db_nsilcmop["operationParams"].get("nslcmops_ids")
@@ -331,16 +328,15 @@ class NetsliceLcm(LcmBase):
                 self.lcm_tasks.register("ns", nsr_id, nslcmop_id, "ns_instantiate", task)
 
             # Wait until Network Slice is ready
-            step = nsir_status_detailed = " Waiting nsi ready. nsi_id={}".format(nsir_id)
+            step = " Waiting nsi ready."
             nsrs_detailed_list_old = None
             self.logger.debug(logging_text + step)
 
-            # TODO: substitute while for await (all task to be done or not)
+            # For HA, it is checked from database, as the ns operation may be managed by other LCM worker
             while time() <= start_deploy + timeout_nsi_deploy:
                 # Check ns instantiation status
                 nsi_ready = True
                 nsir = self.db.get_one("nsis", {"_id": nsir_id})
-                nsir_admin = nsir["_admin"]
                 nsrs_detailed_list = nsir["_admin"]["nsrs-detailed-list"]
                 nsrs_detailed_list_new = []
                 for nslcmop_item in nslcmop_ids:
@@ -350,8 +346,7 @@ class NetsliceLcm(LcmBase):
                     for nss in nsrs_detailed_list:
                         if nss["nsrId"] == nslcmop["nsInstanceId"]:
                             nss.update({"nsrId": nslcmop["nsInstanceId"], "status": nslcmop["operationState"],
-                                        "detailed-status":
-                                        nsir_status_detailed + "; {}".format(nslcmop.get("detailed-status")),
+                                        "detailed-status": nslcmop.get("detailed-status"),
                                         "instantiated": True})
                             nsrs_detailed_list_new.append(nss)
                     if status not in ["COMPLETED", "PARTIALLY_COMPLETED", "FAILED", "FAILED_TEMP"]:
@@ -362,17 +357,22 @@ class NetsliceLcm(LcmBase):
                     self.update_db_2("nsis", nsir_id, {"_admin.nsrs-detailed-list": nsrs_detailed_list_new})
 
                 if nsi_ready:
-                    step = "Network Slice Instance is ready. nsi_id={}".format(nsir_id)
-                    for items in nsrs_detailed_list:
-                        if "FAILED" in items.values():
-                            raise LcmException("Error deploying NSI: {}".format(nsir_id))
+                    error_list = []
+                    step = "Network Slice Instance instantiated"
+                    for nss in nsrs_detailed_list:
+                        if nss["status"] in ("FAILED", "FAILED_TEMP"):
+                            error_list.append("NS {} {}: {}".format(nss["nsrId"], nss["status"],
+                                                                    nss["detailed-status"]))
+                    if error_list:
+                        step = "instantiating"
+                        raise LcmException("; ".join(error_list))
                     break
 
                 # TODO: future improvement due to synchronism -> await asyncio.wait(vca_task_list, timeout=300)
                 await asyncio.sleep(5, loop=self.loop)
 
             else:   # timeout_nsi_deploy reached:
-                raise LcmException("Timeout waiting nsi to be ready. nsi_id={}".format(nsir_id))
+                raise LcmException("Timeout waiting nsi to be ready.")
 
             db_nsir_update["operational-status"] = "running"
             db_nsir_update["detailed-status"] = "done"
@@ -397,13 +397,13 @@ class NetsliceLcm(LcmBase):
                 if db_nsir:
                     db_nsir_update["detailed-status"] = "ERROR {}: {}".format(step, exc)
                     db_nsir_update["operational-status"] = "failed"
+                    db_nsir_update["config-status"] = "configured"
                 if db_nsilcmop:
                     db_nsilcmop_update["detailed-status"] = "FAILED {}: {}".format(step, exc)
                     db_nsilcmop_update["operationState"] = nsilcmop_operation_state = "FAILED"
                     db_nsilcmop_update["statusEnteredTime"] = time()
             try:
                 if db_nsir:
-                    db_nsir_update["_admin.nsiState"] = "INSTANTIATED"
                     db_nsir_update["_admin.nsilcmop"] = None
                     self.update_db_2("nsis", nsir_id, db_nsir_update)
                 if db_nsilcmop:
