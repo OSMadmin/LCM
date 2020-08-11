@@ -164,7 +164,8 @@ class ROClient:
         self.tenant = None      # force to reload tenant with different credentials
         self.datacenter = None  # force to reload datacenter with different credentials
 
-    def _parse(self, descriptor, descriptor_format, response=False):
+    @staticmethod
+    def _parse(descriptor, descriptor_format, response=False):
         if descriptor_format and descriptor_format != "json" and descriptor_format != "yaml":
             raise ROClientException("'descriptor_format' must be a 'json' or 'yaml' text")
         if descriptor_format != "json":
@@ -186,8 +187,18 @@ class ROClient:
         if response:
             raise ROClientException(error_text)
         raise ROClientException(error_text)
-    
-    def _parse_yaml(self, descriptor, response=False):
+
+    @staticmethod
+    def _parse_error_yaml(descriptor):
+        json_error = None
+        try:
+            json_error = yaml.load(descriptor, Loader=yaml.Loader)
+            return json_error["error"]["description"]
+        except Exception:
+            return str(json_error or descriptor)
+
+    @staticmethod
+    def _parse_yaml(descriptor, response=False):
         try:
             return yaml.load(descriptor, Loader=yaml.Loader)
         except yaml.YAMLError as exc:
@@ -311,15 +322,15 @@ class ROClient:
             total["networks"] = len(ns_descriptor["nets"])
             for net in ns_descriptor["nets"]:
                 if net["status"] in ("ERROR", "VIM_ERROR"):
-                    error_list.append("VIM network ({}) on error: {}".format(_get_ref(net), net["error_msg"]))
+                    error_list.append("Error at VIM network {}: {}".format(_get_ref(net), net["error_msg"]))
                 elif net["status"] == "ACTIVE":
                     done["networks"] += 1
 
             total["SDN_networks"] = len(ns_descriptor["sdn_nets"])
             for sdn_net in ns_descriptor["sdn_nets"]:
                 if sdn_net["status"] in ("ERROR", "VIM_ERROR", "WIM_ERROR"):
-                    error_list.append("SDN network ({}) on error: {}".format(_get_sdn_ref(sdn_net.get("sce_net_id")),
-                                                                             sdn_net["error_msg"]))
+                    error_list.append("Error at SDN network {}: {}".format(_get_sdn_ref(sdn_net.get("sce_net_id")),
+                                                                           sdn_net["error_msg"]))
                 elif sdn_net["status"] == "ACTIVE":
                     done["SDN_networks"] += 1
 
@@ -327,11 +338,12 @@ class ROClient:
                 for vm in vnf["vms"]:
                     total["VMs"] += 1
                     if vm["status"] in ("ERROR", "VIM_ERROR"):
-                        error_list.append("VIM VM ({}) on error: {}".format(_get_ref(vm), vm["error_msg"]))
+                        error_list.append("Error at VIM VM {}: {}".format(_get_ref(vm), vm["error_msg"]))
                     elif vm["status"] == "ACTIVE":
                         done["VMs"] += 1
             if error_list:
-                return "ERROR", "; ".join(error_list)
+                # skip errors caused because other dependendent task is on error
+                return "ERROR", "; ".join([el for el in error_list if "because depends on failed  ACTION" not in el])
             if all(total[x] == done[x] for x in total):  # DONE == TOTAL for all items
                 return "ACTIVE", str({x: total[x] for x in total if total[x]})  # print only those which value is not 0
             else:
@@ -449,7 +461,7 @@ class ROClient:
                 raise ROClientException("No {} found with id '{}'".format(item[:-1], item_id_name),
                                         http_code=404)
             if response.status >= 300:
-                raise ROClientException(response_text, http_code=response.status)
+                raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
         content = self._parse_yaml(response_text, response=True)
 
         if item_id:
@@ -496,7 +508,7 @@ class ROClient:
             response_text = await response.read()
             self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
             if response.status >= 300:
-                raise ROClientException(response_text, http_code=response.status)
+                raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -555,7 +567,7 @@ class ROClient:
             response_text = await response.read()
             self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
             if response.status >= 300:
-                raise ROClientException(response_text, http_code=response.status)
+                raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -584,7 +596,7 @@ class ROClient:
             response_text = await response.read()
             self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
             if response.status >= 300:
-                raise ROClientException(response_text, http_code=response.status)
+                raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -610,7 +622,7 @@ class ROClient:
             response_text = await response.read()
             self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
             if response.status >= 300:
-                raise ROClientException(response_text, http_code=response.status)
+                raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -634,7 +646,7 @@ class ROClient:
             response_text = await response.read()
             self.logger.debug("PUT {} [{}] {}".format(url, response.status, response_text[:100]))
             if response.status >= 300:
-                raise ROClientException(response_text, http_code=response.status)
+                raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
         return self._parse_yaml(response_text, response=True)
 
@@ -653,7 +665,7 @@ class ROClient:
                     response_text = await response.read()
                     self.logger.debug("GET {} [{}] {}".format(url, response.status, response_text[:100]))
                     if response.status >= 300:
-                        raise ROClientException(response_text, http_code=response.status)
+                        raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
                 for word in str(response_text).split(" "):
                     if "." in word:
@@ -951,7 +963,7 @@ class ROClient:
                     response_text = await response.read()
                     self.logger.debug("POST {} [{}] {}".format(url, response.status, response_text[:100]))
                     if response.status >= 300:
-                        raise ROClientException(response_text, http_code=response.status)
+                        raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
 
                 response_desc = self._parse_yaml(response_text, response=True)
                 desc = remove_envelop(item, response_desc)
@@ -978,7 +990,7 @@ class ROClient:
                     response_text = await response.read()
                     self.logger.debug("DELETE {} [{}] {}".format(url, response.status, response_text[:100]))
                     if response.status >= 300:
-                        raise ROClientException(response_text, http_code=response.status)
+                        raise ROClientException(self._parse_error_yaml(response_text), http_code=response.status)
  
                 response_desc = self._parse_yaml(response_text, response=True)
                 desc = remove_envelop(item, response_desc)
