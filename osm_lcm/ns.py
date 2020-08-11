@@ -1850,11 +1850,11 @@ class NsLcm(LcmBase):
             # wait for any previous tasks in process
             await self.lcm_tasks.waitfor_related_HA('ns', 'nslcmops', nslcmop_id)
 
-            stage[1] = "Sync filesystem from database"
+            stage[1] = "Sync filesystem from database."
             self.fs.sync()  # TODO, make use of partial sync, only for the needed packages
 
             # STEP 0: Reading database (nslcmops, nsrs, nsds, vnfrs, vnfds)
-            stage[1] = "Reading from database"
+            stage[1] = "Reading from database."
             # nsState="BUILDING", currentOperation="INSTANTIATING", currentOperationID=nslcmop_id
             db_nsr_update["detailed-status"] = "creating"
             db_nsr_update["operational-status"] = "init"
@@ -1872,7 +1872,7 @@ class NsLcm(LcmBase):
             )
 
             # read from db: operation
-            stage[1] = "Getting nslcmop={} from db".format(nslcmop_id)
+            stage[1] = "Getting nslcmop={} from db.".format(nslcmop_id)
             db_nslcmop = self.db.get_one("nslcmops", {"_id": nslcmop_id})
             ns_params = db_nslcmop.get("operationParams")
             if ns_params and ns_params.get("timeout_ns_deploy"):
@@ -1881,15 +1881,15 @@ class NsLcm(LcmBase):
                 timeout_ns_deploy = self.timeout.get("ns_deploy", self.timeout_ns_deploy)
 
             # read from db: ns
-            stage[1] = "Getting nsr={} from db".format(nsr_id)
+            stage[1] = "Getting nsr={} from db.".format(nsr_id)
             db_nsr = self.db.get_one("nsrs", {"_id": nsr_id})
-            stage[1] = "Getting nsd={} from db".format(db_nsr["nsd-id"])
+            stage[1] = "Getting nsd={} from db.".format(db_nsr["nsd-id"])
             nsd = self.db.get_one("nsds", {"_id": db_nsr["nsd-id"]})
             db_nsr["nsd"] = nsd
             # nsr_name = db_nsr["name"]   # TODO short-name??
 
             # read from db: vnf's of this ns
-            stage[1] = "Getting vnfrs from db"
+            stage[1] = "Getting vnfrs from db."
             self.logger.debug(logging_text + stage[1])
             db_vnfrs_list = self.db.get_list("vnfrs", {"nsr-id-ref": nsr_id})
 
@@ -1907,7 +1907,7 @@ class NsLcm(LcmBase):
                 # if we haven't this vnfd, read it from db
                 if vnfd_id not in db_vnfds:
                     # read from db
-                    stage[1] = "Getting vnfd={} id='{}' from db".format(vnfd_id, vnfd_ref)
+                    stage[1] = "Getting vnfd={} id='{}' from db.".format(vnfd_id, vnfd_ref)
                     self.logger.debug(logging_text + stage[1])
                     vnfd = self.db.get_one("vnfds", {"_id": vnfd_id})
 
@@ -1949,7 +1949,7 @@ class NsLcm(LcmBase):
                 stage=stage
             )
 
-            stage[1] = "Deploying KDUs,"
+            stage[1] = "Deploying KDUs."
             # self.logger.debug(logging_text + "Before deploy_kdus")
             # Call to deploy_kdus in case exists the "vdu:kdu" param
             await self.deploy_kdus(
@@ -2190,8 +2190,8 @@ class NsLcm(LcmBase):
             if error_list:
                 error_detail = ". ".join(error_list)
                 self.logger.error(logging_text + error_detail)
-                error_description_nslcmop = 'Stage: {}. Detail: {}'.format(stage[0], error_detail)
-                error_description_nsr = 'Operation: INSTANTIATING.{}, Stage {}'.format(nslcmop_id, stage[0])
+                error_description_nslcmop = '{} Detail: {}'.format(stage[0], error_detail)
+                error_description_nsr = 'Operation: INSTANTIATING.{}, {}'.format(nslcmop_id, stage[0])
 
                 db_nsr_update["detailed-status"] = error_description_nsr + " Detail: " + error_detail
                 db_nslcmop_update["detailed-status"] = error_detail
@@ -3314,8 +3314,8 @@ class NsLcm(LcmBase):
             if error_list:
                 error_detail = "; ".join(error_list)
                 # self.logger.error(logging_text + error_detail)
-                error_description_nslcmop = 'Stage: {}. Detail: {}'.format(stage[0], error_detail)
-                error_description_nsr = 'Operation: TERMINATING.{}, Stage {}.'.format(nslcmop_id, stage[0])
+                error_description_nslcmop = '{} Detail: {}'.format(stage[0], error_detail)
+                error_description_nsr = 'Operation: TERMINATING.{}, {}.'.format(nslcmop_id, stage[0])
 
                 db_nsr_update["operational-status"] = "failed"
                 db_nsr_update["detailed-status"] = error_description_nsr + " Detail: " + error_detail
