@@ -265,12 +265,10 @@ class TaskRegistry(LcmBase):
     # Input: op_id, example: 'abc123def:3' Output: account_id='abc123def', op_index=3
     def _get_account_and_op_HA(self, op_id):
         if not op_id:
-            return (None, None)
+            return None, None
         account_id, _, op_index = op_id.rpartition(':')
-        if not account_id:
-            return (None, None)
-        if not op_index.isdigit():
-            return (None, None)
+        if not account_id or not op_index.isdigit():
+            return None, None
         return account_id, op_index
 
     # Get '_id' for any topic and operation
@@ -361,7 +359,7 @@ class TaskRegistry(LcmBase):
             return True
 
         # Try to lock this task
-        db_table_name = self.topic2dbtable_dict.get(topic)
+        db_table_name = self.topic2dbtable_dict[topic]
         q_filter, update_dict = self._get_dbparams_for_lock_HA(topic, op_type, op_id)
         db_lock_task = self.db.set_one(db_table_name,
                                        q_filter=q_filter,
@@ -383,7 +381,7 @@ class TaskRegistry(LcmBase):
                                 fail_on_empty=False)
             return True
 
-    def register_HA(self, topic, op_type, op_id, operationState, detailed_status):
+    def unlock_HA(self, topic, op_type, op_id, operationState, detailed_status):
         """
         Register a task, done when finished a VIM/WIM/SDN 'create' operation.
         :param topic: Can be "vim", "wim", or "sdn"
@@ -393,19 +391,21 @@ class TaskRegistry(LcmBase):
         """
 
         # Backward compatibility
-        if not self._is_account_type_HA(topic) or (self._is_account_type_HA(topic) and op_id is None):
+        if not self._is_account_type_HA(topic) or not op_id:
             return
 
         # Get Account ID and Operation Index
         account_id, op_index = self._get_account_and_op_HA(op_id)
-        db_table_name = self.topic2dbtable_dict.get(topic)
+        db_table_name = self.topic2dbtable_dict[topic]
 
         # If this is a 'delete' operation, the account may have been deleted (SUCCESS) or may still exist (FAILED)
         # If the account exist, register the HA task.
         # Update DB for HA tasks
         q_filter = {'_id': account_id}
         update_dict = {'_admin.operations.{}.operationState'.format(op_index): operationState,
-                       '_admin.operations.{}.detailed-status'.format(op_index): detailed_status}
+                       '_admin.operations.{}.detailed-status'.format(op_index): detailed_status,
+                       '_admin.operations.{}.worker'.format(op_index): None,
+                       '_admin.current_operation': None}
         self.db.set_one(db_table_name,
                         q_filter=q_filter,
                         update_dict=update_dict,
