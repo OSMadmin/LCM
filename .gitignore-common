@@ -18,31 +18,35 @@
 *.pyc
 *.pyo
 
-#auto-ignore
+# auto-ignore
 .gitignore
 
-#logs
+# logs
 logs 
 
-#pycharm
+# pycharm
 .idea
+venv
 
-#eclipse
+# tox
+.tox
+
+# eclipse
 .project     
 .pydevproject
 .settings
 
-#local stuff files that end in ".local" or folders called "local"
+# local stuff files that end in ".local" or folders called "local"
 local
 osm_lcm/local
 osm_lcm/test/local
 
-#local stuff files that end in ".temp" or folders called "temp"
+# local stuff files that end in ".temp" or folders called "temp"
 *.temp
 osm_lcm/temp
 osm_lcm/test/temp
 
-#distribution and package generation
+# distribution and package generation
 build
 dist
 *.egg-info
