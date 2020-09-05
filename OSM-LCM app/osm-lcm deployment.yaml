@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lcm
+spec:
+  clusterIP: None
+  ports:
+  - port: 9090
+    protocol: TCP
+    targetPort: 9090
+  selector:
+    app: lcm
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lcm
+  labels:
+    app: lcm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lcm
+  template:
+    metadata:
+      labels:
+        app: lcm
+    spec:
+      initContainers:
+       - name: kafka-ro-mongo-test
+         image: alpine:latest
+         command: ["sh", "-c", "until (nc -zvw1 kafka 9092 && nc -zvw1 ro 9090 && nc -zvw1 mongo 27017 ); do sleep 3; done; exit 0"]
+      containers:
+      - name: lcm
+        image: opensourcemano/lcm:8
+        env:
+        - name: OSMLCM_RO_HOST
+          value: ro
+        - name: OSMLCM_DATABASE_HOST
+          value: mongo
+        - name: OSMLCM_MESSAGE_HOST
+          value: kafka
+        envFrom:
+        - secretRef:
+           name: lcm-secret
+        volumeMounts:
+        - name: osm-packages
+          mountPath: /app/storage
+        - name: prometheus-config
+          mountPath: /etc/prometheus
+      volumes:
+      - name: osm-packages
+        hostPath:
+         path: /var/lib/osm/osm/osm_osm_packages/_data
+      - name: prometheus-config
+        hostPath:
+          path: /var/lib/osm/osm/prometheus
