@@ -34,7 +34,7 @@ spec:
          command: ["sh", "-c", "until (nc -zvw1 kafka 9092 && nc -zvw1 ro 9090 && nc -zvw1 mongo 27017 ); do sleep 3; done; exit 0"]
       containers:
       - name: lcm
-        image: opensourcemano/lcm:8
+        image: index.docker.io/osmhub/osm-lcm:v8.0.0 #opensourcemano/lcm:8
         env:
         - name: OSMLCM_RO_HOST
           value: ro
